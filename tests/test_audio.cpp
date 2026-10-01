@@ -9,6 +9,10 @@
 #include "audio/aac/Huffman.hpp"
 #include "audio/aac/Mdct.hpp"
 #include "audio/aac/Window.hpp"
+#include "audio/opus/OpusDecoder.hpp"
+#include "audio/opus/OpusHead.hpp"
+#include "audio/opus/OpusPacket.hpp"
+#include "audio/opus/RangeDecoder.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -832,4 +836,306 @@ TEST(AacDecoder, DecodesTnsOddOrderFrames) {
     EXPECT_NEAR(samples[3048], -0.0240589f, 1e-5f);
     EXPECT_NEAR(samples[3548], 0.1252413f, 1e-5f);
     EXPECT_NEAR(samples[4094], -0.1240385f, 1e-5f);
+}
+
+namespace {
+
+using player::audio::opus::Bandwidth;
+using player::audio::opus::Mode;
+using player::audio::opus::OpusHead;
+using player::audio::opus::PacketInfo;
+
+std::vector<uint8_t> makeOpusHead(uint8_t channels, uint16_t pre_skip, uint32_t rate,
+                                  int16_t gain, uint8_t family,
+                                  const std::vector<uint8_t>& mapping = {},
+                                  uint8_t streams = 0, uint8_t coupled = 0) {
+    std::vector<uint8_t> head = {'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, channels};
+    head.push_back(static_cast<uint8_t>(pre_skip & 0xFF));
+    head.push_back(static_cast<uint8_t>(pre_skip >> 8));
+    for (int i = 0; i < 4; ++i) {
+        head.push_back(static_cast<uint8_t>((rate >> (8 * i)) & 0xFF));
+    }
+    head.push_back(static_cast<uint8_t>(gain & 0xFF));
+    head.push_back(static_cast<uint8_t>((gain >> 8) & 0xFF));
+    head.push_back(family);
+    if (family != 0) {
+        head.push_back(streams);
+        head.push_back(coupled);
+        head.insert(head.end(), mapping.begin(), mapping.end());
+    }
+    return head;
+}
+
+std::vector<uint8_t> makePacket(uint8_t toc, const std::vector<uint8_t>& payload) {
+    std::vector<uint8_t> packet = {toc};
+    packet.insert(packet.end(), payload.begin(), payload.end());
+    return packet;
+}
+
+}  // namespace
+
+TEST(OpusHead, ParsesFamilyZero) {
+    const std::vector<uint8_t> head = makeOpusHead(2, 312, 48000, 0, 0);
+    OpusHead parsed;
+    std::string error;
+    ASSERT_TRUE(player::audio::opus::parseOpusHead(head.data(), head.size(), parsed, &error))
+        << error;
+    EXPECT_EQ(parsed.version, 1);
+    EXPECT_EQ(parsed.channels, 2);
+    EXPECT_EQ(parsed.pre_skip, 312);
+    EXPECT_EQ(parsed.input_sample_rate, 48000u);
+    EXPECT_EQ(parsed.mapping_family, 0);
+    EXPECT_EQ(parsed.stream_count, 1);
+    EXPECT_EQ(parsed.coupled_count, 1);
+    EXPECT_EQ(parsed.channel_mapping[0], 0);
+    EXPECT_EQ(parsed.channel_mapping[1], 1);
+}
+
+TEST(OpusHead, ParsesFamilyOneMapping) {
+    const std::vector<uint8_t> head =
+        makeOpusHead(6, 0, 48000, 0, 1, {0, 4, 1, 2, 3, 5}, 4, 2);
+    OpusHead parsed;
+    std::string error;
+    ASSERT_TRUE(player::audio::opus::parseOpusHead(head.data(), head.size(), parsed, &error))
+        << error;
+    EXPECT_EQ(parsed.channels, 6);
+    EXPECT_EQ(parsed.mapping_family, 1);
+    EXPECT_EQ(parsed.stream_count, 4);
+    EXPECT_EQ(parsed.coupled_count, 2);
+    EXPECT_EQ(parsed.channel_mapping[5], 5);
+}
+
+TEST(OpusHead, RejectsBadInput) {
+    OpusHead parsed;
+    std::string error;
+    const std::vector<uint8_t> short_head = {'O', 'p', 'u', 's'};
+    EXPECT_FALSE(player::audio::opus::parseOpusHead(short_head.data(), short_head.size(), parsed,
+                                                    &error));
+    std::vector<uint8_t> bad_magic = makeOpusHead(2, 0, 48000, 0, 0);
+    bad_magic[0] = 'X';
+    EXPECT_FALSE(player::audio::opus::parseOpusHead(bad_magic.data(), bad_magic.size(), parsed,
+                                                    &error));
+    const std::vector<uint8_t> no_channels = makeOpusHead(0, 0, 48000, 0, 0);
+    EXPECT_FALSE(player::audio::opus::parseOpusHead(no_channels.data(), no_channels.size(), parsed,
+                                                    &error));
+    const std::vector<uint8_t> family2 = makeOpusHead(2, 0, 48000, 0, 2);
+    EXPECT_FALSE(player::audio::opus::parseOpusHead(family2.data(), family2.size(), parsed,
+                                                    &error));
+}
+
+TEST(OpusPacket, ParsesCodeZero) {
+    const std::vector<uint8_t> packet = makePacket(0x00, {1, 2, 3, 4});
+    PacketInfo info;
+    std::string error;
+    ASSERT_TRUE(player::audio::opus::parsePacket(packet.data(), packet.size(), info, &error))
+        << error;
+    EXPECT_EQ(info.mode, Mode::Silk);
+    EXPECT_EQ(info.bandwidth, Bandwidth::Narrowband);
+    EXPECT_FALSE(info.stereo);
+    EXPECT_EQ(info.frame_count, 1);
+    EXPECT_EQ(info.frame_samples, 480);
+    EXPECT_EQ(info.header_size, 1u);
+    EXPECT_EQ(info.frames[0].offset, 1u);
+    EXPECT_EQ(info.frames[0].size, 4u);
+}
+
+TEST(OpusPacket, ParsesCodeOneCbr) {
+    const std::vector<uint8_t> packet = makePacket(0x01, {1, 2, 3, 4});
+    PacketInfo info;
+    std::string error;
+    ASSERT_TRUE(player::audio::opus::parsePacket(packet.data(), packet.size(), info, &error))
+        << error;
+    EXPECT_EQ(info.frame_count, 2);
+    EXPECT_EQ(info.frames[0].offset, 1u);
+    EXPECT_EQ(info.frames[0].size, 2u);
+    EXPECT_EQ(info.frames[1].offset, 3u);
+    EXPECT_EQ(info.frames[1].size, 2u);
+}
+
+TEST(OpusPacket, ParsesCodeTwoVbr) {
+    const std::vector<uint8_t> packet = makePacket(0x02, {2, 1, 2, 3, 4, 5});
+    PacketInfo info;
+    std::string error;
+    ASSERT_TRUE(player::audio::opus::parsePacket(packet.data(), packet.size(), info, &error))
+        << error;
+    EXPECT_EQ(info.frame_count, 2);
+    EXPECT_EQ(info.header_size, 2u);
+    EXPECT_EQ(info.frames[0].offset, 2u);
+    EXPECT_EQ(info.frames[0].size, 2u);
+    EXPECT_EQ(info.frames[1].offset, 4u);
+    EXPECT_EQ(info.frames[1].size, 3u);
+}
+
+TEST(OpusPacket, ParsesCodeTwoLongSize) {
+    std::vector<uint8_t> payload = {0xFC, 0x00};  // first frame: 252 bytes
+    payload.resize(2 + 252 + 5, 0xAA);
+    const std::vector<uint8_t> packet = makePacket(0x02, payload);
+    PacketInfo info;
+    std::string error;
+    ASSERT_TRUE(player::audio::opus::parsePacket(packet.data(), packet.size(), info, &error))
+        << error;
+    EXPECT_EQ(info.header_size, 3u);
+    EXPECT_EQ(info.frames[0].size, 252u);
+    EXPECT_EQ(info.frames[1].size, 5u);
+}
+
+TEST(OpusPacket, ParsesCodeThreeCbr) {
+    const std::vector<uint8_t> packet = makePacket(0x03, {0x03, 1, 2, 3, 4, 5, 6});
+    PacketInfo info;
+    std::string error;
+    ASSERT_TRUE(player::audio::opus::parsePacket(packet.data(), packet.size(), info, &error))
+        << error;
+    EXPECT_EQ(info.frame_count, 3);
+    EXPECT_EQ(info.header_size, 2u);
+    for (size_t i = 0; i < 3; ++i) {
+        EXPECT_EQ(info.frames[i].size, 2u);
+        EXPECT_EQ(info.frames[i].offset, 2 + 2 * i);
+    }
+}
+
+TEST(OpusPacket, ParsesCodeThreeVbr) {
+    const std::vector<uint8_t> packet = makePacket(0x03, {0x83, 1, 2, 1, 2, 3, 4, 5, 6});
+    PacketInfo info;
+    std::string error;
+    ASSERT_TRUE(player::audio::opus::parsePacket(packet.data(), packet.size(), info, &error))
+        << error;
+    EXPECT_EQ(info.frame_count, 3);
+    EXPECT_EQ(info.header_size, 4u);
+    EXPECT_EQ(info.frames[0].size, 1u);
+    EXPECT_EQ(info.frames[1].size, 2u);
+    EXPECT_EQ(info.frames[2].size, 3u);
+}
+
+TEST(OpusPacket, ParsesCodeThreePadding) {
+    // count = 2, padding = 2 bytes at the end of the packet.
+    const std::vector<uint8_t> packet = makePacket(0x03, {0x42, 0x02, 1, 2, 3, 4, 0, 0});
+    PacketInfo info;
+    std::string error;
+    ASSERT_TRUE(player::audio::opus::parsePacket(packet.data(), packet.size(), info, &error))
+        << error;
+    EXPECT_EQ(info.frame_count, 2);
+    EXPECT_EQ(info.header_size, 3u);
+    EXPECT_EQ(info.frames[0].size, 2u);
+    EXPECT_EQ(info.frames[1].size, 2u);
+    EXPECT_EQ(info.frames[1].offset + info.frames[1].size, 7u);
+}
+
+TEST(OpusPacket, RejectsInvalidPackets) {
+    PacketInfo info;
+    std::string error;
+    const std::vector<uint8_t> empty;
+    EXPECT_FALSE(player::audio::opus::parsePacket(empty.data(), 0, info, &error));
+    const std::vector<uint8_t> odd = makePacket(0x01, {1, 2, 3});
+    EXPECT_FALSE(player::audio::opus::parsePacket(odd.data(), odd.size(), info, &error));
+    const std::vector<uint8_t> zero_count = makePacket(0x03, {0x00, 1, 2});
+    EXPECT_FALSE(player::audio::opus::parsePacket(zero_count.data(), zero_count.size(), info,
+                                                  &error));
+    // 60 ms frames: at most 2 fit into the 120 ms packet limit.
+    const std::vector<uint8_t> too_long = makePacket(0x1B, {0x03, 1, 2, 3, 4, 5, 6});
+    EXPECT_FALSE(player::audio::opus::parsePacket(too_long.data(), too_long.size(), info, &error));
+}
+
+TEST(OpusPacket, ModeBandwidthAndFrameSizes) {
+    PacketInfo info;
+    std::string error;
+    const std::vector<uint8_t> payload = {1, 2, 3, 4};
+    const struct {
+        uint8_t toc;
+        Mode mode;
+        Bandwidth bandwidth;
+        uint16_t samples;
+        bool stereo;
+    } cases[] = {
+        {0x00, Mode::Silk, Bandwidth::Narrowband, 480, false},
+        {0x18, Mode::Silk, Bandwidth::Narrowband, 2880, false},
+        {0x60, Mode::Hybrid, Bandwidth::SuperWideband, 480, false},
+        {0x78, Mode::Hybrid, Bandwidth::Fullband, 960, false},
+        {0x80, Mode::Celt, Bandwidth::Narrowband, 120, false},
+        {0x84, Mode::Celt, Bandwidth::Narrowband, 120, true},
+        {0xA0, Mode::Celt, Bandwidth::Wideband, 120, false},
+        {0xC0, Mode::Celt, Bandwidth::SuperWideband, 120, false},
+        {0xF8, Mode::Celt, Bandwidth::Fullband, 960, false},
+    };
+    for (const auto& test : cases) {
+        const std::vector<uint8_t> packet = makePacket(test.toc, payload);
+        ASSERT_TRUE(player::audio::opus::parsePacket(packet.data(), packet.size(), info, &error))
+            << error;
+        EXPECT_EQ(info.mode, test.mode);
+        EXPECT_EQ(info.bandwidth, test.bandwidth);
+        EXPECT_EQ(info.frame_samples, test.samples);
+        EXPECT_EQ(info.stereo, test.stereo) << "toc=" << static_cast<int>(test.toc);
+    }
+}
+
+TEST(OpusRangeDecoder, DecodesReferenceVector) {
+    // 145 bytes produced by the RFC 6716 reference range encoder for a known
+    // symbol sequence (uniform, bit_logp, icdf, uint and raw bits).
+    static const uint8_t kRangeVector[] = {
+        0x18, 0xad, 0xaa, 0x2e, 0xb1, 0x3e, 0xe7, 0x92, 0x07, 0xd8, 0x5a, 0x56,
+        0x20, 0x03, 0x53, 0x71, 0x8f, 0x86, 0x95, 0x17, 0x1b, 0xcf, 0x0c, 0x5c,
+        0xaf, 0x06, 0xa7, 0xab, 0xd7, 0x1d, 0x62, 0x41, 0x3e, 0x8e, 0x62, 0x1e,
+        0x3f, 0x5b, 0x72, 0x9e, 0xd3, 0x2c, 0x77, 0x4b, 0x20, 0xc4, 0x89, 0xb8,
+        0x94, 0xd9, 0x89, 0xd6, 0xfa, 0xec, 0x58, 0x12, 0x7b, 0x45, 0xe9, 0x21,
+        0x9b, 0xdd, 0x41, 0xc7, 0xa7, 0xf6, 0xe3, 0xf6, 0x52, 0x90, 0xf4, 0xf5,
+        0x69, 0xfe, 0xe3, 0xf1, 0xe8, 0x2d, 0xeb, 0x9f, 0xe8, 0xc9, 0x47, 0xa9,
+        0xdb, 0x0d, 0xbe, 0xd4, 0xdb, 0x5b, 0xb1, 0x59, 0x45, 0x00, 0x57, 0x73,
+        0xc6, 0xb3, 0xcb, 0x3e, 0xab, 0xb5, 0x33, 0x84, 0x9d, 0xc8, 0x69, 0x96,
+        0x35, 0xbe, 0x7e, 0xde, 0xaa, 0x1c, 0x03, 0xa0, 0x18, 0x55, 0x90, 0x06,
+        0x80, 0xa3, 0x6a, 0x9e, 0x9a, 0xdc, 0x66, 0x7f, 0xf0, 0x14, 0xa4, 0x1f,
+        0x81, 0x17, 0x75, 0xa0, 0x46, 0xbd, 0xef, 0x1d, 0x11, 0x45, 0x78, 0xb8,
+        0xdc,
+    };
+    static const uint8_t kIcdf[6] = {200, 150, 90, 40, 10, 0};
+
+    player::audio::opus::RangeDecoder decoder(kRangeVector, sizeof(kRangeVector));
+    uint32_t state = 12345;
+    const auto random = [&state] {
+        state = state * 1664525u + 1013904223u;
+        return state >> 8;
+    };
+
+    for (int i = 0; i < 60; ++i) {
+        const uint32_t total = 2 + random() % 999;
+        const uint32_t expected = random() % total;
+        const uint32_t value = decoder.decode(total);
+        decoder.update(value, value + 1, total);
+        EXPECT_EQ(value, expected) << "uniform " << i;
+    }
+    for (int i = 0; i < 40; ++i) {
+        const unsigned logp = 1 + random() % 15;
+        const bool expected = (random() & 1) != 0;
+        EXPECT_EQ(decoder.decodeBitLogp(logp), expected) << "bit_logp " << i;
+    }
+    for (int i = 0; i < 40; ++i) {
+        const int expected = static_cast<int>(random() % 6);
+        EXPECT_EQ(decoder.decodeIcdf(kIcdf, 8), expected) << "icdf " << i;
+    }
+    for (int i = 0; i < 20; ++i) {
+        const uint32_t expected = random() % 100001;
+        EXPECT_EQ(decoder.decodeUint(100001), expected) << "uint " << i;
+    }
+    for (int i = 0; i < 8; ++i) {
+        const uint32_t expected = random() & 0xFF;
+        EXPECT_EQ(decoder.decodeBits(8), expected) << "bits " << i;
+    }
+    EXPECT_FALSE(decoder.error());
+}
+
+TEST(OpusDecoder, ConfiguresAndRejectsUnimplementedLayers) {
+    const std::vector<uint8_t> head = makeOpusHead(2, 312, 48000, 0, 0);
+    player::audio::opus::Decoder decoder;
+    std::string error;
+    ASSERT_TRUE(decoder.configure(head.data(), head.size(), error)) << error;
+    EXPECT_TRUE(decoder.configured());
+    EXPECT_EQ(decoder.channels(), 2u);
+    EXPECT_EQ(decoder.sampleRate(), 48000u);
+
+    const std::vector<uint8_t> packet = makePacket(0x00, {1, 2, 3, 4});
+    player::audio::PcmBuffer pcm;
+    EXPECT_EQ(decoder.decode(packet.data(), packet.size(), pcm, error),
+              player::audio::opus::Status::Unsupported);
+
+    const std::vector<uint8_t> bad = makePacket(0x01, {1, 2, 3});
+    EXPECT_EQ(decoder.decode(bad.data(), bad.size(), pcm, error),
+              player::audio::opus::Status::Invalid);
 }

@@ -6,6 +6,7 @@
 #include "audio/Pcm.hpp"
 #include "audio/PcmGain.hpp"
 #include "audio/aac/AacDecoder.hpp"
+#include "audio/opus/OpusDecoder.hpp"
 #include "decode/KvzdecDecoder.hpp"
 #include "demux/Demuxer.hpp"
 #include "playback/FrameQueue.hpp"
@@ -92,13 +93,21 @@ public:
     audio::Mute muted() const { return muted_.load() ? audio::Mute::On : audio::Mute::Off; }
     uint64_t audioFrames() { return sink().framesConsumed(); }
     uint64_t audioFramesDropped() { return sink().framesDropped(); }
-    // True when the selected track is AAC and the decoder accepted its config.
+    // True when the selected track is decodable and the decoder accepted it.
     bool audioDecoding() const { return audio_decoding_.load(); }
+    // Name of the codec the audio decoder is configured for.
+    const char* audioCodecName() const;
 
     const std::string& lastError() const { return last_error_; }
     stats::StatsCollector& stats() { return stats_; }
 
 private:
+    enum class AudioCodec {
+        None,
+        Aac,
+        Opus,
+    };
+
     //    Audio scheduling: decoded PCM goes into audio_buffer_ up to
     //    kAudioBufferMs ahead of the media clock; feedAudio() moves chunks
     //    into the sink so the sink queue stays around kAudioSinkLeadMs.
@@ -110,6 +119,9 @@ private:
     void pipelineLoop();
     void performSeek(double seconds);
     void configureAudioDecoder(const demux::AudioTrackInfo& track);
+    void decodeAudioSample(const demux::Sample& sample);
+    void flushAudioDecoder();
+    void resetAudioDecoder();
     void pumpAudio();
     void feedAudio();
     void resetAudioState();
@@ -137,7 +149,9 @@ private:
     decode::KvzdecDecoder decoder_;
     audio::IAudioSink* audio_sink_ = nullptr;
     audio::NullAudioSink null_sink_;
-    audio::aac::Decoder audio_decoder_;
+    AudioCodec audio_codec_ = AudioCodec::None;
+    audio::aac::Decoder aac_decoder_;
+    audio::opus::Decoder opus_decoder_;
     audio::AudioBuffer audio_buffer_{kAudioBufferMs};
     audio::PcmBuffer audio_pcm_;
     std::atomic<float> volume_{1.0f};

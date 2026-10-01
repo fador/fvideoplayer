@@ -99,7 +99,11 @@ add_library(player_audio STATIC
     src/audio/aac/AacTables.cpp
     src/audio/aac/Huffman.cpp
     src/audio/aac/Mdct.cpp
-    src/audio/aac/Window.cpp)
+    src/audio/aac/Window.cpp
+    src/audio/opus/OpusDecoder.cpp
+    src/audio/opus/OpusHead.cpp
+    src/audio/opus/OpusPacket.cpp
+    src/audio/opus/RangeDecoder.cpp)
 target_include_directories(player_audio PUBLIC src)
 
 # AVX2 kernels live in their own translation unit so it can be compiled with

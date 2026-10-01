@@ -527,7 +527,7 @@ void Application::drawStatsWindow() {
                 0,
             };
             ImGui::Text("Audio: '%s' %u ch @ %u Hz (%s)", fourcc, audio.channels, audio.sample_rate,
-                        engine_.audioDecoding() ? "AAC" : "no decoder");
+                        engine_.audioCodecName());
             ImGui::Text("Audio PCM: %llu frames played, %llu dropped",
                         static_cast<unsigned long long>(engine_.audioFrames()),
                         static_cast<unsigned long long>(engine_.audioFramesDropped()));

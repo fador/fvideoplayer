@@ -18,7 +18,8 @@ A focused HEVC/H.265 video player built around the custom
 - **Audio**: container audio tracks are listed and selectable from the Audio
   menu. AAC-LC is decoded by a from-scratch decoder (no external codec
   libraries) and played through an SDL3 float sink with software volume and
-  mute; see [Audio decoding](#audio-decoding) for details
+  mute; Opus framing and the range decoder are in place, with the SILK/CELT
+  layers still to come. See [Audio decoding](#audio-decoding) for details
 
 ## Building
 
@@ -92,9 +93,10 @@ src/
   render/     OpenGL YUV -> RGB renderer (8/10-bit, 4:2:0/4:2:2/4:4:4)
   stats/      thread-safe statistics collector
   audio/      PCM types, volume/mute gain, AVX2 kernels with CPUID dispatch,
-              timestamped audio buffer, SDL3 sink and the AAC decoder
-              (aac/: bit reader, ADTS + AudioSpecificConfig parsers, Huffman
-              codebooks, ICS/TNS tools, MDCT/filterbank)
+              timestamped audio buffer, SDL3 sink and the from-scratch audio
+              decoders (aac/: bit reader, ADTS + AudioSpecificConfig parsers,
+              Huffman codebooks, ICS/TNS tools, MDCT/filterbank; opus/:
+              OpusHead, packet framing and the range decoder)
 ```
 
 The demux + decode pipeline runs on a dedicated thread and fills a bounded
@@ -139,6 +141,20 @@ The decoder was verified sample-exact against a reference decoder for mono,
 stereo, 5.1, short-window transients, PNS/intensity and all 12 sampling
 frequencies; unit tests cover the codebook tables, the KBD window values and
 full frame decoding from both ADTS and raw access units.
+
+### Opus
+
+The Opus decoder is also written from scratch. Implemented:
+
+- OpusHead parsing (channel mapping families 0 and 1, pre-skip, output gain)
+- Packet framing: TOC parsing (SILK/hybrid/CELT, bandwidth, frame size),
+  codes 0..3 with CBR, VBR and padding
+- The range decoder from RFC 6716 section 4.1, verified symbol by symbol
+  against vectors produced by the reference encoder
+
+Next milestone: the SILK and CELT layers (range-coded energy, LPC/PVQ, stereo
+and the inverse MDCT). Until then Opus tracks are recognized, reported as
+unsupported once in the log, and skipped.
 
 The player runs without a console window; messages are collected in a
 thread-safe log buffer and can be viewed in the in-app log console

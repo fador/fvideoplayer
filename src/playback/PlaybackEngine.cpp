@@ -11,8 +11,9 @@
 namespace player::playback {
 namespace {
 
-// 'mp4a': AAC audio in MP4/Matroska/AVI containers.
+// 'mp4a': AAC audio in MP4/Matroska/AVI containers. 'Opus': Opus audio.
 constexpr uint32_t kMp4aFourcc = 0x6D703461;
+constexpr uint32_t kOpusFourcc = 0x4F707573;
 
 std::string containerName(const std::filesystem::path& path) {
     std::string ext = path.extension().string();
@@ -97,13 +98,6 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
         }
     }
     stats_.setStreamInfo(info);
-    if (audio_info_.present) {
-        audio::AudioFormat format;
-        format.codec_fourcc = audio_info_.codec_fourcc;
-        format.channels = audio_info_.channels;
-        format.sample_rate = audio_info_.sample_rate;
-        sink().configure(format);
-    }
     audio_warned_ = false;
     audio_late_drops_ = 0;
     audio_eos_ = false;
@@ -127,9 +121,9 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
               info.container.c_str(), video_info_.width, video_info_.height, video_info_.fps,
               duration_, queue_.capacity());
     if (audio_info_.present) {
-        log::addf(log::Level::Info, "Audio: fourcc 0x%08X, %u channels, %u Hz%s",
+        log::addf(log::Level::Info, "Audio: fourcc 0x%08X, %u channels, %u Hz (%s)",
                   audio_info_.codec_fourcc, audio_info_.channels, audio_info_.sample_rate,
-                  audio_decoding_.load() ? " (AAC)" : " (no decoder)");
+                  audioCodecName());
     }
     thread_ = std::thread([this] { pipelineLoop(); });
     return true;
@@ -161,7 +155,7 @@ void PlaybackEngine::close() {
     }
     sink().reset();
     audio_buffer_.clear();
-    audio_decoder_.reset();
+    resetAudioDecoder();
     audio_decoding_ = false;
     audio_warned_ = false;
     audio_track_infos_.clear();
@@ -433,21 +427,100 @@ void PlaybackEngine::performSeek(double seconds) {
 }
 
 void PlaybackEngine::configureAudioDecoder(const demux::AudioTrackInfo& track) {
+    audio_codec_ = AudioCodec::None;
     audio_decoding_ = false;
     audio_frame_ms_ = 21;
-    if (!track.present || track.codec_fourcc != kMp4aFourcc) {
+    if (!track.present) {
         return;
     }
+
     std::string error;
-    if (audio_decoder_.configure(track.extradata.data(), track.extradata.size(), error)) {
-        audio_decoding_ = true;
-        const uint32_t rate = audio_decoder_.config().sample_rate;
-        if (rate > 0) {
-            audio_frame_ms_ = static_cast<int>(1024ull * 1000 / rate);
+    uint32_t rate = track.sample_rate;
+    uint32_t channels = track.channels;
+    if (track.codec_fourcc == kMp4aFourcc) {
+        if (!aac_decoder_.configure(track.extradata.data(), track.extradata.size(), error)) {
+            log::addf(log::Level::Warning, "AAC decoder rejected the track config: %s",
+                      error.c_str());
+            return;
         }
+        audio_codec_ = AudioCodec::Aac;
+        rate = aac_decoder_.config().sample_rate;
+        channels = aac_decoder_.config().channel_count;
+        audio_frame_ms_ = rate > 0 ? static_cast<int>(1024ull * 1000 / rate) : 21;
+    } else if (track.codec_fourcc == kOpusFourcc) {
+        if (!opus_decoder_.configure(track.extradata.data(), track.extradata.size(), error)) {
+            log::addf(log::Level::Warning, "Opus decoder rejected the track config: %s",
+                      error.c_str());
+            return;
+        }
+        // Opus always outputs 48 kHz regardless of the original input rate.
+        audio_codec_ = AudioCodec::Opus;
+        rate = opus_decoder_.sampleRate();
+        channels = opus_decoder_.channels();
+        audio_frame_ms_ = 20;
+    } else {
         return;
     }
-    log::addf(log::Level::Warning, "AAC decoder rejected the track config: %s", error.c_str());
+
+    audio_decoding_ = true;
+    audio::AudioFormat format;
+    format.codec_fourcc = track.codec_fourcc;
+    format.channels = channels;
+    format.sample_rate = rate;
+    sink().configure(format);
+}
+
+const char* PlaybackEngine::audioCodecName() const {
+    switch (audio_codec_) {
+        case AudioCodec::Aac:
+            return "AAC";
+        case AudioCodec::Opus:
+            return "Opus";
+        case AudioCodec::None:
+            break;
+    }
+    return "no decoder";
+}
+
+// Decodes one access unit into audio_pcm_; reports a failure once per track.
+void PlaybackEngine::decodeAudioSample(const demux::Sample& sample) {
+    std::string error;
+    bool ok = false;
+    bool unsupported = false;
+    switch (audio_codec_) {
+        case AudioCodec::Aac: {
+            const audio::aac::Status status =
+                aac_decoder_.decode(sample.data.data(), sample.data.size(), audio_pcm_, error);
+            ok = status == audio::aac::Status::Ok;
+            unsupported = status == audio::aac::Status::Unsupported;
+            break;
+        }
+        case AudioCodec::Opus: {
+            const audio::opus::Status status =
+                opus_decoder_.decode(sample.data.data(), sample.data.size(), audio_pcm_, error);
+            ok = status == audio::opus::Status::Ok;
+            unsupported = status == audio::opus::Status::Unsupported;
+            break;
+        }
+        case AudioCodec::None:
+            return;
+    }
+    if (!ok && !audio_warned_) {
+        log::addf(log::Level::Warning, "Audio decode (%s): %s",
+                  unsupported ? "unsupported" : "invalid", error.c_str());
+        audio_warned_ = true;
+    }
+}
+
+void PlaybackEngine::flushAudioDecoder() {
+    aac_decoder_.flush();
+    opus_decoder_.flush();
+}
+
+void PlaybackEngine::resetAudioDecoder() {
+    aac_decoder_.reset();
+    opus_decoder_.reset();
+    audio_codec_ = AudioCodec::None;
 }
 
 // Decodes audio ahead of the media clock into the audio buffer.
@@ -467,22 +540,17 @@ void PlaybackEngine::pumpAudio() {
             audio_eos_ = true;
             break;
         }
-        if (sample.pts + audio_frame_ms_ < position - kAudioLateMs) {
-            ++audio_late_drops_;
-            continue;  // already late: drop without decoding
+        decodeAudioSample(sample);
+        if (audio_pcm_.samples.empty()) {
+            continue;  // decoder rejected or does not implement this packet
         }
-        std::string error;
-        const audio::aac::Status status =
-            audio_decoder_.decode(sample.data.data(), sample.data.size(), audio_pcm_, error);
-        if (status != audio::aac::Status::Ok) {
-            // Report once per track; the pipeline keeps consuming packets.
-            if (!audio_warned_) {
-                log::addf(log::Level::Warning, "Audio decode (%s): %s",
-                          status == audio::aac::Status::Unsupported ? "unsupported" : "invalid",
-                          error.c_str());
-                audio_warned_ = true;
-            }
-            continue;
+        const int64_t duration_ms =
+            audio_pcm_.sample_rate > 0
+                ? static_cast<int64_t>(audio_pcm_.frames()) * 1000 / audio_pcm_.sample_rate
+                : audio_frame_ms_;
+        if (sample.pts + duration_ms < position - kAudioLateMs) {
+            ++audio_late_drops_;
+            continue;  // already late: drop
         }
         audio_pcm_.pts = sample.pts;
         audio_buffer_.push(std::move(audio_pcm_));
@@ -524,7 +592,7 @@ void PlaybackEngine::feedAudio() {
 void PlaybackEngine::resetAudioState() {
     std::lock_guard<std::mutex> lock(audio_mutex_);
     audio_buffer_.clear();
-    audio_decoder_.flush();
+    flushAudioDecoder();
     sink().flush();
     audio_eos_ = false;
 }
