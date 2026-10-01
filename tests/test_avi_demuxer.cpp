@@ -20,16 +20,30 @@ constexpr uint32_t kFourcc(const char* tag) {
            static_cast<uint32_t>(static_cast<uint8_t>(tag[3]));
 }
 
+// Big-endian helper used by the hvcC record.
 void putU16(Bytes& out, uint16_t value) {
     out.push_back(static_cast<uint8_t>(value >> 8));
     out.push_back(static_cast<uint8_t>(value & 0xFF));
 }
 
+void putU16Le(Bytes& out, uint16_t value) {
+    out.push_back(static_cast<uint8_t>(value & 0xFF));
+    out.push_back(static_cast<uint8_t>(value >> 8));
+}
+
+// Big-endian helper used for ASCII fourcc tags.
 void putU32(Bytes& out, uint32_t value) {
     out.push_back(static_cast<uint8_t>(value >> 24));
     out.push_back(static_cast<uint8_t>((value >> 16) & 0xFF));
     out.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
     out.push_back(static_cast<uint8_t>(value & 0xFF));
+}
+
+void putU32Le(Bytes& out, uint32_t value) {
+    out.push_back(static_cast<uint8_t>(value & 0xFF));
+    out.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
+    out.push_back(static_cast<uint8_t>((value >> 16) & 0xFF));
+    out.push_back(static_cast<uint8_t>(value >> 24));
 }
 
 void append(Bytes& out, const Bytes& data) {
@@ -39,7 +53,7 @@ void append(Bytes& out, const Bytes& data) {
 Bytes chunk(uint32_t id, const Bytes& payload) {
     Bytes out;
     putU32(out, id);
-    putU32(out, static_cast<uint32_t>(payload.size()));
+    putU32Le(out, static_cast<uint32_t>(payload.size()));
     append(out, payload);
     if (payload.size() & 1u) {
         out.push_back(0);
@@ -81,18 +95,18 @@ Bytes makeHvcc() {
 
 Bytes avih() {
     Bytes payload;
-    putU32(payload, 33333);  // dwMicroSecPerFrame
-    putU32(payload, 0);      // dwMaxBytesPerSec
-    putU32(payload, 0);      // dwPaddingGranularity
-    putU32(payload, 0x10);   // dwFlags
-    putU32(payload, 4);      // dwTotalFrames
-    putU32(payload, 0);      // dwInitialFrames
-    putU32(payload, 1);      // dwStreams
-    putU32(payload, 0);      // dwSuggestedBufferSize
-    putU32(payload, 1280);   // dwWidth
-    putU32(payload, 720);    // dwHeight
+    putU32Le(payload, 33333);  // dwMicroSecPerFrame
+    putU32Le(payload, 0);      // dwMaxBytesPerSec
+    putU32Le(payload, 0);      // dwPaddingGranularity
+    putU32Le(payload, 0x10);   // dwFlags
+    putU32Le(payload, 4);      // dwTotalFrames
+    putU32Le(payload, 0);      // dwInitialFrames
+    putU32Le(payload, 1);      // dwStreams
+    putU32Le(payload, 0);      // dwSuggestedBufferSize
+    putU32Le(payload, 1280);   // dwWidth
+    putU32Le(payload, 720);    // dwHeight
     for (int i = 0; i < 4; ++i) {
-        putU32(payload, 0);
+        putU32Le(payload, 0);
     }
     return chunk(kFourcc("avih"), payload);
 }
@@ -101,35 +115,35 @@ Bytes strh() {
     Bytes payload;
     putU32(payload, kFourcc("vids"));
     putU32(payload, kFourcc("HEVC"));
-    putU32(payload, 0);  // dwFlags
-    putU16(payload, 0);  // wPriority
-    putU16(payload, 0);  // wLanguage
-    putU32(payload, 0);  // dwInitialFrames
-    putU32(payload, 1);  // dwScale
-    putU32(payload, 30);  // dwRate
-    putU32(payload, 0);  // dwStart
-    putU32(payload, 4);  // dwLength
-    putU32(payload, 0);  // dwSuggestedBufferSize
-    putU32(payload, 0);  // dwQuality
-    putU32(payload, 0);  // dwSampleSize
-    putU32(payload, 0);  // rcFrame left/top
-    putU32(payload, 0);  // rcFrame right/bottom
+    putU32Le(payload, 0);  // dwFlags
+    putU16Le(payload, 0);  // wPriority
+    putU16Le(payload, 0);  // wLanguage
+    putU32Le(payload, 0);  // dwInitialFrames
+    putU32Le(payload, 1);  // dwScale
+    putU32Le(payload, 30);  // dwRate
+    putU32Le(payload, 0);  // dwStart
+    putU32Le(payload, 4);  // dwLength
+    putU32Le(payload, 0);  // dwSuggestedBufferSize
+    putU32Le(payload, 0);  // dwQuality
+    putU32Le(payload, 0);  // dwSampleSize
+    putU32Le(payload, 0);  // rcFrame left/top
+    putU32Le(payload, 0);  // rcFrame right/bottom
     return chunk(kFourcc("strh"), payload);
 }
 
 Bytes strfVideo(bool annexb) {
     Bytes payload;
-    putU32(payload, 40);  // biSize
-    putU32(payload, 1280);
-    putU32(payload, 720);
-    putU16(payload, 1);   // biPlanes
-    putU16(payload, 24);  // biBitCount
+    putU32Le(payload, 40);  // biSize
+    putU32Le(payload, 1280);
+    putU32Le(payload, 720);
+    putU16Le(payload, 1);   // biPlanes
+    putU16Le(payload, 24);  // biBitCount
     putU32(payload, kFourcc("HEVC"));
-    putU32(payload, 0);
-    putU32(payload, 0);
-    putU32(payload, 0);
-    putU32(payload, 0);
-    putU32(payload, 0);
+    putU32Le(payload, 0);
+    putU32Le(payload, 0);
+    putU32Le(payload, 0);
+    putU32Le(payload, 0);
+    putU32Le(payload, 0);
     if (annexb) {
         const Bytes extradata = {0, 0, 0, 1, 0x40, 0x01, 0x0C};
         append(payload, extradata);
@@ -184,13 +198,13 @@ Bytes buildAvi(bool with_idx1, bool annexb) {
         Bytes entries;
         for (size_t i = 0; i < offsets.size(); ++i) {
             putU32(entries, kFourcc("00dc"));
-            putU32(entries, keyframes[i] ? 0x10 : 0);
-            putU32(entries, offsets[i]);
-            putU32(entries, sizes[i]);
+            putU32Le(entries, keyframes[i] ? 0x10 : 0);
+            putU32Le(entries, offsets[i]);
+            putU32Le(entries, sizes[i]);
         }
         append(riff_body, chunk(kFourcc("idx1"), entries));
     }
-    putU32(file, static_cast<uint32_t>(riff_body.size()));
+    putU32Le(file, static_cast<uint32_t>(riff_body.size()));
     append(file, riff_body);
     return file;
 }

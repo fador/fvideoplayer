@@ -16,13 +16,20 @@ constexpr uint32_t fourcc(char a, char b, char c, char d) {
            static_cast<uint32_t>(static_cast<uint8_t>(d));
 }
 
+// RIFF stores fourcc tags as ASCII byte sequences and all other values as
+// little-endian integers.
 uint32_t readU32(const uint8_t* data) {
     return (static_cast<uint32_t>(data[0]) << 24) | (static_cast<uint32_t>(data[1]) << 16) |
            (static_cast<uint32_t>(data[2]) << 8) | static_cast<uint32_t>(data[3]);
 }
 
-uint16_t readU16(const uint8_t* data) {
-    return static_cast<uint16_t>((data[0] << 8) | data[1]);
+uint32_t readU32Le(const uint8_t* data) {
+    return static_cast<uint32_t>(data[0]) | (static_cast<uint32_t>(data[1]) << 8) |
+           (static_cast<uint32_t>(data[2]) << 16) | (static_cast<uint32_t>(data[3]) << 24);
+}
+
+uint16_t readU16Le(const uint8_t* data) {
+    return static_cast<uint16_t>(data[0] | (data[1] << 8));
 }
 
 bool seekFile(FILE* file, int64_t offset) {
@@ -57,7 +64,7 @@ bool readChunkHeader(FILE* file, ChunkHeader& out) {
         return false;
     }
     out.id = readU32(header);
-    out.size = readU32(header + 4);
+    out.size = readU32Le(header + 4);
     out.payload = tellFile(file);
     return true;
 }
@@ -89,9 +96,9 @@ bool parseStrh(const uint8_t* data, size_t size, AviStream& stream) {
     }
     stream.fcc_type = readU32(data);
     stream.fcc_handler = readU32(data + 4);
-    stream.scale = readU32(data + 20);
-    stream.rate = readU32(data + 24);
-    stream.length = readU32(data + 32);
+    stream.scale = readU32Le(data + 20);
+    stream.rate = readU32Le(data + 24);
+    stream.length = readU32Le(data + 32);
     return true;
 }
 
@@ -103,17 +110,17 @@ bool parseStrf(const uint8_t* data, size_t size, AviStream& stream) {
         if (size < 40) {
             return false;
         }
-        stream.width = readU32(data + 4);
-        const int32_t height = static_cast<int32_t>(readU32(data + 8));
+        stream.width = readU32Le(data + 4);
+        const int32_t height = static_cast<int32_t>(readU32Le(data + 8));
         stream.height = height < 0 ? static_cast<uint32_t>(-height) : static_cast<uint32_t>(height);
         stream.compression = readU32(data + 16);
         if (size > 40) {
             stream.extradata.assign(data + 40, data + size);
         }
     } else if (stream.fcc_type == fourcc('a', 'u', 'd', 's')) {
-        stream.audio_format_tag = readU16(data);
-        stream.audio_channels = readU16(data + 2);
-        stream.audio_sample_rate = readU32(data + 4);
+        stream.audio_format_tag = readU16Le(data);
+        stream.audio_channels = readU16Le(data + 2);
+        stream.audio_sample_rate = readU32Le(data + 4);
     }
     return true;
 }
@@ -219,6 +226,20 @@ bool looksAnnexB(FILE* file, int64_t offset, uint32_t size) {
     return want == 4 && buffer[0] == 0 && buffer[1] == 0 && buffer[2] == 0 && buffer[3] == 1;
 }
 
+// FFmpeg and some other muxers store Annex B parameter sets as AVI codec
+// extradata instead of an hvcC record.
+bool looksLikeAnnexBHevc(const std::vector<uint8_t>& data) {
+    for (size_t i = 0; i + 3 < data.size(); ++i) {
+        if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) {
+            const uint8_t type = static_cast<uint8_t>(data[i + 3] >> 1);
+            if (type <= 34) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 uint32_t audioFourcc(uint16_t format_tag) {
     if (format_tag == 0x00FF) return 0x6D703461;  // AAC -> 'mp4a'
     if (format_tag == 0x0055) return 0x6D703320;  // MP3 -> 'mp3 '
@@ -308,7 +329,7 @@ bool AviDemuxer::open(const std::filesystem::path& path, std::string& error) {
         const bool hevc_fourcc = isHevcFourcc(stream.fcc_handler) || isHevcFourcc(stream.compression);
         const bool hvcc_extradata =
             stream.extradata.size() >= 23 && stream.extradata[0] == 1;
-        if (hevc_fourcc || hvcc_extradata) {
+        if (hevc_fourcc || hvcc_extradata || looksLikeAnnexBHevc(stream.extradata)) {
             video_stream_index = static_cast<int>(i);
             break;
         }
@@ -370,8 +391,8 @@ bool AviDemuxer::open(const std::filesystem::path& path, std::string& error) {
                 break;
             }
             const uint32_t chunk_id = readU32(entry);
-            const uint32_t flags = readU32(entry + 4);
-            const uint32_t offset = readU32(entry + 8);
+            const uint32_t flags = readU32Le(entry + 4);
+            const uint32_t offset = readU32Le(entry + 8);
             if ((chunk_id & 0xFFFF0000u) != (video_chunk_id & 0xFFFF0000u)) {
                 continue;
             }
@@ -379,15 +400,21 @@ bool AviDemuxer::open(const std::filesystem::path& path, std::string& error) {
                 (chunk_id & 0xFFFFu) != fourcc(0, 0, 'd', 'b')) {
                 continue;
             }
-            // The offset is relative to the movi data start, but some muxers
-            // use the LIST chunk start instead; pick whichever matches.
-            int64_t absolute = movi_data_start + offset;
-            uint8_t probe[4] = {};
-            if (!readAt(file_, absolute, probe, 4) || readU32(probe) != chunk_id) {
-                const int64_t alternative = movi_data_start - 12 + offset;
-                uint8_t probe2[4] = {};
-                if (readAt(file_, alternative, probe2, 4) && readU32(probe2) == chunk_id) {
-                    absolute = alternative;
+            // Muxers disagree on the idx1 offset base: after the 'movi' fourcc,
+            // at the 'movi' fourcc, or at the LIST header. Probe all three and
+            // keep the one where the chunk id actually matches.
+            const int64_t candidates[3] = {
+                movi_data_start + offset,
+                movi_data_start - 4 + offset,
+                movi_data_start - 12 + offset,
+            };
+            int64_t absolute = candidates[0];
+            for (int64_t candidate : candidates) {
+                uint8_t probe[4] = {};
+                if (candidate >= 0 && readAt(file_, candidate, probe, 4) &&
+                    readU32(probe) == chunk_id) {
+                    absolute = candidate;
+                    break;
                 }
             }
             ChunkHeader header;
