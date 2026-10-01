@@ -60,6 +60,12 @@ add_library(player_util STATIC
     src/utils/Log.cpp)
 target_include_directories(player_util PUBLIC src)
 
+# --- subtitle parsing --------------------------------------------------------
+add_library(player_subtitle STATIC
+    src/subtitle/Subtitle.cpp)
+target_include_directories(player_subtitle PUBLIC src)
+target_compile_definitions(player_subtitle PRIVATE _CRT_SECURE_NO_WARNINGS)
+
 # --- player demux (no GUI dependencies) --------------------------------------
 add_library(player_demux STATIC
     src/demux/AviDemuxer.cpp
