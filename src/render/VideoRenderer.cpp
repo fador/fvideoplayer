@@ -28,6 +28,7 @@ uniform sampler2D u_v;
 uniform mat3 u_matrix;
 uniform vec3 u_offset;
 uniform float u_scale;
+uniform float u_scale_c;
 uniform int u_has_chroma;
 uniform vec4 u_crop;  // u0, v0, u1, v1
 void main() {
@@ -35,8 +36,8 @@ void main() {
     float y = texture(u_y, uv).r * u_scale;
     vec3 yuv = vec3(y, 0.5, 0.5);
     if (u_has_chroma == 1) {
-        yuv.y = texture(u_u, uv).r * u_scale;
-        yuv.z = texture(u_v, uv).r * u_scale;
+        yuv.y = texture(u_u, uv).r * u_scale_c;
+        yuv.z = texture(u_v, uv).r * u_scale_c;
     }
     vec3 rgb = u_matrix * yuv + u_offset;
     frag_color = vec4(clamp(rgb, 0.0, 1.0), 1.0);
@@ -136,6 +137,7 @@ bool VideoRenderer::init(std::string* error) {
     uniform_matrix_ = gl.GetUniformLocation(program_, "u_matrix");
     uniform_offset_ = gl.GetUniformLocation(program_, "u_offset");
     uniform_scale_ = gl.GetUniformLocation(program_, "u_scale");
+    uniform_scale_c_ = gl.GetUniformLocation(program_, "u_scale_c");
     uniform_has_chroma_ = gl.GetUniformLocation(program_, "u_has_chroma");
     uniform_crop_ = gl.GetUniformLocation(program_, "u_crop");
 
@@ -286,11 +288,34 @@ void VideoRenderer::upload(const kvzdec_picture* picture) {
     crop_u1_ = 1.0f - static_cast<float>(picture->crop_right) / static_cast<float>(width);
     crop_v1_ = 1.0f - static_cast<float>(picture->crop_bottom) / static_cast<float>(height);
     has_chroma_ = picture->chroma_format != KVZDEC_CSP_400;
-    if (picture->pixel_size == 2 && picture->bitdepth > 0) {
-        normalize_scale_ =
-            65535.0f / static_cast<float>((1 << picture->bitdepth) - 1);
+
+    // kvzdec does not always set bitdepth on output pictures (pool_get
+    // replaces the rec without copying it), so latch the first valid value
+    // and fall back to the bit depth parsed from the stream's hvcC.
+    if (picture->pixel_size == 2) {
+        if (picture->bitdepth > 0) {
+            luma_bitdepth_ = picture->bitdepth;
+        } else if (luma_bitdepth_ <= 8 && stream_bitdepth_ > 8) {
+            luma_bitdepth_ = stream_bitdepth_;
+        }
+        if (picture->bitdepth_c > 0) {
+            chroma_bitdepth_ = picture->bitdepth_c;
+        } else if (chroma_bitdepth_ <= 8 && stream_bitdepth_ > 8) {
+            chroma_bitdepth_ = stream_bitdepth_;
+        }
+        if (luma_bitdepth_ <= 8) {
+            luma_bitdepth_ = 10;
+        }
+        if (chroma_bitdepth_ <= 8) {
+            chroma_bitdepth_ = luma_bitdepth_;
+        }
+        luma_scale_ = 65535.0f / static_cast<float>((1 << luma_bitdepth_) - 1);
+        chroma_scale_ = 65535.0f / static_cast<float>((1 << chroma_bitdepth_) - 1);
     } else {
-        normalize_scale_ = 1.0f;
+        luma_bitdepth_ = 8;
+        chroma_bitdepth_ = 8;
+        luma_scale_ = 1.0f;
+        chroma_scale_ = 1.0f;
     }
 
     ensureTextures(picture);
@@ -318,7 +343,8 @@ unsigned int VideoRenderer::render(const VideoColorSettings& settings) {
     gl.Uniform1i(uniform_u_, 1);
     gl.Uniform1i(uniform_v_, 2);
     gl.Uniform1i(uniform_has_chroma_, has_chroma_ ? 1 : 0);
-    gl.Uniform1f(uniform_scale_, normalize_scale_);
+    gl.Uniform1f(uniform_scale_, luma_scale_);
+    gl.Uniform1f(uniform_scale_c_, chroma_scale_);
     gl.UniformMatrix3fv(uniform_matrix_, 1, GL_TRUE, matrix);
     gl.Uniform3fv(uniform_offset_, 1, offset);
     const float crop[4] = {crop_u0_, crop_v0_, crop_u1_, crop_v1_};

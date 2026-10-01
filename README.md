@@ -46,6 +46,7 @@ hevc_player [options] [file]
   --frames N         quit after N rendered frames (smoke test)
   --seek SECONDS     seek to the given position after opening
   --screenshot PATH  write the first rendered frame as a PPM image and quit
+  --screenshot-every N  with --screenshot, keep writing PPMs every N frames
   --dump-yuv PATH    decode the file to planar YUV and exit
   --dump-frames N    limit --dump-yuv to N frames
   --dump-skip N      skip N frames before --dump-yuv output

@@ -153,8 +153,9 @@ bool Application::openFile(const std::string& path) {
         std::fprintf(stderr, "failed to open %s: %s\n", path.c_str(), error.c_str());
         return false;
     }
-    uploaded_frame_ = nullptr;
+    uploaded_serial_ = 0;
     video_texture_ = 0;
+    renderer_.setStreamBitDepth(engine_.streamBitDepth());
     status_ = "Opened " + path;
     return true;
 }
@@ -194,14 +195,21 @@ int Application::run(int max_frames) {
 
         engine_.update();
         const decode::DecodedFrame* current = engine_.currentFrame();
-        if (current && current != uploaded_frame_ && current->picture) {
+        if (current && current->picture && engine_.currentSerial() != uploaded_serial_) {
             renderer_.upload(current->picture);
-            uploaded_frame_ = current;
+            uploaded_serial_ = engine_.currentSerial();
         }
         video_texture_ = renderer_.render(color_);
         if (!screenshot_path_.empty() && video_texture_ != 0) {
-            saveScreenshot();
-            running = false;
+            if (screenshot_every_ > 0) {
+                if (frame_count_ % screenshot_every_ == 0) {
+                    saveScreenshotTo(screenshot_path_ + "-" +
+                                     std::to_string(frame_count_) + ".ppm");
+                }
+            } else {
+                saveScreenshot();
+                running = false;
+            }
         }
 
         ImGui_ImplOpenGL3_NewFrame();
@@ -245,7 +253,7 @@ void Application::drawMenuBar() {
             ImGui::Separator();
             if (ImGui::MenuItem("Close")) {
                 engine_.close();
-                uploaded_frame_ = nullptr;
+                uploaded_serial_ = 0;
                 video_texture_ = 0;
                 status_.clear();
             }
@@ -515,22 +523,28 @@ void Application::fileDialogCallback(void* userdata, const char* const* filelist
     app->pending_path_ = filelist[0];
 }
 
-bool Application::saveScreenshot() {
+bool Application::saveScreenshotTo(const std::string& path) {
     std::vector<uint8_t> rgb;
     int width = 0;
     int height = 0;
     if (!renderer_.readback(rgb, width, height)) {
         return false;
     }
-    FILE* file = std::fopen(screenshot_path_.c_str(), "wb");
+    FILE* file = std::fopen(path.c_str(), "wb");
     if (!file) {
         return false;
     }
     std::fprintf(file, "P6\n%d %d\n255\n", width, height);
     std::fwrite(rgb.data(), 1, rgb.size(), file);
     std::fclose(file);
-    std::fprintf(stderr, "screenshot written to %s (%dx%d)\n", screenshot_path_.c_str(), width,
-                 height);
+    std::fprintf(stderr, "screenshot written to %s (%dx%d)\n", path.c_str(), width, height);
+    return true;
+}
+
+bool Application::saveScreenshot() {
+    if (!saveScreenshotTo(screenshot_path_)) {
+        return false;
+    }
     screenshot_path_.clear();
     return true;
 }

@@ -5,6 +5,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <cstdint>
 #include <mutex>
 #include <string>
 
@@ -26,6 +27,7 @@ public:
     void seek(double seconds);
     void play();
     void setScreenshotPath(const std::string& path) { screenshot_path_ = path; }
+    void setScreenshotEvery(int frames) { screenshot_every_ = frames; }
 
 private:
     void drawUI();
@@ -49,11 +51,13 @@ private:
     bool show_stats_ = true;
     bool dragging_seek_ = false;
     float drag_position_ = 0.0f;
-    const decode::DecodedFrame* uploaded_frame_ = nullptr;
+    uint64_t uploaded_serial_ = 0;
     unsigned int video_texture_ = 0;
     std::string status_;
     std::string screenshot_path_;
+    int screenshot_every_ = 0;
     bool saveScreenshot();
+    bool saveScreenshotTo(const std::string& path);
 
     std::mutex pending_mutex_;
     std::string pending_path_;

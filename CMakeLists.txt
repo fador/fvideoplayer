@@ -88,6 +88,7 @@ add_library(player_core STATIC
     src/render/GLFunctions.cpp
     src/render/VideoRenderer.cpp)
 target_include_directories(player_core PUBLIC src)
+target_compile_definitions(player_core PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(player_core PUBLIC
     player_playback
     player_decode

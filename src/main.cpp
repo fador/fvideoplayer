@@ -28,6 +28,7 @@ int main(int argc, char** argv) {
     int dump_skip = 0;
     double seek_seconds = -1.0;
     std::string screenshot;
+    int screenshot_every = 0;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -43,6 +44,8 @@ int main(int argc, char** argv) {
             seek_seconds = std::atof(argv[++i]);
         } else if (arg == "--screenshot" && i + 1 < argc) {
             screenshot = argv[++i];
+        } else if (arg == "--screenshot-every" && i + 1 < argc) {
+            screenshot_every = std::atoi(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             printUsage(argv[0]);
             return EXIT_SUCCESS;
@@ -75,6 +78,7 @@ int main(int argc, char** argv) {
     }
     if (!screenshot.empty()) {
         app.setScreenshotPath(screenshot);
+        app.setScreenshotEvery(screenshot_every);
     }
     if (!input.empty()) {
         app.openFile(input);

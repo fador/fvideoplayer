@@ -20,6 +20,10 @@ public:
     bool init(std::string* error);
     void shutdown();
 
+    // Bit depth parsed from the stream's hvcC, used when kvzdec does not
+    // report one on the decoded picture.
+    void setStreamBitDepth(int bitdepth) { stream_bitdepth_ = bitdepth; }
+
     void upload(const kvzdec_picture* picture);
 
     // Returns the FBO texture id, or 0 when no frame has been uploaded.
@@ -60,7 +64,11 @@ private:
     float crop_v0_ = 0.0f;
     float crop_u1_ = 1.0f;
     float crop_v1_ = 1.0f;
-    float normalize_scale_ = 1.0f;
+    int stream_bitdepth_ = 0;
+    int luma_bitdepth_ = 8;
+    int chroma_bitdepth_ = 8;
+    float luma_scale_ = 1.0f;
+    float chroma_scale_ = 1.0f;
     bool has_chroma_ = true;
 
     int uniform_y_ = -1;
@@ -69,6 +77,7 @@ private:
     int uniform_matrix_ = -1;
     int uniform_offset_ = -1;
     int uniform_scale_ = -1;
+    int uniform_scale_c_ = -1;
     int uniform_has_chroma_ = -1;
     int uniform_crop_ = -1;
 };

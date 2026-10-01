@@ -84,6 +84,7 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
             info.level = demux::hvccLevelName(hvcc);
             info.bitdepth = 8 + hvcc.bit_depth_luma_minus8;
             info.chroma_format = hvcc.chroma_format_idc;
+            stream_bitdepth_ = info.bitdepth;
         }
     }
     stats_.setStreamInfo(info);
@@ -100,6 +101,7 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
     state_ = State::Paused;
     clock_.setPosition(0.0);
     current_.reset();
+    current_serial_ = 0;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         seek_pending_ = false;
@@ -192,13 +194,16 @@ void PlaybackEngine::seek(double seconds) {
 
 bool PlaybackEngine::update() {
     bool changed = false;
+    bool popped_any = false;
     if (state_.load() == State::Playing) {
         const int64_t due_ms = static_cast<int64_t>(std::llround(clock_.position() * 1000.0));
         decode::DecodedFrame frame;
         int popped = 0;
         while (queue_.tryPopDue(due_ms, frame)) {
+            popped_any = true;
             const bool dropped = popped > 0;
             current_ = std::make_unique<decode::DecodedFrame>(std::move(frame));
+            ++current_serial_;
             stats_.onFrameDisplayed(dropped);
             changed = true;
             ++popped;
@@ -208,6 +213,11 @@ bool PlaybackEngine::update() {
         clock_.pause();
         state_ = State::Ended;
         stats_.setPlaying(false);
+    }
+    if (popped_any) {
+        // Wake the pipeline: it may be waiting for queue space that the
+        // frames consumed above have freed.
+        cv_.notify_all();
     }
     return changed;
 }

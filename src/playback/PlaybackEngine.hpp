@@ -58,6 +58,11 @@ public:
     bool update();
 
     const decode::DecodedFrame* currentFrame() const { return current_.get(); }
+    // Increments whenever the displayed frame changes, even if a new
+    // DecodedFrame happens to reuse the previous allocation address.
+    uint64_t currentSerial() const { return current_serial_; }
+    // Bit depth parsed from the stream's hvcC (0 if unknown).
+    int streamBitDepth() const { return stream_bitdepth_; }
     bool buffering() const;
     const std::string& lastError() const { return last_error_; }
     stats::StatsCollector& stats() { return stats_; }
@@ -90,6 +95,8 @@ private:
     demux::VideoTrackInfo video_info_;
     demux::AudioTrackInfo audio_info_;
     double duration_ = 0.0;
+    uint64_t current_serial_ = 0;
+    int stream_bitdepth_ = 0;
     std::string last_error_;
     stats::StatsCollector stats_;
 };
