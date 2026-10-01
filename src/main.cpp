@@ -35,6 +35,9 @@ void printUsage(const char* program) {
     std::printf("  --dump-skip N       skip N frames before --dump-yuv output\n");
     std::printf("  --screenshot PATH   write the rendered frame as PPM when quitting\n");
     std::printf("  --screenshot-every N  with --screenshot, keep writing PPMs every N frames\n");
+    std::printf("  --screenshot-ui     capture the whole window instead of just the video\n");
+    std::printf("  --subtitle N        select subtitle option N (-1 = none)\n");
+    std::printf("  --audio N           select audio track N\n");
     std::printf("  -h, --help          show this help\n");
 }
 
@@ -102,7 +105,10 @@ int main(int argc, char** argv) {
     double seek_seconds = -1.0;
     std::string screenshot;
     int screenshot_every = 0;
+    bool screenshot_ui = false;
     bool info_mode = false;
+    int subtitle_option = -2;  // -1 disables, >= 0 selects, -2 unset
+    int audio_track = -1;      // -1 unset
     bool help_requested = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -121,6 +127,12 @@ int main(int argc, char** argv) {
             screenshot = argv[++i];
         } else if (arg == "--screenshot-every" && i + 1 < argc) {
             screenshot_every = std::atoi(argv[++i]);
+        } else if (arg == "--screenshot-ui") {
+            screenshot_ui = true;
+        } else if (arg == "--subtitle" && i + 1 < argc) {
+            subtitle_option = std::atoi(argv[++i]);
+        } else if (arg == "--audio" && i + 1 < argc) {
+            audio_track = std::atoi(argv[++i]);
         } else if (arg == "--info") {
             info_mode = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -173,9 +185,16 @@ int main(int argc, char** argv) {
     if (!screenshot.empty()) {
         app.setScreenshotPath(screenshot);
         app.setScreenshotEvery(screenshot_every);
+        app.setScreenshotWindow(screenshot_ui);
     }
     if (!input.empty()) {
         app.openFile(input);
+        if (subtitle_option >= -1) {
+            app.selectSubtitle(subtitle_option);
+        }
+        if (audio_track >= 0) {
+            app.selectAudio(audio_track);
+        }
         if (seek_seconds >= 0.0) {
             app.seek(seek_seconds);
         }

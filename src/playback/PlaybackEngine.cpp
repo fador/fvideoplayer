@@ -42,6 +42,8 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
     }
     video_info_ = demuxer->video();
     audio_info_ = demuxer->audio();
+    audio_track_infos_ = demuxer->audioTracks();
+    subtitle_track_infos_ = demuxer->subtitleTracks();
     duration_ = demuxer->duration();
 
     if (!decoder_.open(&local_error)) {
@@ -106,9 +108,12 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
     clock_.setPosition(0.0);
     current_.reset();
     current_serial_ = 0;
+    selected_audio_ = 0;
+    audio_enabled_ = !audio_track_infos_.empty();
     {
         std::lock_guard<std::mutex> lock(mutex_);
         seek_pending_ = false;
+        audio_pending_ = false;
     }
     log::addf(log::Level::Info, "%s: %ux%u, %.3f fps, %.2f s, buffer %zu frames",
               info.container.c_str(), video_info_.width, video_info_.height, video_info_.fps,
@@ -137,8 +142,37 @@ void PlaybackEngine::close() {
     decoder_.close();
     demuxer_.reset();
     current_.reset();
+    audio_track_infos_.clear();
+    subtitle_track_infos_.clear();
+    audio_enabled_ = false;
+    selected_audio_ = 0;
     eos_ = false;
     state_ = State::Empty;
+}
+
+void PlaybackEngine::selectAudioTrack(size_t index) {
+    if (!hasFile()) {
+        return;
+    }
+    if (index != kNoAudioTrack && index >= audio_track_infos_.size()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        audio_pending_ = true;
+        audio_target_ = index;
+    }
+    cv_.notify_all();
+}
+
+bool PlaybackEngine::loadSubtitleTrack(size_t index,
+                                       std::vector<subtitle::SubtitleBlock>& blocks,
+                                       std::string& error) {
+    if (!demuxer_) {
+        error = "no file open";
+        return false;
+    }
+    return demuxer_->readSubtitleTrack(index, blocks, error);
 }
 
 void PlaybackEngine::play() {
@@ -246,7 +280,7 @@ void PlaybackEngine::pipelineLoop() {
     for (;;) {
         std::unique_lock<std::mutex> lock(mutex_);
         cv_.wait(lock, [this] {
-            return quit_.load() || seek_pending_ ||
+            return quit_.load() || seek_pending_ || audio_pending_ ||
                    (!eos_.load() && queue_.size() < queue_.capacity());
         });
         if (quit_.load()) {
@@ -257,6 +291,24 @@ void PlaybackEngine::pipelineLoop() {
             seek_pending_ = false;
             lock.unlock();
             performSeek(target);
+            continue;
+        }
+        if (audio_pending_) {
+            const size_t target = audio_target_;
+            audio_pending_ = false;
+            lock.unlock();
+            if (target == kNoAudioTrack) {
+                audio_enabled_ = false;
+                audio_sink_.reset();
+                log::add(log::Level::Info, "Audio disabled");
+            } else if (demuxer_->selectAudioTrack(target)) {
+                audio_sink_.reset();
+                selected_audio_ = target;
+                audio_enabled_ = true;
+                log::addf(log::Level::Info, "Audio track %zu selected", target);
+            } else {
+                log::addf(log::Level::Warning, "Failed to select audio track %zu", target);
+            }
             continue;
         }
         lock.unlock();
@@ -305,10 +357,12 @@ void PlaybackEngine::pipelineLoop() {
         }
 
         // Dummy audio path: consume packets if a demuxer provides them.
-        demux::Sample audio_sample;
-        int guard = 0;
-        while (guard++ < 32 && demuxer_->readAudioSample(audio_sample)) {
-            audio_sink_.push(audio_sample);
+        if (audio_enabled_.load()) {
+            demux::Sample audio_sample;
+            int guard = 0;
+            while (guard++ < 64 && demuxer_->readAudioSample(audio_sample)) {
+                audio_sink_.push(audio_sample);
+            }
         }
 
         stats_.setQueue(queue_.size(), queue_.capacity(), bufferedSeconds());

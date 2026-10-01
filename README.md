@@ -11,8 +11,12 @@ A focused HEVC/H.265 video player built around the custom
   keyframe seeking
 - **Statistics**: live decode performance, buffer level, bitrate and
   per-frame decoder information
-- **Audio**: dummy sink interface only; audio packets are counted but not
-  decoded (planned)
+- **Subtitles**: embedded Matroska text tracks (SRT, ASS/SSA) and external
+  SRT/ASS/SSA/WebVTT/MicroDVD files, selectable from the Subtitles menu and
+  switchable on the fly; external files next to the video are discovered
+  automatically
+- **Audio**: container audio tracks are listed and selectable from the Audio
+  menu; playback uses a dummy sink (packets are counted but not decoded yet)
 
 ## Building
 
@@ -46,6 +50,8 @@ hevc_player [options] [file]
   --frames N         quit after N rendered frames (smoke test)
   --seek SECONDS     seek to the given position after opening
   --info             print stream information and exit
+  --subtitle N       select subtitle option N (-1 = none)
+  --audio N          select audio track N
   --screenshot PATH  write the first rendered frame as a PPM image and quit
   --screenshot-every N  with --screenshot, keep writing PPMs every N frames
   --dump-yuv PATH    decode the file to planar YUV and exit
@@ -72,6 +78,7 @@ hevc_player [options] [file]
 src/
   app/        SDL3 + ImGui application shell and UI
   demux/      container demuxers (MP4, MKV, AVI, raw HEVC) + hvcC parser
+  subtitle/   SRT/ASS/SSA/WebVTT/MicroDVD parsers and cue lookup
   decode/     kvzdec wrapper, NAL handling, decode-to-YUV verification mode
   playback/   pipeline thread, frame queue, media clock
   render/     OpenGL YUV -> RGB renderer (8/10-bit, 4:2:0/4:2:2/4:4:4)

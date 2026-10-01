@@ -104,6 +104,7 @@ target_link_libraries(player_core PUBLIC
     player_playback
     player_decode
     player_demux
+    player_subtitle
     player_util
     kvzdec
     imgui

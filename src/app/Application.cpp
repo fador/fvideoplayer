@@ -8,8 +8,11 @@
 #include <implot.h>
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <sstream>
 
 namespace player {
 namespace {
@@ -165,6 +168,8 @@ bool Application::openFile(const std::string& path) {
     renderer_.setStreamBitDepth(engine_.streamBitDepth());
     status_ = "Opened " + path;
     log::addf(log::Level::Info, "Opened %s", path.c_str());
+    discoverSubtitles(path);
+    engine_.play();
     return true;
 }
 
@@ -193,11 +198,22 @@ int Application::run(int max_frames) {
         }
 
         {
-            std::lock_guard<std::mutex> lock(pending_mutex_);
-            if (!pending_path_.empty()) {
-                const std::string path = pending_path_;
-                pending_path_.clear();
-                openFile(path);
+            std::string pending;
+            bool is_subtitle = false;
+            {
+                std::lock_guard<std::mutex> lock(pending_mutex_);
+                if (!pending_path_.empty()) {
+                    pending = pending_path_;
+                    is_subtitle = pending_is_subtitle_;
+                    pending_path_.clear();
+                }
+            }
+            if (!pending.empty()) {
+                if (is_subtitle) {
+                    addExternalSubtitle(pending);
+                } else {
+                    openFile(pending);
+                }
             }
         }
 
@@ -215,8 +231,7 @@ int Application::run(int max_frames) {
                                      std::to_string(frame_count_) + ".ppm");
                 }
             } else {
-                saveScreenshot();
-                running = false;
+                screenshot_pending_ = true;
             }
         }
 
@@ -235,6 +250,13 @@ int Application::run(int max_frames) {
         glClearColor(0.06f, 0.06f, 0.07f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+        if (screenshot_pending_) {
+            saveScreenshot();
+            screenshot_pending_ = false;
+            running = false;
+        }
+
         SDL_GL_SwapWindow(window_);
 
         ++frame_count_;
@@ -264,6 +286,8 @@ void Application::drawMenuBar() {
                 engine_.close();
                 uploaded_serial_ = 0;
                 video_texture_ = 0;
+                subtitle_options_.clear();
+                active_subtitle_ = -1;
                 status_.clear();
             }
             ImGui::Separator();
@@ -282,6 +306,53 @@ void Application::drawMenuBar() {
             }
             if (ImGui::MenuItem("Stop", nullptr, false, has_file)) {
                 engine_.stop();
+            }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Subtitles")) {
+            const bool has_file = engine_.hasFile();
+            if (ImGui::MenuItem("None", nullptr, active_subtitle_ < 0, has_file)) {
+                activateSubtitle(-1);
+            }
+            ImGui::Separator();
+            for (size_t i = 0; i < subtitle_options_.size(); ++i) {
+                const SubtitleOption& option = subtitle_options_[i];
+                const bool selected = active_subtitle_ == static_cast<int>(i);
+                if (ImGui::MenuItem(option.label.c_str(), nullptr, selected, !option.bitmap)) {
+                    activateSubtitle(static_cast<int>(i));
+                }
+            }
+            if (subtitle_options_.empty()) {
+                ImGui::MenuItem("(no subtitle tracks found)", nullptr, false, false);
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Load from file...", nullptr, false, has_file)) {
+                openSubtitleDialog();
+            }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Audio")) {
+            const bool has_file = engine_.hasFile();
+            if (ImGui::MenuItem("None", nullptr, !engine_.audioEnabled(), has_file)) {
+                engine_.selectAudioTrack(playback::PlaybackEngine::kNoAudioTrack);
+            }
+            ImGui::Separator();
+            const std::vector<demux::AudioTrackInfo>& tracks = engine_.audioTracks();
+            for (const demux::AudioTrackInfo& track : tracks) {
+                std::string label = track.name.empty() ? "Track " + std::to_string(track.index + 1)
+                                                       : track.name;
+                if (!track.language.empty()) {
+                    label += " [" + track.language + "]";
+                }
+                label += " (" + track.codec + ")";
+                const bool selected =
+                    engine_.audioEnabled() && engine_.selectedAudioTrack() == track.index;
+                if (ImGui::MenuItem(label.c_str(), nullptr, selected, has_file)) {
+                    engine_.selectAudioTrack(track.index);
+                }
+            }
+            if (tracks.empty()) {
+                ImGui::MenuItem("(no audio tracks found)", nullptr, false, false);
             }
             ImGui::EndMenu();
         }
@@ -323,10 +394,12 @@ void Application::drawVideoArea() {
         const float video_h = static_cast<float>(renderer_.videoHeight());
         const float scale = std::min(video_size.x / video_w, video_size.y / video_h);
         const ImVec2 draw_size(video_w * scale, video_h * scale);
-        ImGui::SetCursorScreenPos(ImVec2(cursor.x + (video_size.x - draw_size.x) * 0.5f,
-                                         cursor.y + (video_size.y - draw_size.y) * 0.5f));
+        const ImVec2 draw_pos(cursor.x + (video_size.x - draw_size.x) * 0.5f,
+                              cursor.y + (video_size.y - draw_size.y) * 0.5f);
+        ImGui::SetCursorScreenPos(draw_pos);
         ImGui::Image(static_cast<ImTextureID>(video_texture_), draw_size);
         ImGui::SetCursorScreenPos(cursor);
+        drawSubtitles(draw_pos, draw_size);
     } else {
         const char* message = "No file open";
         if (engine_.hasFile()) {
@@ -424,6 +497,14 @@ void Application::drawStatsWindow() {
                         audio.channels, audio.sample_rate);
         } else {
             ImGui::TextUnformatted("Audio: none");
+        }
+        if (active_subtitle_ >= 0 &&
+            active_subtitle_ < static_cast<int>(subtitle_options_.size())) {
+            const SubtitleOption& option = subtitle_options_[static_cast<size_t>(active_subtitle_)];
+            ImGui::Text("Subtitles: %s (%zu cues)", option.label.c_str(),
+                        option.track.cues.size());
+        } else {
+            ImGui::TextUnformatted("Subtitles: none");
         }
     }
 
@@ -585,13 +666,289 @@ void Application::fileDialogCallback(void* userdata, const char* const* filelist
     }
     std::lock_guard<std::mutex> lock(app->pending_mutex_);
     app->pending_path_ = filelist[0];
+    app->pending_is_subtitle_ = false;
+}
+
+void Application::openSubtitleDialog() {
+    static const SDL_DialogFileFilter filters[] = {
+        {"Subtitle files", "srt;ass;ssa;vtt;sub"},
+        {"All files", "*"},
+    };
+    SDL_ShowOpenFileDialog(&Application::subtitleDialogCallback, this, window_, filters, 2, nullptr,
+                           false);
+}
+
+void Application::subtitleDialogCallback(void* userdata, const char* const* filelist, int filter) {
+    (void)filter;
+    Application* app = static_cast<Application*>(userdata);
+    if (!app || !filelist || !filelist[0]) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(app->pending_mutex_);
+    app->pending_path_ = filelist[0];
+    app->pending_is_subtitle_ = true;
+}
+
+namespace {
+
+std::string toLowerCopy(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return text;
+}
+
+bool isSubtitleExtension(const std::string& extension) {
+    const std::string lower = toLowerCopy(extension);
+    return lower == ".srt" || lower == ".ass" || lower == ".ssa" || lower == ".vtt" ||
+           lower == ".sub";
+}
+
+}  // namespace
+
+void Application::discoverSubtitles(const std::string& video_path) {
+    subtitle_options_.clear();
+    active_subtitle_ = -1;
+
+    for (const demux::SubtitleTrackInfo& info : engine_.subtitleTracks()) {
+        SubtitleOption option;
+        option.embedded = true;
+        option.track_index = info.index;
+        option.bitmap = info.bitmap;
+        std::string codec = info.codec;
+        const size_t slash = codec.find('/');
+        if (slash != std::string::npos) {
+            codec = codec.substr(slash + 1);
+        }
+        option.label = info.name.empty() ? "Track " + std::to_string(info.index + 1) : info.name;
+        if (!info.language.empty()) {
+            option.label += " [" + info.language + "]";
+        }
+        option.label += " (" + codec + ")";
+        if (info.bitmap) {
+            option.label += " - bitmap, unsupported";
+        }
+        subtitle_options_.push_back(std::move(option));
+    }
+
+    // External subtitle files matching the video name, e.g. video.srt,
+    // video.eng.srt or video.English.ass.
+    const std::filesystem::path path(video_path);
+    const std::filesystem::path directory = path.parent_path();
+    const std::string stem = path.stem().string();
+    if (!directory.empty() && !stem.empty()) {
+        std::error_code error_code;
+        std::vector<std::filesystem::path> found;
+        for (const std::filesystem::directory_entry& entry :
+             std::filesystem::directory_iterator(directory, error_code)) {
+            if (!entry.is_regular_file(error_code)) {
+                continue;
+            }
+            if (!isSubtitleExtension(entry.path().extension().string())) {
+                continue;
+            }
+            const std::string entry_stem = entry.path().stem().string();
+            if (entry_stem.size() < stem.size()) {
+                continue;
+            }
+            if (toLowerCopy(entry_stem.substr(0, stem.size())) != toLowerCopy(stem)) {
+                continue;
+            }
+            if (entry_stem.size() != stem.size() && entry_stem[stem.size()] != '.') {
+                continue;
+            }
+            found.push_back(entry.path());
+        }
+        std::sort(found.begin(), found.end());
+        for (const std::filesystem::path& file : found) {
+            SubtitleOption option;
+            option.embedded = false;
+            option.path = file;
+            option.label = file.filename().string() + " (external)";
+            subtitle_options_.push_back(std::move(option));
+        }
+    }
+
+    log::addf(log::Level::Info, "Subtitles: %zu option(s) found",
+              static_cast<int>(subtitle_options_.size()));
+
+    int select = -1;
+    for (size_t i = 0; i < subtitle_options_.size(); ++i) {
+        if (!subtitle_options_[i].bitmap) {
+            select = static_cast<int>(i);
+            break;
+        }
+    }
+    if (select >= 0) {
+        activateSubtitle(select);
+    }
+}
+
+bool Application::activateSubtitle(int option) {
+    if (option < 0) {
+        active_subtitle_ = -1;
+        return true;
+    }
+    if (option >= static_cast<int>(subtitle_options_.size())) {
+        return false;
+    }
+    SubtitleOption& selected = subtitle_options_[static_cast<size_t>(option)];
+    if (selected.bitmap) {
+        log::addf(log::Level::Warning, "Bitmap subtitles are not supported: %s",
+                  selected.label.c_str());
+        return false;
+    }
+
+    if (!selected.loaded) {
+        std::string error;
+        if (selected.embedded) {
+            std::vector<subtitle::SubtitleBlock> blocks;
+            if (!engine_.loadSubtitleTrack(selected.track_index, blocks, error)) {
+                log::addf(log::Level::Error, "Failed to read subtitle track: %s", error.c_str());
+                return false;
+            }
+            const std::vector<demux::SubtitleTrackInfo>& infos = engine_.subtitleTracks();
+            std::string codec_private;
+            std::string codec;
+            if (selected.track_index < infos.size()) {
+                codec = infos[selected.track_index].codec;
+                codec_private.assign(infos[selected.track_index].codec_private.begin(),
+                                     infos[selected.track_index].codec_private.end());
+            }
+            if (!subtitle::parseEmbeddedTrack(codec, codec_private, blocks, selected.track.cues,
+                                              &error)) {
+                log::addf(log::Level::Error, "Failed to parse subtitle track: %s", error.c_str());
+                return false;
+            }
+            selected.track.embedded = true;
+        } else if (!subtitle::loadSubtitleFile(selected.path, selected.track, &error)) {
+            log::addf(log::Level::Error, "Failed to load %s: %s", selected.path.string().c_str(),
+                      error.c_str());
+            return false;
+        }
+        selected.loaded = true;
+    }
+
+    active_subtitle_ = option;
+    log::addf(log::Level::Info, "Subtitle track: %s (%zu cues)", selected.label.c_str(),
+              selected.track.cues.size());
+    return true;
+}
+
+void Application::addExternalSubtitle(const std::string& path) {
+    if (!engine_.hasFile()) {
+        return;
+    }
+    SubtitleOption option;
+    option.embedded = false;
+    option.path = path;
+    option.label = std::filesystem::path(path).filename().string() + " (external)";
+    subtitle_options_.push_back(std::move(option));
+    activateSubtitle(static_cast<int>(subtitle_options_.size()) - 1);
+}
+
+void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_size) {
+    if (active_subtitle_ < 0 || active_subtitle_ >= static_cast<int>(subtitle_options_.size())) {
+        return;
+    }
+    const subtitle::Track& track = subtitle_options_[static_cast<size_t>(active_subtitle_)].track;
+    if (track.cues.empty()) {
+        return;
+    }
+    const subtitle::Cue* cue = subtitle::findCue(track.cues, engine_.position());
+    if (!cue || cue->text.empty()) {
+        return;
+    }
+
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    ImFont* font = ImGui::GetFont();
+    const float font_size = std::clamp(video_size.y * 0.045f, 14.0f, 64.0f);
+    const float max_width = video_size.x * 0.92f;
+
+    // Word-wrap the cue into lines.
+    std::vector<std::string> lines;
+    std::istringstream stream(cue->text);
+    std::string raw_line;
+    while (std::getline(stream, raw_line)) {
+        std::istringstream words(raw_line);
+        std::string word;
+        std::string current;
+        while (words >> word) {
+            const std::string candidate = current.empty() ? word : current + " " + word;
+            const ImVec2 measured =
+                font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, candidate.c_str());
+            if (measured.x > max_width && !current.empty()) {
+                lines.push_back(current);
+                current = word;
+            } else {
+                current = candidate;
+            }
+        }
+        lines.push_back(current);
+    }
+    if (lines.empty()) {
+        return;
+    }
+
+    const float line_height = font_size * 1.2f;
+    const float bottom_margin = video_size.y * 0.04f;
+    float y = video_pos.y + video_size.y - bottom_margin -
+              line_height * static_cast<float>(lines.size());
+    const float outline = std::max(1.0f, font_size / 16.0f);
+
+    draw_list->PushClipRect(video_pos, ImVec2(video_pos.x + video_size.x,
+                                              video_pos.y + video_size.y), true);
+    for (const std::string& line : lines) {
+        if (line.empty()) {
+            y += line_height;
+            continue;
+        }
+        const ImVec2 measured = font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, line.c_str());
+        const ImVec2 position(video_pos.x + (video_size.x - measured.x) * 0.5f, y);
+        for (float dx = -outline; dx <= outline; dx += outline) {
+            for (float dy = -outline; dy <= outline; dy += outline) {
+                if (dx == 0.0f && dy == 0.0f) {
+                    continue;
+                }
+                draw_list->AddText(font, font_size, ImVec2(position.x + dx, position.y + dy),
+                                   IM_COL32(0, 0, 0, 220), line.c_str());
+            }
+        }
+        draw_list->AddText(font, font_size, position, IM_COL32(255, 255, 255, 255), line.c_str());
+        y += line_height;
+    }
+    draw_list->PopClipRect();
+}
+
+bool Application::readWindowPixels(std::vector<uint8_t>& rgb, int& width, int& height) {
+    SDL_GetWindowSizeInPixels(window_, &width, &height);
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+    rgb.resize(static_cast<size_t>(width) * height * 3);
+    // The renderer leaves the default framebuffer bound.
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());
+
+    // glReadPixels returns the bottom row first; flip to top-down.
+    const size_t row_bytes = static_cast<size_t>(width) * 3;
+    std::vector<uint8_t> row(row_bytes);
+    for (int y = 0; y < height / 2; ++y) {
+        uint8_t* top = rgb.data() + static_cast<size_t>(y) * row_bytes;
+        uint8_t* bottom = rgb.data() + static_cast<size_t>(height - 1 - y) * row_bytes;
+        std::memcpy(row.data(), top, row_bytes);
+        std::memcpy(top, bottom, row_bytes);
+        std::memcpy(bottom, row.data(), row_bytes);
+    }
+    return true;
 }
 
 bool Application::saveScreenshotTo(const std::string& path) {
     std::vector<uint8_t> rgb;
     int width = 0;
     int height = 0;
-    if (!renderer_.readback(rgb, width, height)) {
+    const bool ok = screenshot_window_ ? readWindowPixels(rgb, width, height)
+                                       : renderer_.readback(rgb, width, height);
+    if (!ok) {
         return false;
     }
     FILE* file = std::fopen(path.c_str(), "wb");

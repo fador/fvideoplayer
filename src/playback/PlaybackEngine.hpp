@@ -64,6 +64,20 @@ public:
     // Bit depth parsed from the stream's hvcC (0 if unknown).
     int streamBitDepth() const { return stream_bitdepth_; }
     bool buffering() const;
+
+    static constexpr size_t kNoAudioTrack = static_cast<size_t>(-1);
+
+    const std::vector<demux::AudioTrackInfo>& audioTracks() const { return audio_track_infos_; }
+    const std::vector<demux::SubtitleTrackInfo>& subtitleTracks() const {
+        return subtitle_track_infos_;
+    }
+    void selectAudioTrack(size_t index);
+    size_t selectedAudioTrack() const { return selected_audio_.load(); }
+    bool audioEnabled() const { return audio_enabled_.load(); }
+    // Reads and parses an embedded subtitle track (safe to call from the UI
+    // thread; uses a private file handle).
+    bool loadSubtitleTrack(size_t index, std::vector<subtitle::SubtitleBlock>& blocks,
+                           std::string& error);
     const std::string& lastError() const { return last_error_; }
     stats::StatsCollector& stats() { return stats_; }
     const audio::NullAudioSink& audioSink() const { return audio_sink_; }
@@ -81,6 +95,8 @@ private:
     std::condition_variable cv_;
     bool seek_pending_ = false;
     double seek_target_ = 0.0;
+    bool audio_pending_ = false;
+    size_t audio_target_ = 0;
 
     // Pipeline-thread state.
     std::unique_ptr<demux::IDemuxer> demuxer_;
@@ -97,6 +113,10 @@ private:
     double duration_ = 0.0;
     uint64_t current_serial_ = 0;
     int stream_bitdepth_ = 0;
+    std::vector<demux::AudioTrackInfo> audio_track_infos_;
+    std::vector<demux::SubtitleTrackInfo> subtitle_track_infos_;
+    std::atomic<size_t> selected_audio_{0};
+    std::atomic<bool> audio_enabled_{false};
     std::string last_error_;
     stats::StatsCollector stats_;
 };
