@@ -200,6 +200,10 @@ The Opus decoder is also written from scratch. Implemented:
   rewhitening and prediction, LPC synthesis with gain adjustment and the
   voiced-to-unvoiced loss transition, verified bit-exactly against the
   reference for voiced and unvoiced frames at all rates
+- SILK stereo (predictor decoding and interpolated mid/side to
+  left/right) and the decoder resampler (allpass 2x upsampling plus FIR
+  interpolation from 8/12/16 kHz to 48 kHz), verified bit-exactly
+  against the reference including resampler state across calls
 
 Next milestones: the SILK layer and hybrid frames; until then those
 packets are reported as unsupported once in the log and skipped. CELT-only

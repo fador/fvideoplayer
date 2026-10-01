@@ -73,4 +73,14 @@ extern const int8_t kSilkLtpGainVq2[32 * 5];
 extern const int16_t kSilkLtpScalesQ14[3];
 extern const int16_t kSilkQuantOffsetsQ10[2 * 2];
 
+// Stereo prediction and resampler tables (tables_other.c, resampler_rom.c).
+extern const uint8_t kSilkUniform3Icdf[3];
+extern const uint8_t kSilkUniform5Icdf[5];
+extern const uint8_t kSilkStereoPredJointIcdf[25];
+extern const uint8_t kSilkStereoOnlyMidIcdf[2];
+extern const int16_t kSilkStereoPredQuantQ13[16];
+extern const int16_t kSilkResamplerUp2Hq0[3];
+extern const int16_t kSilkResamplerUp2Hq1[3];
+extern const int16_t kSilkResamplerFracFir12[12 * 4];
+
 }  // namespace player::audio::silk

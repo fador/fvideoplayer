@@ -12,6 +12,7 @@ add_executable(player_tests
     test_silk_nlsf.cpp
     test_silk_params.cpp
     test_silk_parameters.cpp
+    test_silk_stereo_resampler.cpp
     test_avi_demuxer.cpp
     test_hvcc.cpp
     test_log.cpp
