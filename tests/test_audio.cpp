@@ -9,18 +9,22 @@
 #include "audio/aac/Huffman.hpp"
 #include "audio/aac/Mdct.hpp"
 #include "audio/aac/Window.hpp"
+#include "audio/opus/CeltPvq.hpp"
 #include "audio/opus/OpusDecoder.hpp"
 #include "audio/opus/OpusHead.hpp"
 #include "audio/opus/OpusPacket.hpp"
+#include "audio/opus/OpusTables.hpp"
 #include "audio/opus/RangeDecoder.hpp"
 
 #include <SDL3/SDL.h>
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -1138,4 +1142,99 @@ TEST(OpusDecoder, ConfiguresAndRejectsUnimplementedLayers) {
     const std::vector<uint8_t> bad = makePacket(0x01, {1, 2, 3});
     EXPECT_EQ(decoder.decode(bad.data(), bad.size(), pcm, error),
               player::audio::opus::Status::Invalid);
+}
+
+TEST(CeltPvq, CountsCodewords) {
+    EXPECT_EQ(player::audio::opus::pvqCount(2, 1), 4u);
+    EXPECT_EQ(player::audio::opus::pvqCount(2, 2), 8u);
+    EXPECT_EQ(player::audio::opus::pvqCount(3, 1), 6u);
+    EXPECT_EQ(player::audio::opus::pvqCount(2, 16), 64u);
+}
+
+TEST(CeltPvq, DecodesReferenceVectors) {
+    // Packets produced by the reference encoder (encode_pulses) for known
+    // pulse vectors; only the non-zero entries are listed.
+    struct Case {
+        int n;
+        int k;
+        std::vector<uint8_t> packet;
+        std::vector<std::pair<int, int>> nonzero;
+    };
+    const std::vector<Case> cases = {
+        {2, 1, {0x00}, {{0, 1}}},
+        {2, 2, {0x20}, {{0, 1}, {1, 1}}},
+        {2, 16, {0x00}, {{0, 16}}},
+        {3, 1, {0xe0}, {{0, -1}}},
+        {4, 3, {0x00}, {{0, 3}}},
+        {5, 5, {0xaf, 0x80, 0x01}, {{0, -4}, {1, -1}}},
+        {8, 2, {0x02}, {{0, 1}, {1, 1}}},
+        {8, 8, {0xb7, 0x02, 0x36}, {{0, -3}, {5, 5}}},
+        {12, 10, {0x00, 0x00, 0x00, 0x02}, {{0, 9}, {2, 1}}},
+        {16, 4, {0xe2, 0x80, 0x00, 0x81}, {{0, -4}}},
+        {24, 6, {0xed, 0x00, 0x4a, 0x5e}, {{0, -1}, {4, 1}, {7, 2}, {11, 1}, {13, 1}}},
+        {32, 3, {0xf3, 0x00, 0xff}, {{0, -3}}},
+        {48, 4, {0x00, 0x22, 0x86}, {{0, 1}, {2, 3}}},
+        {64, 2, {0x00, 0x01}, {{0, 1}, {1, 1}}},
+        {96, 3, {0x00, 0x00, 0x00}, {{0, 3}}},
+        {100, 1, {0xff}, {{0, -1}}},
+        {120, 2, {0x00, 0x01}, {{0, 1}, {1, 1}}},
+        {176, 1, {0xff, 0x01}, {{0, -1}}},
+        {176, 2, {0xfe, 0x00, 0x00, 0xa2}, {{0, -1}, {1, 1}}},
+        {4, 1, {0x00}, {{0, 1}}},
+    };
+
+    for (const Case& test : cases) {
+        player::audio::opus::RangeDecoder decoder(test.packet.data(), test.packet.size());
+        std::vector<int> pulses(static_cast<size_t>(test.n), 0);
+        const float energy =
+            player::audio::opus::decodePulses(decoder, test.n, test.k, pulses.data());
+
+        int pulse_sum = 0;
+        for (int value : pulses) {
+            pulse_sum += value < 0 ? -value : value;
+        }
+        EXPECT_EQ(pulse_sum, test.k) << "n=" << test.n << " k=" << test.k;
+
+        float expected_energy = 0.0f;
+        for (const auto& entry : test.nonzero) {
+            EXPECT_EQ(pulses[static_cast<size_t>(entry.first)], entry.second)
+                << "n=" << test.n << " k=" << test.k << " pos=" << entry.first;
+            expected_energy += static_cast<float>(entry.second) * static_cast<float>(entry.second);
+        }
+        EXPECT_FLOAT_EQ(energy, expected_energy);
+        EXPECT_FALSE(decoder.error());
+    }
+}
+
+TEST(CeltPvq, IndexRoundTripIsInjective) {
+    // Every index below V(n, k) must produce a distinct vector with k pulses.
+    for (const auto& test : {std::pair<int, int>{4, 3}, std::pair<int, int>{8, 4}}) {
+        const int n = test.first;
+        const int k = test.second;
+        const uint32_t count = player::audio::opus::pvqCount(n, k);
+        std::vector<int> pulses(static_cast<size_t>(n), 0);
+        std::vector<std::vector<int>> seen;
+        for (uint32_t index = 0; index < count; ++index) {
+            player::audio::opus::indexToPulses(n, k, index, pulses.data());
+            int sum = 0;
+            for (int value : pulses) {
+                sum += value < 0 ? -value : value;
+            }
+            EXPECT_EQ(sum, k);
+            seen.push_back(pulses);
+        }
+        std::sort(seen.begin(), seen.end());
+        EXPECT_EQ(std::unique(seen.begin(), seen.end()), seen.end());
+    }
+}
+
+TEST(CeltTables, ValuesMatchReference) {
+    EXPECT_EQ(player::audio::opus::kCeltEBands[0], 0);
+    EXPECT_EQ(player::audio::opus::kCeltEBands[21], 100);
+    EXPECT_EQ(player::audio::opus::kCeltEBands[9], 10);
+    EXPECT_EQ(player::audio::opus::kCeltLogN[8], 8);
+    EXPECT_EQ(player::audio::opus::kCeltLogN[20], 36);
+    EXPECT_NEAR(player::audio::opus::kCeltWindow[0], 6.7286966e-05f, 1e-10f);
+    EXPECT_NEAR(player::audio::opus::kCeltWindow[119], 1.0f, 1e-6f);
+    EXPECT_EQ(player::audio::opus::kCeltBandAllocation[0], 0);
 }

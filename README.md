@@ -96,7 +96,7 @@ src/
               timestamped audio buffer, SDL3 sink and the from-scratch audio
               decoders (aac/: bit reader, ADTS + AudioSpecificConfig parsers,
               Huffman codebooks, ICS/TNS tools, MDCT/filterbank; opus/:
-              OpusHead, packet framing and the range decoder)
+              OpusHead, packet framing, range decoder, CELT tables and PVQ)
 ```
 
 The demux + decode pipeline runs on a dedicated thread and fills a bounded
@@ -151,10 +151,15 @@ The Opus decoder is also written from scratch. Implemented:
   codes 0..3 with CBR, VBR and padding
 - The range decoder from RFC 6716 section 4.1, verified symbol by symbol
   against vectors produced by the reference encoder
+- CELT constant tables (energy bands, allocation, probability model, MDCT
+  window, logN, ICDFs) generated from the RFC tables
+- CELT PVQ (pyramid vector quantization) decoding, verified against pulse
+  vectors produced by the reference encoder
 
-Next milestone: the SILK and CELT layers (range-coded energy, LPC/PVQ, stereo
-and the inverse MDCT). Until then Opus tracks are recognized, reported as
-unsupported once in the log, and skipped.
+Next milestones: CELT band energies, allocation and band decoding, the
+inverse MDCT/overlap-add and comb filter; then the SILK layer and hybrid
+frames. Until then Opus tracks are recognized, reported as unsupported once
+in the log, and skipped.
 
 The player runs without a console window; messages are collected in a
 thread-safe log buffer and can be viewed in the in-app log console
