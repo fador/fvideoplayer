@@ -9,6 +9,7 @@
 #include "audio/aac/Huffman.hpp"
 #include "audio/aac/Mdct.hpp"
 #include "audio/aac/Window.hpp"
+#include "audio/opus/CeltAlloc.hpp"
 #include "audio/opus/CeltEnergy.hpp"
 #include "audio/opus/CeltPvq.hpp"
 #include "audio/opus/OpusDecoder.hpp"
@@ -1286,5 +1287,81 @@ TEST(CeltEnergy, DecodesReferenceEnergies) {
 
     for (int i = 0; i < 42; ++i) {
         EXPECT_NEAR(energy[i], kExpected[i], 1e-4f) << "band " << i;
+    }
+}
+
+TEST(CeltAlloc, MatchesReferenceAllocation) {
+    // Bit allocations produced by the reference encoder (encode=1) for four
+    // configurations; the decoder must reproduce every output.
+    struct Case {
+        int channels;
+        int lm;
+        int total;
+        int trim;
+        int coded;
+        int intensity;
+        int dual;
+        std::vector<int> offsets;
+        std::vector<int> cap;
+        std::vector<uint8_t> packet;
+        std::vector<int> pulses;
+        std::vector<int> fine;
+        std::vector<int> priority;
+    };
+    const std::vector<Case> cases = {
+        {2, 2, 11046, 4, 21, 0, 0,
+         {69, 0, 0, 0, 231, 0, 19, 0, 91, 40, 0, 0, 0, 0, 125, 0, 0, 0, 51, 136, 0},
+         {542, 542, 542, 542, 542, 542, 542, 542, 1072, 1072, 1072, 1072, 2120, 2120, 2120, 3024,
+          3024, 3840, 4920, 4680, 4576},
+         {0x80},
+         {279, 215, 204, 211, 363, 187, 197, 169, 424, 371, 313, 295, 570, 526, 615, 706, 652, 813,
+          1157, 1375, 400},
+         {4, 3, 3, 2, 6, 2, 2, 2, 3, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3},
+         {1, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1}},
+        {2, 2, 2600, 9, 18, 14, 1,
+         {296, 0, 0, 250, 0, 0, 0, 0, 0, 222, 0, 0, 0, 0, 187, 0, 0, 153, 0, 0, 0},
+         {542, 542, 542, 542, 542, 542, 542, 542, 1072, 1072, 1072, 1072, 2120, 2120, 2120, 3024,
+          3024, 3840, 4920, 4680, 4576},
+         {0xc4},
+         {340, 145, 136, 279, 113, 100, 103, 87, 135, 280, 99, 89, 105, 0, 135, 0, 0, 108, 0, 0, 0},
+         {5, 1, 1, 4, 1, 1, 0, 0, 1, 2, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0},
+         {1, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 1}},
+        {1, 2, 1500, 2, 20, 0, 0,
+         {0, 0, 0, 0, 0, 213, 0, 201, 0, 0, 0, 0, 0, 253, 0, 0, 0, 0, 37, 56, 0},
+         {249, 249, 249, 249, 249, 249, 249, 249, 514, 514, 514, 514, 1028, 1028, 1028, 1482,
+          1482, 1888, 2424, 2322, 2266},
+         {},
+         {61, 55, 51, 51, 47, 201, 42, 191, 62, 55, 48, 49, 72, 283, 24, 0, 0, 0, 0, 0, 0},
+         {1, 1, 1, 0, 0, 6, 0, 6, 1, 1, 1, 0, 1, 3, 1, 1, 0, 0, 1, 1, 0},
+         {0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1}},
+        {2, 3, 4000, 6, 13, 13, 0,
+         {289, 0, 287, 248, 4, 0, 0, 298, 0, 0, 121, 290, 257, 0, 0, 0, 0, 0, 0, 0, 0},
+         {1072, 1072, 1072, 1072, 1072, 1072, 1072, 1072, 2120, 2120, 2120, 2120, 4192, 4192,
+          4192, 6024, 6024, 7648, 9792, 9360, 9152},
+         {0xf0},
+         {528, 235, 472, 413, 181, 152, 129, 363, 170, 138, 196, 339, 277, 0, 0, 0, 0, 0, 0, 0, 0},
+         {3, 1, 3, 3, 1, 1, 1, 3, 1, 1, 1, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0},
+         {0, 0, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}},
+    };
+
+    for (const Case& test : cases) {
+        int cap[21] = {};
+        player::audio::opus::initCaps(cap, test.lm, test.channels);
+        for (int i = 0; i < 21; ++i) {
+            EXPECT_EQ(cap[i], test.cap[i]) << "cap band " << i;
+        }
+
+        player::audio::opus::RangeDecoder decoder(test.packet.data(), test.packet.size());
+        player::audio::opus::Allocation allocation;
+        player::audio::opus::computeAllocation(decoder, 0, 21, test.offsets.data(), cap, test.trim,
+                                               test.total, test.channels, test.lm, allocation);
+        EXPECT_EQ(allocation.coded_bands, test.coded);
+        EXPECT_EQ(allocation.intensity, test.intensity);
+        EXPECT_EQ(allocation.dual_stereo, test.dual);
+        for (int i = 0; i < 21; ++i) {
+            EXPECT_EQ(allocation.pulses[i], test.pulses[i]) << "pulses band " << i;
+            EXPECT_EQ(allocation.fine_quant[i], test.fine[i]) << "fine band " << i;
+            EXPECT_EQ(allocation.fine_priority[i], test.priority[i]) << "priority band " << i;
+        }
     }
 }

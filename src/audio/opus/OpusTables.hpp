@@ -28,6 +28,9 @@ extern const float kCeltWindow[kCeltOverlap];
 // log2 of the number of MDCT bins per energy band (Q? plain int).
 extern const int16_t kCeltLogN[kCeltBands];
 
+// Per-band bit caps indexed by [2*LM + channels - 1][band] (8 x 21).
+extern const uint8_t kCeltCacheCaps[168];
+
 // Inverse CDFs used by the range coder.
 extern const uint8_t kCeltTrimIcdf[11];
 extern const uint8_t kCeltSpreadIcdf[4];
