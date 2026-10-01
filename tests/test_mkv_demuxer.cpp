@@ -136,13 +136,24 @@ Bytes frame(uint8_t nal_type, uint8_t second_byte, uint8_t payload) {
     return out;
 }
 
-Bytes simpleBlock(uint64_t track, int16_t relative, bool keyframe, const Bytes& block_data) {
+Bytes blockPayload(uint64_t track, int16_t relative, bool keyframe, const Bytes& block_data) {
     Bytes out;
     putEbmlVint(out, track);
     putU16(out, static_cast<uint16_t>(relative));
     out.push_back(keyframe ? 0x80 : 0x00);
     append(out, block_data);
     return out;
+}
+
+Bytes simpleBlock(uint64_t track, int16_t relative, bool keyframe, const Bytes& block_data) {
+    return blockPayload(track, relative, keyframe, block_data);
+}
+
+Bytes blockGroup(uint64_t track, int16_t relative, int64_t duration_ms, const Bytes& block_data) {
+    Bytes children;
+    append(children, element(0xA1, blockPayload(track, relative, true, block_data)));
+    append(children, element(0x9B, uintPayload(duration_ms)));
+    return element(0xA0, children);
 }
 
 Bytes videoTrackEntry() {
@@ -160,20 +171,42 @@ Bytes videoTrackEntry() {
     return element(0xAE, children);
 }
 
-Bytes audioTrackEntry() {
+Bytes audioTrackEntry(uint64_t number, const std::string& language, const std::string& name) {
     Bytes audio;
     append(audio, floatElement(0xB5, 48000.0));  // SamplingFrequency
     append(audio, uintElement(0x9F, 2));         // Channels
 
     Bytes children;
-    append(children, uintElement(0xD7, 2));
+    append(children, uintElement(0xD7, number));
     append(children, uintElement(0x83, 2));  // TrackType = audio
     append(children, stringElement(0x86, "A_AAC"));
+    append(children, stringElement(0x536E, name));      // TrackName
+    append(children, stringElement(0x22B59C, language));  // Language
     append(children, element(0xE1, audio));
     return element(0xAE, children);
 }
 
-Bytes buildMkv(bool with_audio) {
+Bytes subtitleTrackEntry(uint64_t number, const std::string& language, const std::string& name) {
+    const std::string ass_header =
+        "[Script Info]\nPlayResX: 1920\nPlayResY: 1080\n"
+        "[V4+ Styles]\nFormat: Name, Fontname, Fontsize\nStyle: Default,Arial,48\n"
+        "[Events]\n";
+    Bytes children;
+    append(children, uintElement(0xD7, number));
+    append(children, uintElement(0x83, 17));  // TrackType = subtitle
+    append(children, stringElement(0x86, "S_TEXT/ASS"));
+    append(children, stringElement(0x536E, name));
+    append(children, stringElement(0x22B59C, language));
+    append(children, element(0x63A2, Bytes(ass_header.begin(), ass_header.end())));
+    return element(0xAE, children);
+}
+
+Bytes assEvent(const std::string& text) {
+    const std::string payload = "0,0,Default,," + std::string("0,0,0,,") + text;
+    return Bytes(payload.begin(), payload.end());
+}
+
+Bytes buildMkv(bool with_audio, bool with_subtitles = false, bool second_audio = false) {
     Bytes ebml_header = element(0x1A45DFA3,
                                 concat({uintElement(0x4286, 1), uintElement(0x42F7, 1),
                                         uintElement(0x42F2, 4), uintElement(0x42F3, 8),
@@ -183,17 +216,36 @@ Bytes buildMkv(bool with_audio) {
                          concat({uintElement(0x2AD7B1, 1000000), floatElement(0x4489, 133.3333)}));
     Bytes tracks_payload = videoTrackEntry();
     if (with_audio) {
-        append(tracks_payload, audioTrackEntry());
+        append(tracks_payload, audioTrackEntry(2, "jpn", "Japanese"));
+    }
+    if (second_audio) {
+        append(tracks_payload, audioTrackEntry(4, "eng", "English"));
+    }
+    if (with_subtitles) {
+        append(tracks_payload, subtitleTrackEntry(3, "eng", "English"));
     }
     Bytes tracks = element(0x1654AE6B, tracks_payload);
-    Bytes cluster0 = element(0x1F43B675,
-                             concat({uintElement(0xE7, 0),
-                                     element(0xA3, simpleBlock(1, 0, true, frame(0x26, 0x01, 0xAA))),
-                                     element(0xA3, simpleBlock(1, 33, false, frame(0x02, 0x01, 0xBB)))}));
-    Bytes cluster1 = element(0x1F43B675,
-                             concat({uintElement(0xE7, 67),
-                                     element(0xA3, simpleBlock(1, 0, true, frame(0x26, 0x01, 0xCC))),
-                                     element(0xA3, simpleBlock(1, 33, false, frame(0x02, 0x01, 0xDD)))}));
+
+    Bytes cluster0_children = concat(
+        {uintElement(0xE7, 0), element(0xA3, simpleBlock(1, 0, true, frame(0x26, 0x01, 0xAA))),
+         element(0xA3, simpleBlock(1, 33, false, frame(0x02, 0x01, 0xBB)))});
+    Bytes cluster1_children = concat(
+        {uintElement(0xE7, 67), element(0xA3, simpleBlock(1, 0, true, frame(0x26, 0x01, 0xCC))),
+         element(0xA3, simpleBlock(1, 33, false, frame(0x02, 0x01, 0xDD)))});
+    if (with_audio) {
+        append(cluster0_children, element(0xA3, simpleBlock(2, 0, true, frame(0x00, 0x00, 0x11))));
+        append(cluster1_children, element(0xA3, simpleBlock(2, 0, true, frame(0x00, 0x00, 0x22))));
+    }
+    if (second_audio) {
+        append(cluster0_children, element(0xA3, simpleBlock(4, 0, true, frame(0x00, 0x00, 0x33))));
+        append(cluster1_children, element(0xA3, simpleBlock(4, 0, true, frame(0x00, 0x00, 0x44))));
+    }
+    if (with_subtitles) {
+        append(cluster0_children, blockGroup(3, 0, 500, assEvent("Hello")));
+        append(cluster1_children, blockGroup(3, 0, 500, assEvent("World")));
+    }
+    Bytes cluster0 = element(0x1F43B675, cluster0_children);
+    Bytes cluster1 = element(0x1F43B675, cluster1_children);
     Bytes segment = element(0x18538067, concat({info, tracks, cluster0, cluster1}));
     return concat({ebml_header, segment});
 }
@@ -279,6 +331,73 @@ TEST(MkvDemuxer, SeeksToPreviousKeyframe) {
         ASSERT_TRUE(demuxer.seek(0.05));  // 50 ms -> previous keyframe at 0
         ASSERT_TRUE(demuxer.readSample(sample));
         EXPECT_EQ(sample.pts, 0);
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(MkvDemuxer, ListsAudioAndSubtitleTracks) {
+    const std::filesystem::path path =
+        writeMkv(buildMkv(true, true, true), "hevc_player_mkv_tracks.mkv");
+    {
+        player::demux::MkvDemuxer demuxer;
+        std::string error;
+        ASSERT_TRUE(demuxer.open(path, error)) << error;
+
+        const std::vector<player::demux::AudioTrackInfo> audio = demuxer.audioTracks();
+        ASSERT_EQ(audio.size(), 2u);
+        EXPECT_EQ(audio[0].language, "jpn");
+        EXPECT_EQ(audio[0].name, "Japanese");
+        EXPECT_EQ(audio[1].language, "eng");
+        EXPECT_EQ(audio[1].name, "English");
+        EXPECT_EQ(audio[0].sample_rate, 48000u);
+
+        const std::vector<player::demux::SubtitleTrackInfo> subtitles = demuxer.subtitleTracks();
+        ASSERT_EQ(subtitles.size(), 1u);
+        EXPECT_EQ(subtitles[0].language, "eng");
+        EXPECT_EQ(subtitles[0].name, "English");
+        EXPECT_EQ(subtitles[0].codec, "S_TEXT/ASS");
+        EXPECT_FALSE(subtitles[0].bitmap);
+
+        std::vector<player::subtitle::SubtitleBlock> blocks;
+        ASSERT_TRUE(demuxer.readSubtitleTrack(0, blocks, error)) << error;
+        ASSERT_EQ(blocks.size(), 2u);
+        EXPECT_EQ(blocks[0].pts_ms, 0);
+        EXPECT_EQ(blocks[0].duration_ms, 500);
+        EXPECT_EQ(blocks[1].pts_ms, 67);
+
+        std::vector<player::subtitle::Cue> cues;
+        const std::string codec_private(subtitles[0].codec_private.begin(),
+                                        subtitles[0].codec_private.end());
+        ASSERT_TRUE(player::subtitle::parseEmbeddedTrack("S_TEXT/ASS", codec_private, blocks, cues,
+                                                         &error))
+            << error;
+        ASSERT_EQ(cues.size(), 2u);
+        EXPECT_EQ(cues[0].text, "Hello");
+        EXPECT_DOUBLE_EQ(cues[0].start, 0.0);
+        EXPECT_DOUBLE_EQ(cues[0].end, 0.5);
+        EXPECT_EQ(cues[1].text, "World");
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(MkvDemuxer, SelectsAudioTrack) {
+    const std::filesystem::path path =
+        writeMkv(buildMkv(true, false, true), "hevc_player_mkv_audio_select.mkv");
+    {
+        player::demux::MkvDemuxer demuxer;
+        std::string error;
+        ASSERT_TRUE(demuxer.open(path, error)) << error;
+
+        player::demux::Sample sample;
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
+        EXPECT_EQ(sample.data.back(), 0x11u);
+
+        ASSERT_TRUE(demuxer.selectAudioTrack(1));
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
+        EXPECT_EQ(sample.data.back(), 0x33u);
+        EXPECT_EQ(sample.track, player::demux::TrackType::Audio);
+
+        EXPECT_FALSE(demuxer.selectAudioTrack(7));
     }
     std::filesystem::remove(path);
 }

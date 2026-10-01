@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <unordered_map>
 
 namespace player::demux {
 namespace {
@@ -22,6 +23,9 @@ constexpr uint32_t kTrackNumber = 0xD7;
 constexpr uint32_t kTrackType = 0x83;
 constexpr uint32_t kCodecID = 0x86;
 constexpr uint32_t kCodecPrivate = 0x63A2;
+constexpr uint32_t kTrackName = 0x536E;
+constexpr uint32_t kLanguage = 0x22B59C;
+constexpr uint32_t kFlagDefault = 0x88;
 constexpr uint32_t kDefaultDuration = 0x23E383;
 constexpr uint32_t kVideo = 0xE0;
 constexpr uint32_t kPixelWidth = 0xB0;
@@ -34,6 +38,7 @@ constexpr uint32_t kClusterTimestamp = 0xE7;
 constexpr uint32_t kSimpleBlock = 0xA3;
 constexpr uint32_t kBlockGroup = 0xA0;
 constexpr uint32_t kBlock = 0xA1;
+constexpr uint32_t kBlockDuration = 0x9B;
 constexpr uint32_t kReferenceBlock = 0xFB;
 constexpr uint32_t kCues = 0x1C53BB6B;
 constexpr uint32_t kVoid = 0xEC;
@@ -244,12 +249,15 @@ struct MkvTrack {
     uint64_t number = 0;
     uint64_t type = 0;
     std::string codec;
+    std::string name;
+    std::string language;
     std::vector<uint8_t> codec_private;
     uint32_t width = 0;
     uint32_t height = 0;
     double sample_rate = 0.0;
     uint32_t channels = 0;
     uint64_t default_duration_ns = 0;
+    bool default_track = true;
 };
 
 void parseVideoElement(const uint8_t* data, size_t size, MkvTrack& track) {
@@ -293,6 +301,15 @@ bool parseTrackEntry(const uint8_t* data, size_t size, MkvTrack& track) {
             case kCodecPrivate:
                 track.codec_private.assign(element.payload, element.payload + element.size);
                 break;
+            case kTrackName:
+                track.name = readString(element.payload, element.size);
+                break;
+            case kLanguage:
+                track.language = readString(element.payload, element.size);
+                break;
+            case kFlagDefault:
+                track.default_track = readUint(element.payload, element.size) != 0;
+                break;
             case kDefaultDuration:
                 track.default_duration_ns = readUint(element.payload, element.size);
                 break;
@@ -305,6 +322,10 @@ bool parseTrackEntry(const uint8_t* data, size_t size, MkvTrack& track) {
             default:
                 break;
         }
+    }
+    // Matroska defaults the track language to English when not present.
+    if (track.language.empty()) {
+        track.language = "eng";
     }
     return true;
 }
@@ -476,6 +497,7 @@ MkvDemuxer::~MkvDemuxer() {
 }
 
 bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
+    path_ = path;
     file_ = std::fopen(path.string().c_str(), "rb");
     if (!file_) {
         error = "failed to open " + path.string();
@@ -601,22 +623,62 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
 
     uint64_t video_track_number = 0;
     MkvTrack video_track;
-    MkvTrack audio_track;
     bool have_video = false;
-    bool have_audio = false;
+
+    // Track number -> (kind, index): 0 video, 1 audio, 2 subtitle.
+    struct TrackRef {
+        int kind = -1;
+        size_t index = 0;
+    };
+    std::unordered_map<uint64_t, TrackRef> track_map;
+
+    audio_tracks_.clear();
+    audio_samples_.clear();
+    subtitle_tracks_.clear();
+    subtitle_samples_.clear();
+
     for (MkvTrack& track : tracks) {
         if (track.type == 1 && track.codec == "V_MPEGH/ISO/HEVC" && !have_video) {
             video_track = std::move(track);
             video_track_number = video_track.number;
+            track_map[video_track_number] = {0, 0};
             have_video = true;
-        } else if (track.type == 2 && !have_audio) {
-            audio_track = std::move(track);
-            have_audio = true;
+        } else if (track.type == 2) {
+            AudioTrackInfo info;
+            info.index = audio_tracks_.size();
+            info.name = track.name;
+            info.language = track.language;
+            info.codec = track.codec;
+            info.present = true;
+            info.default_track = track.default_track;
+            info.codec_fourcc = codecFourcc(track.codec);
+            info.channels = track.channels;
+            info.sample_rate = static_cast<uint32_t>(track.sample_rate);
+            info.extradata = track.codec_private;
+            track_map[track.number] = {1, audio_tracks_.size()};
+            audio_tracks_.push_back(std::move(info));
+            audio_samples_.emplace_back();
+        } else if (track.type == 17) {
+            SubtitleTrackInfo info;
+            info.index = subtitle_tracks_.size();
+            info.name = track.name;
+            info.language = track.language;
+            info.codec = track.codec;
+            info.codec_private = track.codec_private;
+            info.bitmap = track.codec == "S_HDMV/PGS" || track.codec == "S_VOBSUB" ||
+                          track.codec == "S_DVBSUB";
+            track_map[track.number] = {2, subtitle_tracks_.size()};
+            subtitle_tracks_.push_back(std::move(info));
+            subtitle_samples_.emplace_back();
         }
     }
     if (!have_video) {
         error = "no HEVC video track found in Matroska file";
         return false;
+    }
+    if (!audio_tracks_.empty()) {
+        selected_audio_ = 0;
+        audio_ = audio_tracks_[0];
     }
 
     // Pass 2: scan clusters and build the sample table.
@@ -627,7 +689,7 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
 
     auto addBlockSamples = [&](const uint8_t* block, size_t block_size, size_t block_offset,
                                int64_t payload_offset, int64_t cluster_timestamp,
-                               int keyframe_override) {
+                               int keyframe_override, int64_t block_duration) {
         size_t cursor = 0;
         uint64_t track_number = 0;
         int track_length = 0;
@@ -638,7 +700,8 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
         const int16_t relative = static_cast<int16_t>((block[cursor] << 8) | block[cursor + 1]);
         cursor += 2;
         const uint8_t flags = block[cursor++];
-        if (track_number != video_track_number) {
+        const auto ref = track_map.find(track_number);
+        if (ref == track_map.end()) {
             return;
         }
         const bool keyframe =
@@ -655,7 +718,14 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
             sample.size = static_cast<uint32_t>(frame.size);
             sample.pts = cluster_timestamp + relative;
             sample.keyframe = keyframe;
-            samples_.push_back(sample);
+            sample.duration = block_duration;
+            if (ref->second.kind == 0) {
+                samples_.push_back(sample);
+            } else if (ref->second.kind == 1) {
+                audio_samples_[ref->second.index].samples.push_back(sample);
+            } else {
+                subtitle_samples_[ref->second.index].samples.push_back(sample);
+            }
         }
     };
 
@@ -696,7 +766,7 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
                     std::vector<uint8_t> data;
                     if (readFileBytes(file_, child_size, data)) {
                         addBlockSamples(data.data(), data.size(), 0, child_payload,
-                                        cluster_timestamp, -1);
+                                        cluster_timestamp, -1, 0);
                     }
                 } else if (child_id == kBlockGroup) {
                     std::vector<uint8_t> data;
@@ -707,18 +777,23 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
                         size_t block_size = 0;
                         size_t block_offset = 0;
                         bool has_reference = false;
+                        int64_t block_duration = 0;
                         while (nextElement(data.data(), data.size(), group_pos, element)) {
                             if (element.id == kBlock) {
                                 block = element.payload;
                                 block_size = element.size;
                                 block_offset = static_cast<size_t>(element.payload - data.data());
+                            } else if (element.id == kBlockDuration) {
+                                block_duration =
+                                    static_cast<int64_t>(readUint(element.payload, element.size));
                             } else if (element.id == kReferenceBlock) {
                                 has_reference = true;
                             }
                         }
                         if (block) {
                             addBlockSamples(block, block_size, block_offset, child_payload,
-                                            cluster_timestamp, has_reference ? 0 : 1);
+                                            cluster_timestamp, has_reference ? 0 : 1,
+                                            block_duration);
                         }
                     }
                 }
@@ -762,8 +837,19 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
 
     // Convert timestamps to milliseconds when the scale is not 1 ms.
     if (timestamp_scale != 1000000) {
-        for (SampleInfo& sample : samples_) {
-            sample.pts = sample.pts * static_cast<int64_t>(timestamp_scale) / 1000000;
+        const auto convert = [timestamp_scale](std::vector<SampleInfo>& samples) {
+            for (SampleInfo& sample : samples) {
+                sample.pts = sample.pts * static_cast<int64_t>(timestamp_scale) / 1000000;
+                sample.duration =
+                    sample.duration * static_cast<int64_t>(timestamp_scale) / 1000000;
+            }
+        };
+        convert(samples_);
+        for (TrackSamples& track : audio_samples_) {
+            convert(track.samples);
+        }
+        for (TrackSamples& track : subtitle_samples_) {
+            convert(track.samples);
         }
     }
 
@@ -786,15 +872,13 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
         video_.fps = static_cast<double>(samples_.size()) / duration_;
     }
 
-    if (have_audio) {
-        audio_.present = true;
-        audio_.codec_fourcc = codecFourcc(audio_track.codec);
-        audio_.channels = audio_track.channels;
-        audio_.sample_rate = static_cast<uint32_t>(audio_track.sample_rate);
-        audio_.extradata = audio_track.codec_private;
-    }
-
     next_sample_ = 0;
+    for (TrackSamples& track : audio_samples_) {
+        track.next = 0;
+    }
+    for (TrackSamples& track : subtitle_samples_) {
+        track.next = 0;
+    }
     return true;
 }
 
@@ -817,6 +901,85 @@ bool MkvDemuxer::readSample(Sample& sample) {
     sample.keyframe = info.keyframe;
     sample.track = TrackType::Video;
     ++next_sample_;
+    return true;
+}
+
+bool MkvDemuxer::selectAudioTrack(size_t index) {
+    if (index >= audio_tracks_.size() || index >= audio_samples_.size()) {
+        return false;
+    }
+    selected_audio_ = index;
+    audio_samples_[index].next = 0;
+    audio_ = audio_tracks_[index];
+    return true;
+}
+
+bool MkvDemuxer::readAudioSample(Sample& sample) {
+    if (audio_samples_.empty() || selected_audio_ >= audio_samples_.size()) {
+        return false;
+    }
+    TrackSamples& track = audio_samples_[selected_audio_];
+    if (track.next >= track.samples.size()) {
+        return false;
+    }
+    const SampleInfo& info = track.samples[track.next];
+    sample.data.resize(info.size);
+    if (info.size > 0) {
+        if (!seekFile(file_, static_cast<int64_t>(info.offset))) {
+            return false;
+        }
+        if (std::fread(sample.data.data(), 1, info.size, file_) != info.size) {
+            return false;
+        }
+    }
+    sample.pts = info.pts;
+    sample.dts = info.pts;
+    sample.keyframe = true;
+    sample.track = TrackType::Audio;
+    ++track.next;
+    return true;
+}
+
+bool MkvDemuxer::readSubtitleTrack(size_t index, std::vector<subtitle::SubtitleBlock>& blocks,
+                                   std::string& error) {
+    blocks.clear();
+    if (index >= subtitle_samples_.size()) {
+        error = "subtitle track index out of range";
+        return false;
+    }
+    const TrackSamples& track = subtitle_samples_[index];
+    if (track.samples.empty()) {
+        error = "subtitle track has no blocks";
+        return false;
+    }
+
+    // Use a private file handle: this may be called from the UI thread while
+    // the pipeline reads video samples through file_.
+    FILE* file = std::fopen(path_.string().c_str(), "rb");
+    if (!file) {
+        error = "failed to reopen " + path_.string();
+        return false;
+    }
+    bool ok = true;
+    for (const SampleInfo& info : track.samples) {
+        subtitle::SubtitleBlock block;
+        block.data.resize(info.size);
+        if (info.size > 0) {
+            if (!seekFile(file, static_cast<int64_t>(info.offset)) ||
+                std::fread(block.data.data(), 1, info.size, file) != info.size) {
+                ok = false;
+                break;
+            }
+        }
+        block.pts_ms = info.pts;
+        block.duration_ms = info.duration;
+        blocks.push_back(std::move(block));
+    }
+    std::fclose(file);
+    if (!ok) {
+        error = "failed to read subtitle block data";
+        return false;
+    }
     return true;
 }
 

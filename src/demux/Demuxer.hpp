@@ -1,5 +1,7 @@
 #pragma once
 
+#include "subtitle/Subtitle.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -35,11 +37,25 @@ struct VideoTrackInfo {
 };
 
 struct AudioTrackInfo {
+    size_t index = 0;
+    std::string name;
+    std::string language;
+    std::string codec;  // container codec id, e.g. "A_AAC", "mp4a"
     bool present = false;
+    bool default_track = false;
     uint32_t codec_fourcc = 0;
     uint32_t channels = 0;
     uint32_t sample_rate = 0;
     std::vector<uint8_t> extradata;
+};
+
+struct SubtitleTrackInfo {
+    size_t index = 0;
+    std::string name;
+    std::string language;
+    std::string codec;  // "S_TEXT/UTF8", "S_TEXT/ASS", "tx3g", ...
+    bool bitmap = false;
+    std::vector<uint8_t> codec_private;
 };
 
 struct Sample {
@@ -69,6 +85,35 @@ public:
     // through this call. Returns false when there is no audio track.
     virtual bool readAudioSample(Sample& sample) {
         (void)sample;
+        return false;
+    }
+
+    // All audio tracks in the container (defaults to the single audio()).
+    virtual std::vector<AudioTrackInfo> audioTracks() const {
+        std::vector<AudioTrackInfo> tracks;
+        if (audio().present) {
+            tracks.push_back(audio());
+        }
+        return tracks;
+    }
+
+    // Selects the audio track whose packets readAudioSample returns.
+    virtual bool selectAudioTrack(size_t index) {
+        (void)index;
+        return false;
+    }
+
+    // Text subtitle tracks in the container.
+    virtual std::vector<SubtitleTrackInfo> subtitleTracks() const { return {}; }
+
+    // Reads all blocks of a text subtitle track. Implementations that read
+    // from disk must not disturb the main sample reader (use a private file
+    // handle), because this may be called from the UI thread.
+    virtual bool readSubtitleTrack(size_t index, std::vector<subtitle::SubtitleBlock>& blocks,
+                                   std::string& error) {
+        (void)index;
+        (void)blocks;
+        error = "subtitle extraction not supported";
         return false;
     }
 

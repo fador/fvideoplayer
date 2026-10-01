@@ -66,11 +66,27 @@ int printFileInfo(const std::string& input) {
                         static_cast<unsigned>(hvcc.nals.size()));
         }
     }
-    if (audio.present) {
-        std::printf("audio: fourcc 0x%08X, %u channels, %u Hz\n", audio.codec_fourcc,
-                    audio.channels, audio.sample_rate);
-    } else {
+    const std::vector<player::demux::AudioTrackInfo> audio_tracks = demuxer->audioTracks();
+    if (audio_tracks.empty()) {
         std::printf("audio: none\n");
+    } else {
+        for (const player::demux::AudioTrackInfo& track : audio_tracks) {
+            std::printf("audio %zu: '%s' %s (%s), %u channels, %u Hz\n", track.index,
+                        track.name.c_str(), track.language.c_str(), track.codec.c_str(),
+                        track.channels, track.sample_rate);
+        }
+    }
+    (void)audio;
+
+    const std::vector<player::demux::SubtitleTrackInfo> subtitle_tracks = demuxer->subtitleTracks();
+    if (subtitle_tracks.empty()) {
+        std::printf("subtitles: none\n");
+    } else {
+        for (const player::demux::SubtitleTrackInfo& track : subtitle_tracks) {
+            std::printf("subtitle %zu: '%s' %s (%s)%s\n", track.index, track.name.c_str(),
+                        track.language.c_str(), track.codec.c_str(),
+                        track.bitmap ? " [bitmap, unsupported]" : "");
+        }
     }
     return EXIT_SUCCESS;
 }
