@@ -170,4 +170,8 @@ int RangeDecoder::tellFrac() const {
     return static_cast<int>(nbits - ((l << kBitRes) + b));
 }
 
+void RangeDecoder::skipToEnd(int total_bits) {
+    bits_total_ += total_bits - tell();
+}
+
 }  // namespace player::audio::opus

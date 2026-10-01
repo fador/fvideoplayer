@@ -23,6 +23,7 @@ struct BandsParams {
     int32_t balance = 0;           // bits left over by the allocation
     int lm = 0;                    // frame size is 2.5 ms << lm
     int coded_bands = kCeltBands;
+    int disable_inv = 0;           // phase inversion off (mono decoders)
 };
 
 // Decodes every band into x and y, each M*kCeltEBands[kCeltBands] floats with

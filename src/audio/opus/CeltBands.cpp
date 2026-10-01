@@ -670,6 +670,7 @@ void quantAllBands(RangeDecoder& decoder, const BandsParams& params, int channel
     ctx.intensity = params.intensity;
     ctx.spread = params.spread;
     ctx.seed = seed;
+    ctx.disable_inv = params.disable_inv;
 
     const int norm_size = m * kCeltEBands[kCeltBands - 1] - norm_offset;
     std::vector<float> norm_storage(static_cast<size_t>(channels) * norm_size, 0.0f);

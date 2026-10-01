@@ -175,10 +175,15 @@ The Opus decoder is also written from scratch. Implemented:
   combination
 - CELT pitch comb filter (with crossfade and tap presets) and
   de-emphasis, verified against reference outputs
+- CELT frame decoding: header parsing (silence, post-filter, transient,
+  intra, spread, dynalloc, trim), band energy history, PVQ content,
+  synthesis and the pitch post-filter, with inter-frame state. CELT-only
+  Opus packets now decode to PCM, verified against reference-encoded and
+  reference-decoded frame sequences (mono/stereo, several frame sizes)
 
-Next milestones: the inverse MDCT and overlap-add with the comb filter,
-then the SILK layer and hybrid frames. Until then Opus tracks are
-recognized, reported as unsupported once in the log, and skipped.
+Next milestones: the SILK layer and hybrid frames; until then those
+packets are reported as unsupported once in the log and skipped. CELT-only
+Opus tracks (the common case at high bitrates) play.
 
 The player runs without a console window; messages are collected in a
 thread-safe log buffer and can be viewed in the in-app log console

@@ -31,6 +31,10 @@ public:
     int tell() const;
     // Bits consumed so far in 1/8 bit resolution (ec_tell_frac).
     int tellFrac() const;
+    // Pretends total_bits bits were consumed (used by the CELT silence flag).
+    void skipToEnd(int total_bits);
+    // Internal range state, used as the CELT folding seed (dec->rng).
+    uint32_t rng() const { return range_; }
     size_t size() const { return size_; }
     bool error() const { return error_; }
 

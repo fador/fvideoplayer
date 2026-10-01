@@ -2,6 +2,7 @@ add_executable(player_tests
     test_audio.cpp
     test_celt_bands.cpp
     test_celt_filter.cpp
+    test_celt_frame.cpp
     test_celt_post.cpp
     test_celt_vq.cpp
     test_mdct.cpp

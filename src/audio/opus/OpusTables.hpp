@@ -53,6 +53,9 @@ extern const uint8_t kCeltCacheBits[kCeltCacheBitsSize];
 // Mean energy per band (25 entries; only the first kCeltBands are used).
 extern const float kCeltEMeans[25];
 
+// Time/frequency resolution per [LM][4*transient + 2*select + changed] (4x8).
+extern const int8_t kCeltTfSelect[4][8];
+
 // 48 kHz pre/de-emphasis coefficient (1 - 0.85 z^-1).
 constexpr float kCeltPreemph48k = 0.8500061035f;
 

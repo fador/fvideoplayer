@@ -107,6 +107,7 @@ add_library(player_audio STATIC
     src/audio/opus/CeltFilter.cpp
     src/audio/opus/CeltPost.cpp
     src/audio/opus/CeltVq.cpp
+    src/audio/opus/CeltFrame.cpp
     src/audio/opus/KissFft.cpp
     src/audio/opus/Mdct.cpp
     src/audio/opus/OpusDecoder.cpp
