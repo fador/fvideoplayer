@@ -8,7 +8,22 @@
 #include <memory>
 #include <string>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace {
+
+// The GUI does not need a console. CLI modes keep it so that output can be
+// redirected and shells wait for the process to finish.
+void detachConsoleForGui() {
+#ifdef _WIN32
+    if (const HWND console = GetConsoleWindow()) {
+        ShowWindow(console, SW_HIDE);
+    }
+    FreeConsole();
+#endif
+}
 
 void printUsage(const char* program) {
     std::printf("usage: %s [options] [file]\n", program);
@@ -72,6 +87,7 @@ int main(int argc, char** argv) {
     std::string screenshot;
     int screenshot_every = 0;
     bool info_mode = false;
+    bool help_requested = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -92,11 +108,20 @@ int main(int argc, char** argv) {
         } else if (arg == "--info") {
             info_mode = true;
         } else if (arg == "--help" || arg == "-h") {
-            printUsage(argv[0]);
-            return EXIT_SUCCESS;
+            help_requested = true;
         } else if (input.empty()) {
             input = arg;
         }
+    }
+
+    const bool cli_mode = help_requested || info_mode || !dump_yuv.empty();
+    if (!cli_mode) {
+        detachConsoleForGui();
+    }
+
+    if (help_requested) {
+        printUsage(argv[0]);
+        return EXIT_SUCCESS;
     }
 
     if (info_mode) {

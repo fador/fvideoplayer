@@ -55,6 +55,11 @@ add_library(implot STATIC
 target_include_directories(implot PUBLIC external/implot)
 target_link_libraries(implot PUBLIC imgui)
 
+# --- logging utilities -------------------------------------------------------
+add_library(player_util STATIC
+    src/utils/Log.cpp)
+target_include_directories(player_util PUBLIC src)
+
 # --- player demux (no GUI dependencies) --------------------------------------
 add_library(player_demux STATIC
     src/demux/AviDemuxer.cpp
@@ -80,7 +85,7 @@ add_library(player_playback STATIC
     src/playback/PlaybackEngine.cpp
     src/stats/StatsCollector.cpp)
 target_include_directories(player_playback PUBLIC src)
-target_link_libraries(player_playback PUBLIC player_decode player_demux Threads::Threads)
+target_link_libraries(player_playback PUBLIC player_decode player_demux player_util Threads::Threads)
 
 # --- player -----------------------------------------------------------------
 add_library(player_core STATIC
@@ -93,6 +98,7 @@ target_link_libraries(player_core PUBLIC
     player_playback
     player_decode
     player_demux
+    player_util
     kvzdec
     imgui
     implot

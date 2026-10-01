@@ -143,6 +143,13 @@ bool Application::init(const std::string& title) {
         std::fprintf(stderr, "video renderer init failed: %s\n", renderer_error.c_str());
         return false;
     }
+
+    log::addf(log::Level::Info, "HEVC Player started (kvzdec %s)",
+              kvzdec_get_version_string());
+    const char* gl_version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+    const char* gl_renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    log::addf(log::Level::Info, "OpenGL: %s (%s)", gl_version ? gl_version : "?",
+              gl_renderer ? gl_renderer : "?");
     return true;
 }
 
@@ -150,13 +157,14 @@ bool Application::openFile(const std::string& path) {
     std::string error;
     if (!engine_.open(path, error)) {
         status_ = "Failed to open: " + error;
-        std::fprintf(stderr, "failed to open %s: %s\n", path.c_str(), error.c_str());
+        log::addf(log::Level::Error, "Failed to open %s: %s", path.c_str(), error.c_str());
         return false;
     }
     uploaded_serial_ = 0;
     video_texture_ = 0;
     renderer_.setStreamBitDepth(engine_.streamBitDepth());
     status_ = "Opened " + path;
+    log::addf(log::Level::Info, "Opened %s", path.c_str());
     return true;
 }
 
@@ -242,6 +250,7 @@ void Application::drawUI() {
     drawMenuBar();
     drawVideoArea();
     drawStatsWindow();
+    drawLogWindow();
 }
 
 void Application::drawMenuBar() {
@@ -278,6 +287,7 @@ void Application::drawMenuBar() {
         }
         if (ImGui::BeginMenu("View")) {
             ImGui::MenuItem("Statistics", "S", &show_stats_);
+            ImGui::MenuItem("Log", "L", &show_log_);
             ImGui::Separator();
             ImGui::MenuItem("BT.709 color", nullptr, &color_.bt709);
             ImGui::MenuItem("Full range", nullptr, &color_.full_range);
@@ -285,7 +295,7 @@ void Application::drawMenuBar() {
         }
         if (ImGui::BeginMenu("Help")) {
             ImGui::MenuItem("Space: play/pause  Left/Right: seek 5s", nullptr, false, false);
-            ImGui::MenuItem("F: fullscreen  S: statistics", nullptr, false, false);
+            ImGui::MenuItem("F: fullscreen  S: statistics  L: log", nullptr, false, false);
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
@@ -481,6 +491,57 @@ void Application::drawStatsWindow() {
     ImGui::End();
 }
 
+void Application::drawLogWindow() {
+    if (!show_log_) {
+        return;
+    }
+    ImGui::SetNextWindowSize(ImVec2(720.0f, 360.0f), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Log", &show_log_);
+
+    if (ImGui::Button("Clear")) {
+        log::clear();
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Auto-scroll", &log_autoscroll_);
+    ImGui::SameLine();
+    ImGui::TextDisabled("%zu messages", log_cache_.size());
+    ImGui::Separator();
+
+    const uint64_t version = log::version();
+    if (version != log_version_) {
+        log_cache_ = log::snapshot();
+        log_version_ = version;
+    }
+
+    ImGui::BeginChild("##log_scroll", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
+                      ImGuiWindowFlags_HorizontalScrollbar);
+    for (const log::Entry& entry : log_cache_) {
+        ImVec4 color(0.85f, 0.85f, 0.85f, 1.0f);
+        switch (entry.level) {
+            case log::Level::Debug:
+                color = ImVec4(0.55f, 0.55f, 0.55f, 1.0f);
+                break;
+            case log::Level::Info:
+                color = ImVec4(0.85f, 0.85f, 0.85f, 1.0f);
+                break;
+            case log::Level::Warning:
+                color = ImVec4(1.0f, 0.8f, 0.3f, 1.0f);
+                break;
+            case log::Level::Error:
+                color = ImVec4(1.0f, 0.35f, 0.35f, 1.0f);
+                break;
+        }
+        ImGui::TextDisabled("%7.2f", entry.time_seconds);
+        ImGui::SameLine();
+        ImGui::TextColored(color, "[%s] %s", log::levelName(entry.level), entry.text.c_str());
+    }
+    if (log_autoscroll_) {
+        ImGui::SetScrollHereY(1.0f);
+    }
+    ImGui::EndChild();
+    ImGui::End();
+}
+
 void Application::handleShortcuts() {
     ImGuiIO& io = ImGui::GetIO();
     if (io.WantTextInput) {
@@ -497,6 +558,9 @@ void Application::handleShortcuts() {
     }
     if (ImGui::IsKeyPressed(ImGuiKey_S, false)) {
         show_stats_ = !show_stats_;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_L, false)) {
+        show_log_ = !show_log_;
     }
     if (ImGui::IsKeyPressed(ImGuiKey_F, false)) {
         const bool fullscreen = (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) != 0;
@@ -537,7 +601,7 @@ bool Application::saveScreenshotTo(const std::string& path) {
     std::fprintf(file, "P6\n%d %d\n255\n", width, height);
     std::fwrite(rgb.data(), 1, rgb.size(), file);
     std::fclose(file);
-    std::fprintf(stderr, "screenshot written to %s (%dx%d)\n", path.c_str(), width, height);
+    log::addf(log::Level::Info, "Screenshot written to %s (%dx%d)", path.c_str(), width, height);
     return true;
 }
 

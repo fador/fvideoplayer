@@ -2,12 +2,14 @@
 
 #include "playback/PlaybackEngine.hpp"
 #include "render/VideoRenderer.hpp"
+#include "utils/Log.hpp"
 
 #include <SDL3/SDL.h>
 
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace player {
 
@@ -35,6 +37,7 @@ private:
     void drawVideoArea();
     void drawTransport();
     void drawStatsWindow();
+    void drawLogWindow();
     void handleShortcuts();
     void openFileDialog();
     static void fileDialogCallback(void* userdata, const char* const* filelist, int filter);
@@ -49,6 +52,10 @@ private:
     render::VideoColorSettings color_;
 
     bool show_stats_ = true;
+    bool show_log_ = false;
+    bool log_autoscroll_ = true;
+    uint64_t log_version_ = 0;
+    std::vector<log::Entry> log_cache_;
     bool dragging_seek_ = false;
     float drag_position_ = 0.0f;
     uint64_t uploaded_serial_ = 0;

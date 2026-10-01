@@ -1,6 +1,7 @@
 #include "playback/PlaybackEngine.hpp"
 
 #include "demux/HvcC.hpp"
+#include "utils/Log.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -36,6 +37,7 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
     if (!demuxer) {
         last_error_ = local_error;
         error = local_error;
+        log::addf(log::Level::Error, "Demuxer error: %s", local_error.c_str());
         return false;
     }
     video_info_ = demuxer->video();
@@ -45,12 +47,14 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
     if (!decoder_.open(&local_error)) {
         last_error_ = local_error;
         error = local_error;
+        log::addf(log::Level::Error, "Decoder open failed: %s", local_error.c_str());
         return false;
     }
     if (!video_info_.hvcc.empty() &&
         !decoder_.pushParameterSets(video_info_.hvcc, &local_error)) {
         last_error_ = local_error;
         error = local_error;
+        log::addf(log::Level::Error, "Parameter set error: %s", local_error.c_str());
         decoder_.close();
         return false;
     }
@@ -105,6 +109,13 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
     {
         std::lock_guard<std::mutex> lock(mutex_);
         seek_pending_ = false;
+    }
+    log::addf(log::Level::Info, "%s: %ux%u, %.3f fps, %.2f s, buffer %zu frames",
+              info.container.c_str(), video_info_.width, video_info_.height, video_info_.fps,
+              duration_, queue_.capacity());
+    if (audio_info_.present) {
+        log::addf(log::Level::Info, "Audio: fourcc 0x%08X, %u channels, %u Hz (not decoded)",
+                  audio_info_.codec_fourcc, audio_info_.channels, audio_info_.sample_rate);
     }
     thread_ = std::thread([this] { pipelineLoop(); });
     return true;
@@ -263,6 +274,8 @@ void PlaybackEngine::pipelineLoop() {
             eos_ = true;
             stats_.setEos(true);
             stats_.setQueue(queue_.size(), queue_.capacity(), bufferedSeconds());
+            log::addf(log::Level::Info, "End of stream (%lld frames decoded)",
+                      static_cast<long long>(stats_.snapshot().frames_decoded));
             continue;
         }
 
@@ -274,6 +287,9 @@ void PlaybackEngine::pipelineLoop() {
         std::vector<decode::DecodedFrame> frames;
         if (ok) {
             decoder_.pullFrames(frames);
+        } else {
+            log::addf(log::Level::Error, "Decoder rejected a sample (pts %lld)",
+                      static_cast<long long>(sample.pts));
         }
         const double elapsed_ms =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
@@ -315,6 +331,7 @@ void PlaybackEngine::performSeek(double seconds) {
     const double elapsed_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     stats_.onSeek(elapsed_ms);
+    log::addf(log::Level::Debug, "Seek to %.3f s (%.1f ms)", seconds, elapsed_ms);
 }
 
 }  // namespace player::playback

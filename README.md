@@ -61,6 +61,7 @@ hevc_player [options] [file]
 | Space | play / pause |
 | Left / Right | seek 5 seconds |
 | S | toggle statistics window |
+| L | toggle log console |
 | F | toggle fullscreen |
 | Drag & drop | open a file |
 | File -> Open | native file dialog |
@@ -82,6 +83,11 @@ The demux + decode pipeline runs on a dedicated thread and fills a bounded
 frame queue (about two seconds, capped by a memory budget). The UI thread
 advances a monotonic clock and displays frames as their presentation
 timestamps become due, dropping frames that are already late.
+
+The player runs without a console window; messages are collected in a
+thread-safe log buffer and can be viewed in the in-app log console
+(`View -> Log` or `L`). CLI modes (`--info`, `--dump-yuv`, `--help`) keep
+the console so their output can be redirected.
 
 ## Verification
 
