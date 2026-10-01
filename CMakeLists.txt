@@ -51,21 +51,40 @@ add_library(implot STATIC
 target_include_directories(implot PUBLIC external/implot)
 target_link_libraries(implot PUBLIC imgui)
 
+# --- player demux (no GUI dependencies) --------------------------------------
+add_library(player_demux STATIC
+    src/demux/Demuxer.cpp
+    src/demux/HvcC.cpp
+    src/demux/RawHevcDemuxer.cpp)
+target_include_directories(player_demux PUBLIC src)
+target_compile_definitions(player_demux PRIVATE _CRT_SECURE_NO_WARNINGS)
+
 # --- player -----------------------------------------------------------------
 add_library(player_core STATIC
     src/app/Application.cpp)
 target_include_directories(player_core PUBLIC src)
-target_link_libraries(player_core PUBLIC kvzdec imgui implot SDL3::SDL3 OpenGL::GL Threads::Threads)
+target_link_libraries(player_core PUBLIC
+    player_demux
+    kvzdec
+    imgui
+    implot
+    SDL3::SDL3
+    OpenGL::GL
+    Threads::Threads)
 
 if(MSVC)
+    target_compile_options(player_demux PRIVATE /W4 /permissive- /Zc:__cplusplus)
     target_compile_options(player_core PRIVATE /W4 /permissive- /Zc:__cplusplus)
-    target_compile_options(player_core PUBLIC $<$<CONFIG:Release>:/O2>)
 endif()
 
 add_executable(hevc_player src/main.cpp)
 target_link_libraries(hevc_player PRIVATE player_core)
 
+# --- tests -------------------------------------------------------------------
 if(PLAYER_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+    add_subdirectory(external/googletest EXCLUDE_FROM_ALL)
     enable_testing()
     add_subdirectory(tests)
 endif()
