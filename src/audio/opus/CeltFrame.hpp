@@ -1,5 +1,6 @@
 #pragma once
 
+#include "audio/opus/CeltLpc.hpp"
 #include "audio/opus/Mdct.hpp"
 #include "audio/opus/OpusTables.hpp"
 #include "audio/opus/RangeDecoder.hpp"
@@ -26,6 +27,11 @@ public:
     void decode(RangeDecoder& decoder, int lm, int stream_channels, float* pcm, int start = 0,
                 int end = kCeltBands);
 
+    // Conceals a lost frame: extrapolates the last decoded signal (pitch-based
+    // for short bursts, noise-based after 5 frames or when no pitch history
+    // exists) and writes frame_samples * channels floats.
+    void decodeLost(int lm, float* pcm);
+
 private:
     static constexpr int kDecodeBufferSize = 2048;
 
@@ -45,6 +51,10 @@ private:
     int postfilter_tapset_old_ = 0;
     float preemph_mem_[2] = {};
     uint32_t rng_ = 0;
+    int loss_count_ = 0;
+    int skip_plc_ = 0;
+    int last_pitch_index_ = 0;
+    std::array<float, 2 * kCeltLpcOrder> lpc_storage_ = {};
     std::array<std::array<float, kDecodeBufferSize + kCeltOverlap>, 2> decode_mem_ = {};
     MdctLookup mdct_;
     std::vector<float> scratch_;

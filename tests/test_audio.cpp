@@ -1146,6 +1146,29 @@ TEST(OpusDecoder, ConfiguresAndRejectsUnimplementedLayers) {
               player::audio::opus::Status::Invalid);
 }
 
+TEST(OpusDecoder, ConcealsLostCeltPackets) {
+    const std::vector<uint8_t> head = makeOpusHead(1, 312, 48000, 0, 0);
+    player::audio::opus::Decoder decoder;
+    std::string error;
+    ASSERT_TRUE(decoder.configure(head.data(), head.size(), error)) << error;
+
+    // CELT fullband 20 ms mono (config 31, one frame).
+    const std::vector<uint8_t> packet = makePacket(0xF8, std::vector<uint8_t>(8, 0));
+    player::audio::PcmBuffer pcm;
+    ASSERT_EQ(decoder.decode(packet.data(), packet.size(), pcm, error),
+              player::audio::opus::Status::Ok) << error;
+    EXPECT_EQ(pcm.samples.size(), 960u - 312u);  // pre-skip is trimmed
+
+    // A lost packet produces a full frame of concealed samples.
+    ASSERT_EQ(decoder.decode(nullptr, 0, pcm, error), player::audio::opus::Status::Ok) << error;
+    EXPECT_EQ(pcm.samples.size(), 960u);
+    EXPECT_EQ(pcm.pts, 960);
+
+    ASSERT_EQ(decoder.decode(nullptr, 0, pcm, error), player::audio::opus::Status::Ok) << error;
+    EXPECT_EQ(pcm.samples.size(), 960u);
+    EXPECT_EQ(pcm.pts, 1920);
+}
+
 TEST(CeltPvq, CountsCodewords) {
     EXPECT_EQ(player::audio::opus::pvqCount(2, 1), 4u);
     EXPECT_EQ(player::audio::opus::pvqCount(2, 2), 8u);

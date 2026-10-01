@@ -47,10 +47,16 @@ private:
     Status decodeCelt(const uint8_t* data, const PacketInfo& info, PcmBuffer& pcm,
                       std::string& error);
 
+    // Conceals a lost packet (decode with no data) using the last decoded
+    // frame size and mode.
+    Status conceal(PcmBuffer& pcm, std::string& error);
+
     OpusHead head_;
     bool configured_ = false;
     int64_t pts_ = 0;
     uint32_t pre_skip_remaining_ = 0;
+    Mode last_mode_ = Mode::Celt;
+    int last_lm_ = 0;
     CeltFrameDecoder celt_;
     silk::SilkDecoder silk_;
 };

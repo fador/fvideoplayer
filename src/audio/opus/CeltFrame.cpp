@@ -4,7 +4,9 @@
 #include "audio/opus/CeltBands.hpp"
 #include "audio/opus/CeltEnergy.hpp"
 #include "audio/opus/CeltFilter.hpp"
+#include "audio/opus/CeltLpc.hpp"
 #include "audio/opus/CeltPost.hpp"
+#include "audio/opus/CeltVq.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -68,6 +70,9 @@ void CeltFrameDecoder::reset() {
     preemph_mem_[0] = 0;
     preemph_mem_[1] = 0;
     rng_ = 0;
+    loss_count_ = 0;
+    skip_plc_ = 1;
+    last_pitch_index_ = 0;
     for (auto& mem : decode_mem_) {
         mem.fill(0.0f);
     }
@@ -109,6 +114,9 @@ void CeltFrameDecoder::decode(RangeDecoder& decoder, int lm, int stream_channels
     float* out_syn[2];
     out_syn[0] = decode_mem_[0].data() + kDecodeBufferSize - n;
     out_syn[1] = decode_mem_[1].data() + kDecodeBufferSize - n;
+
+    // The pitch-based PLC needs two consecutive received packets to start.
+    skip_plc_ = loss_count_ != 0;
 
     // A mono frame reuses the louder of the previous stereo energies.
     if (stream_channels == 1) {
@@ -299,7 +307,8 @@ void CeltFrameDecoder::decode(RangeDecoder& decoder, int lm, int stream_channels
     if (!is_transient) {
         std::copy(old_log_e_.begin(), old_log_e_.end(), old_log_e2_.begin());
         std::copy(old_band_e_.begin(), old_band_e_.end(), old_log_e_.begin());
-        const float max_inc = m * 0.001f;
+        // In DTX the noise floor may rise faster than the usual 2.4 dB/s.
+        const float max_inc = loss_count_ < 10 ? m * 0.001f : 1.0f;
         for (int i = 0; i < 2 * kCeltBands; ++i) {
             background_log_e_[i] = std::min(background_log_e_[i] + max_inc, old_band_e_[i]);
         }
@@ -326,6 +335,184 @@ void CeltFrameDecoder::decode(RangeDecoder& decoder, int lm, int stream_channels
     rng_ = decoder.rng();
 
     deemphasis(out_syn, pcm, n, stream_channels, 1, kCeltPreemph48k, preemph_mem_);
+    loss_count_ = 0;
+}
+
+// Conceals a lost frame (celt_decode_lost). After 5 consecutive losses, or
+// when there is no reliable pitch history, the output falls back to noise
+// shaped by the (decaying) band energies; otherwise the last pitch period is
+// repeated with an attenuation that grows with each loss.
+void CeltFrameDecoder::decodeLost(int lm, float* pcm) {
+    const int n = kCeltShortMdct << lm;
+    const int overlap = kCeltOverlap;
+    const int channels = channels_;
+    float* out_syn[2];
+    out_syn[0] = decode_mem_[0].data() + kDecodeBufferSize - n;
+    out_syn[1] = decode_mem_[1].data() + kDecodeBufferSize - n;
+
+    const int loss_count = loss_count_;
+    const int start = 0;
+    const bool noise_based = loss_count >= 5 || start != 0 || skip_plc_ != 0;
+
+    if (noise_based) {
+        const int eff_end = kCeltBands;
+
+        // Decay the band energies towards the noise floor.
+        const float decay = loss_count == 0 ? 1.5f : 0.5f;
+        for (int c = 0; c < channels; ++c) {
+            for (int i = start; i < eff_end; ++i) {
+                const int idx = c * kCeltBands + i;
+                old_band_e_[idx] = std::max(background_log_e_[idx], old_band_e_[idx] - decay);
+            }
+        }
+
+        // Fill each coded band with random noise and renormalise it.
+        uint32_t seed = rng_;
+        float* x = scratch_.data();
+        for (int c = 0; c < channels; ++c) {
+            for (int i = start; i < eff_end; ++i) {
+                const int boffs = n * c + (kCeltEBands[i] << lm);
+                const int blen = (kCeltEBands[i + 1] - kCeltEBands[i]) << lm;
+                for (int j = 0; j < blen; ++j) {
+                    seed = 1664525u * seed + 1013904223u;
+                    x[boffs + j] = static_cast<float>(static_cast<int32_t>(seed) >> 20);
+                }
+                renormaliseVector(x + boffs, blen, 1.0f);
+            }
+        }
+        rng_ = seed;
+
+        for (int c = 0; c < channels; ++c) {
+            auto& mem = decode_mem_[c];
+            std::copy(mem.begin() + n, mem.begin() + kDecodeBufferSize + overlap / 2, mem.begin());
+        }
+
+        float* freq = x + 2 * kCeltFrame48k;
+        synthesis(x, start, eff_end, channels, 0, lm, 0, out_syn, freq);
+    } else {
+        // Pitch-based PLC: repeat the last pitch period of the excitation.
+        int pitch_index;
+        float fade = 1.0f;
+        if (loss_count == 0) {
+            float* mem[2] = {decode_mem_[0].data(), decode_mem_[1].data()};
+            last_pitch_index_ = plcPitchSearch(mem, channels);
+            pitch_index = last_pitch_index_;
+        } else {
+            pitch_index = last_pitch_index_;
+            fade = 0.8f;
+        }
+
+        // Two pitch periods are wanted to detect a decaying signal, but no
+        // more than MAX_PERIOD is available.
+        const int exc_length = std::min(2 * pitch_index, kCeltMaxPeriod);
+
+        std::vector<float> etmp(overlap);
+        std::vector<float> exc(kCeltMaxPeriod + kCeltLpcOrder);
+        std::vector<float> fir_tmp(exc_length);
+        float* exc_ptr = exc.data() + kCeltLpcOrder;
+
+        for (int c = 0; c < channels; ++c) {
+            float* buf = decode_mem_[c].data();
+            for (int i = 0; i < kCeltMaxPeriod + kCeltLpcOrder; ++i) {
+                exc_ptr[i - kCeltLpcOrder] =
+                    buf[kDecodeBufferSize - kCeltMaxPeriod - kCeltLpcOrder + i];
+            }
+
+            if (loss_count == 0) {
+                // LPC of the last MAX_PERIOD samples so the extrapolation can
+                // run in the excitation domain.
+                float ac[kCeltLpcOrder + 1];
+                celtAutocorr(exc_ptr, ac, kCeltWindow, overlap, kCeltLpcOrder, kCeltMaxPeriod);
+                ac[0] *= 1.0001f;  // -40 dB noise floor
+                for (int i = 1; i <= kCeltLpcOrder; ++i) {
+                    ac[i] -= ac[i] * (0.008f * 0.008f) * i * i;  // lag windowing
+                }
+                celtLpc(&lpc_storage_[c * kCeltLpcOrder], ac, kCeltLpcOrder);
+            }
+
+            // Excitation of the samples before the loss; the LPC history is
+            // initialised by the filter itself.
+            celtFir(exc_ptr + kCeltMaxPeriod - exc_length, &lpc_storage_[c * kCeltLpcOrder],
+                    fir_tmp.data(), exc_length, kCeltLpcOrder);
+            std::copy(fir_tmp.begin(), fir_tmp.end(), exc_ptr + kCeltMaxPeriod - exc_length);
+
+            // How fast is the waveform decaying?
+            float e1 = 1;
+            float e2 = 1;
+            const int decay_length = exc_length >> 1;
+            for (int i = 0; i < decay_length; ++i) {
+                const float e = exc_ptr[kCeltMaxPeriod - decay_length + i];
+                e1 += e * e;
+                const float e_prev = exc_ptr[kCeltMaxPeriod - 2 * decay_length + i];
+                e2 += e_prev * e_prev;
+            }
+            e1 = std::min(e1, e2);
+            const float decay = std::sqrt(e1 / e2);
+
+            // Make room for the new frame; the overlap past the buffer end is
+            // not needed here.
+            std::copy(buf + n, buf + kDecodeBufferSize, buf);
+
+            // Extrapolate the excitation, scaling each pitch period by decay.
+            const int extrapolation_offset = kCeltMaxPeriod - pitch_index;
+            const int extrapolation_len = n + overlap;
+            float attenuation = fade * decay;
+            float s1 = 0;
+            for (int i = 0, j = 0; i < extrapolation_len; ++i, ++j) {
+                if (j >= pitch_index) {
+                    j -= pitch_index;
+                    attenuation *= decay;
+                }
+                buf[kDecodeBufferSize - n + i] = attenuation * exc_ptr[extrapolation_offset + j];
+                const float tmp =
+                    buf[kDecodeBufferSize - kCeltMaxPeriod - n + extrapolation_offset + j];
+                s1 += tmp * tmp;
+            }
+
+            // Synthesis filter, with the pre-loss samples as history.
+            float lpc_mem[kCeltLpcOrder];
+            for (int i = 0; i < kCeltLpcOrder; ++i) {
+                lpc_mem[i] = buf[kDecodeBufferSize - n - 1 - i];
+            }
+            celtIir(buf + kDecodeBufferSize - n, &lpc_storage_[c * kCeltLpcOrder],
+                    buf + kDecodeBufferSize - n, extrapolation_len, kCeltLpcOrder, lpc_mem);
+
+            // Attenuate if the synthesis exploded (also catches NaNs).
+            float s2 = 0;
+            for (int i = 0; i < extrapolation_len; ++i) {
+                const float tmp = buf[kDecodeBufferSize - n + i];
+                s2 += tmp * tmp;
+            }
+            if (!(s1 > 0.2f * s2)) {
+                for (int i = 0; i < extrapolation_len; ++i) {
+                    buf[kDecodeBufferSize - n + i] = 0;
+                }
+            } else if (s1 < s2) {
+                const float ratio = std::sqrt((s1 + 1) / (s2 + 1));
+                for (int i = 0; i < overlap; ++i) {
+                    const float gain = 1.0f - kCeltWindow[i] * (1.0f - ratio);
+                    buf[kDecodeBufferSize - n + i] *= gain;
+                }
+                for (int i = overlap; i < extrapolation_len; ++i) {
+                    buf[kDecodeBufferSize - n + i] *= ratio;
+                }
+            }
+
+            // Pre-filter the MDCT overlap the way the decoder will undo it.
+            combFilter(etmp.data(), buf + kDecodeBufferSize, postfilter_period_, postfilter_period_,
+                       overlap, -postfilter_gain_, -postfilter_gain_, postfilter_tapset_,
+                       postfilter_tapset_, nullptr, 0);
+
+            // Simulate TDAC so the concealed audio blends with the next frame.
+            for (int i = 0; i < overlap / 2; ++i) {
+                buf[kDecodeBufferSize + i] = kCeltWindow[i] * etmp[overlap - 1 - i] +
+                                             kCeltWindow[overlap - i - 1] * etmp[i];
+            }
+        }
+    }
+
+    loss_count_ = loss_count + 1;
+    deemphasis(out_syn, pcm, n, channels, 1, kCeltPreemph48k, preemph_mem_);
 }
 
 }  // namespace player::audio::opus

@@ -217,9 +217,13 @@ The Opus decoder is also written from scratch. Implemented:
   runtime-computed ones
 - OpusHead pre-skip trimming (the decoder ramp-up samples are dropped,
   spanning packets when a frame is shorter than the pre-skip)
+- CELT packet loss concealment: pitch-based extrapolation of the last
+  frame for short bursts, noise shaped by the decaying band energies for
+  longer losses
 
-Next milestones: packet loss concealment and comfort noise; until then
-lost packets are gaps. CELT-only, SILK-only and hybrid Opus tracks play.
+Next milestones: SILK packet loss concealment and comfort noise; until
+then lost SILK packets are gaps. CELT-only, SILK-only and hybrid Opus
+tracks play.
 
 The player runs without a console window; messages are collected in a
 thread-safe log buffer and can be viewed in the in-app log console

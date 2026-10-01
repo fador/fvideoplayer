@@ -34,27 +34,27 @@ Status Decoder::decode(const uint8_t* data, size_t size, PcmBuffer& pcm, std::st
         error = "no OpusHead available";
         return Status::Invalid;
     }
-    if (!data || size == 0) {
-        error = "empty Opus packet";
-        return Status::Invalid;
-    }
-
-    PacketInfo info;
-    if (!parsePacket(data, size, info, &error)) {
-        return Status::Invalid;
-    }
-    if (info.frame_count == 0 || info.totalSamples() == 0) {
-        error = "empty Opus packet";
-        return Status::Invalid;
-    }
 
     Status status;
-    if (info.mode == Mode::Silk) {
-        status = decodeSilk(data, info, pcm, error);
-    } else if (info.mode == Mode::Hybrid) {
-        status = decodeHybrid(data, info, pcm, error);
+    if (!data || size == 0) {
+        status = conceal(pcm, error);
     } else {
-        status = decodeCelt(data, info, pcm, error);
+        PacketInfo info;
+        if (!parsePacket(data, size, info, &error)) {
+            return Status::Invalid;
+        }
+        if (info.frame_count == 0 || info.totalSamples() == 0) {
+            error = "empty Opus packet";
+            return Status::Invalid;
+        }
+
+        if (info.mode == Mode::Silk) {
+            status = decodeSilk(data, info, pcm, error);
+        } else if (info.mode == Mode::Hybrid) {
+            status = decodeHybrid(data, info, pcm, error);
+        } else {
+            status = decodeCelt(data, info, pcm, error);
+        }
     }
     if (status == Status::Ok) {
         // The first pre-skip samples are the decoder ramp-up and are dropped.
@@ -67,6 +67,24 @@ Status Decoder::decode(const uint8_t* data, size_t size, PcmBuffer& pcm, std::st
         }
     }
     return status;
+}
+
+Status Decoder::conceal(PcmBuffer& pcm, std::string& error) {
+    if (last_mode_ != Mode::Celt) {
+        error = "Opus packet loss concealment is only implemented for CELT";
+        return Status::Unsupported;
+    }
+
+    const uint32_t channels = head_.channels;
+    const int frames = kCeltShortMdct << last_lm_;
+    pcm.channels = channels;
+    pcm.sample_rate = kOpusSampleRate;
+    pcm.pts = pts_;
+    pcm.samples.assign(static_cast<size_t>(frames) * channels, 0.0f);
+    celt_.decodeLost(last_lm_, pcm.samples.data());
+
+    pts_ += frames;
+    return Status::Ok;
 }
 
 Status Decoder::decodeCelt(const uint8_t* data, const PacketInfo& info, PcmBuffer& pcm,
@@ -101,6 +119,8 @@ Status Decoder::decodeCelt(const uint8_t* data, const PacketInfo& info, PcmBuffe
     }
 
     pts_ += info.totalSamples();
+    last_mode_ = Mode::Celt;
+    last_lm_ = lm;
     return Status::Ok;
 }
 
@@ -112,6 +132,8 @@ void Decoder::reset() {
     configured_ = false;
     head_ = OpusHead{};
     pts_ = 0;
+    last_mode_ = Mode::Celt;
+    last_lm_ = 0;
     celt_.reset();
     silk_.reset();
 }
@@ -160,6 +182,7 @@ Status Decoder::decodeSilk(const uint8_t* data, const PacketInfo& info, PcmBuffe
     }
 
     pts_ += info.totalSamples();
+    last_mode_ = Mode::Silk;
     return Status::Ok;
 }
 
@@ -232,6 +255,8 @@ Status Decoder::decodeHybrid(const uint8_t* data, const PacketInfo& info, PcmBuf
     }
 
     pts_ += info.totalSamples();
+    last_mode_ = Mode::Hybrid;
+    last_lm_ = lm;
     return Status::Ok;
 }
 
