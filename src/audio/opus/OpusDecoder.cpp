@@ -2,6 +2,8 @@
 
 #include "audio/opus/RangeDecoder.hpp"
 
+#include <algorithm>
+
 namespace player::audio::opus {
 
 bool Decoder::configure(const uint8_t* config, size_t size, std::string& error) {
@@ -21,6 +23,7 @@ bool Decoder::configure(const uint8_t* config, size_t size, std::string& error) 
     head_ = parsed;
     celt_.init(static_cast<int>(head_.channels));
     silk_.init(static_cast<int>(head_.channels));
+    pre_skip_remaining_ = head_.pre_skip;
     configured_ = true;
     return true;
 }
@@ -45,13 +48,29 @@ Status Decoder::decode(const uint8_t* data, size_t size, PcmBuffer& pcm, std::st
         return Status::Invalid;
     }
 
+    Status status;
     if (info.mode == Mode::Silk) {
-        return decodeSilk(data, info, pcm, error);
+        status = decodeSilk(data, info, pcm, error);
+    } else if (info.mode == Mode::Hybrid) {
+        status = decodeHybrid(data, info, pcm, error);
+    } else {
+        status = decodeCelt(data, info, pcm, error);
     }
-    if (info.mode == Mode::Hybrid) {
-        return decodeHybrid(data, info, pcm, error);
+    if (status == Status::Ok) {
+        // The first pre-skip samples are the decoder ramp-up and are dropped.
+        const size_t frames = pcm.samples.size() / pcm.channels;
+        const size_t drop = std::min<size_t>(frames, pre_skip_remaining_);
+        if (drop > 0) {
+            pcm.samples.erase(pcm.samples.begin(),
+                              pcm.samples.begin() + static_cast<ptrdiff_t>(drop * pcm.channels));
+            pre_skip_remaining_ -= static_cast<uint32_t>(drop);
+        }
     }
+    return status;
+}
 
+Status Decoder::decodeCelt(const uint8_t* data, const PacketInfo& info, PcmBuffer& pcm,
+                           std::string& error) {
     const int stream_channels = info.stereo ? 2 : 1;
     if (static_cast<int>(head_.channels) != stream_channels) {
         error = "Opus channel count changes are not supported yet";

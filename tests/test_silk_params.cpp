@@ -89,7 +89,7 @@ const PitchCaseOut kPitchCases[] = {
 TEST(SilkParams, ExcitationMatchesReference) {
     for (const ExcCase& test : kExcCases) {
         player::audio::opus::RangeDecoder decoder(test.packet, 96);
-        std::vector<int16_t> pulses(test.frame_length, 0);
+        std::vector<int16_t> pulses((test.frame_length + 15) & ~15, 0);
         player::audio::silk::decodePulses(decoder, pulses.data(), test.signal_type,
                                           test.quant_offset, test.frame_length);
         for (int i = 0; i < test.frame_length; ++i) {

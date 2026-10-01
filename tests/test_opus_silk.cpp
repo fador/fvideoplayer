@@ -129,23 +129,25 @@ TEST(OpusSilk, MatchesReference) {
             const std::vector<int16_t>& expected = test.pcm[f];
             ASSERT_EQ(decoder.decode(packet.data(), packet.size(), pcm, error),
                       player::audio::opus::Status::Ok) << error;
-            ASSERT_EQ(pcm.samples.size(), expected.size());
+            const size_t offset = f == 0 ? 312 * test.channels : 0;
+            ASSERT_EQ(pcm.samples.size(), expected.size() - offset);
             if (test.tolerance == 0) {
-                for (size_t i = 0; i < expected.size(); ++i) {
+                for (size_t i = 0; i < expected.size() - offset; ++i) {
                     EXPECT_EQ(
                         static_cast<int>(lrintf(pcm.samples[i] * 32768.0f)),
-                        expected[i])
+                        expected[i + offset])
                         << "sample " << i;
                 }
             } else {
                 double err = 0.0;
                 double ref = 0.0;
-                for (size_t i = 0; i < expected.size(); ++i) {
+                for (size_t i = 0; i < expected.size() - offset; ++i) {
                     const double diff =
                         static_cast<double>(lrintf(pcm.samples[i] * 32768.0f)) -
-                        expected[i];
+                        expected[i + offset];
                     err += diff * diff;
-                    ref += static_cast<double>(expected[i]) * expected[i];
+                    ref += static_cast<double>(expected[i + offset]) *
+                           expected[i + offset];
                 }
                 EXPECT_LT(err, ref * 0.01) << "energy error";
             }

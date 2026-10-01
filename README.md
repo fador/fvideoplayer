@@ -215,6 +215,8 @@ The Opus decoder is also written from scratch. Implemented:
   within 1% energy of the reference because the reference's static mode
   uses precomputed tables that differ by a few ULPs from the
   runtime-computed ones
+- OpusHead pre-skip trimming (the decoder ramp-up samples are dropped,
+  spanning packets when a frame is shorter than the pre-skip)
 
 Next milestones: packet loss concealment and comfort noise; until then
 lost packets are gaps. CELT-only, SILK-only and hybrid Opus tracks play.

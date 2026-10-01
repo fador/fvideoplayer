@@ -75,15 +75,20 @@ TEST(OpusDecoder, DecodesCeltPackets) {
         ASSERT_TRUE(decoder.configure(head, sizeof(head), error)) << error;
         player::audio::PcmBuffer pcm;
         int64_t expected_pts = 0;
+        uint32_t pre_skip = 312;
         for (const FrameCase& frame : seq.frames) {
             std::vector<uint8_t> packet;
             packet.push_back(static_cast<uint8_t>(seq.toc));
             packet.insert(packet.end(), frame.packet.begin(), frame.packet.end());
             ASSERT_EQ(decoder.decode(packet.data(), packet.size(), pcm, error),
                       player::audio::opus::Status::Ok) << error;
-            ASSERT_EQ(pcm.samples.size(), frame.pcm.size());
+            const size_t skip =
+                std::min<size_t>(pre_skip, frame.pcm.size() / seq.channels);
+            pre_skip -= static_cast<uint32_t>(skip);
+            const size_t offset = skip * seq.channels;
+            ASSERT_EQ(pcm.samples.size(), frame.pcm.size() - offset);
             for (int i = 0; i < static_cast<int>(pcm.samples.size()); ++i) {
-                EXPECT_NEAR(pcm.samples[i], frame.pcm[i], 1e-6f) << "sample " << i;
+                EXPECT_NEAR(pcm.samples[i], frame.pcm[i + offset], 1e-6f) << "sample " << i;
             }
             EXPECT_EQ(pcm.pts, expected_pts);
             EXPECT_EQ(pcm.channels, static_cast<uint32_t>(seq.channels));

@@ -44,10 +44,13 @@ private:
                       std::string& error);
     Status decodeHybrid(const uint8_t* data, const PacketInfo& info, PcmBuffer& pcm,
                         std::string& error);
+    Status decodeCelt(const uint8_t* data, const PacketInfo& info, PcmBuffer& pcm,
+                      std::string& error);
 
     OpusHead head_;
     bool configured_ = false;
     int64_t pts_ = 0;
+    uint32_t pre_skip_remaining_ = 0;
     CeltFrameDecoder celt_;
     silk::SilkDecoder silk_;
 };
