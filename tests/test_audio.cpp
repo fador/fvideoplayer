@@ -9,6 +9,7 @@
 #include "audio/aac/Huffman.hpp"
 #include "audio/aac/Mdct.hpp"
 #include "audio/aac/Window.hpp"
+#include "audio/opus/CeltEnergy.hpp"
 #include "audio/opus/CeltPvq.hpp"
 #include "audio/opus/OpusDecoder.hpp"
 #include "audio/opus/OpusHead.hpp"
@@ -1237,4 +1238,53 @@ TEST(CeltTables, ValuesMatchReference) {
     EXPECT_NEAR(player::audio::opus::kCeltWindow[0], 6.7286966e-05f, 1e-10f);
     EXPECT_NEAR(player::audio::opus::kCeltWindow[119], 1.0f, 1e-6f);
     EXPECT_EQ(player::audio::opus::kCeltBandAllocation[0], 0);
+}
+
+TEST(CeltEnergy, DecodesReferenceEnergies) {
+    // Produced by the reference encoder/decoder pair: coarse energies with the
+    // Laplace model, fine energy and final bits, decoded back for comparison.
+    static const uint8_t kPacket[] = {
+        0x7c, 0x18, 0x2f, 0x74, 0xcb, 0x53, 0x9b, 0xe0, 0x00, 0xbb, 0x26, 0xa4,
+        0x29, 0xc8, 0xd3, 0x28, 0xa9, 0x53, 0x54, 0x75, 0xd0, 0x63, 0x20, 0x09,
+        0xc1, 0x3d, 0xad, 0x55, 0xd0, 0xb1, 0x6e, 0x32, 0x08, 0x38, 0xf7, 0xb3,
+        0x4a, 0xad, 0x21, 0x5a, 0xd7, 0x2f, 0xac, 0xce, 0x6a, 0xe5, 0xba, 0x48,
+        0xe0, 0xdf, 0x80, 0xf9, 0xff, 0x28, 0xbe, 0xa3, 0x79, 0xe9, 0xc4, 0x00,
+        0x3e, 0xaa, 0xc2, 0x43, 0xaa, 0x62, 0xf4, 0x8b, 0x9d, 0x5b, 0x68, 0xfe,
+        0xa8, 0x25, 0xbb, 0x61, 0x2a, 0xed, 0xd1, 0x2a, 0x73, 0xaa, 0x42, 0xe8,
+        0xdd, 0x45, 0x4f, 0x4e,
+    };
+    static const float kInit[42] = {
+        4.71999979f, 8.72999954f, -12.2399998f, 7.80000019f, -15.3299999f, -14.6400003f,
+        7.96999979f, -2.29999995f, 4.01999998f, -3.63000011f, 10.0200005f, 16.6000004f,
+        -10.5900002f, -16.4500008f, 14.79f, 18.6299992f, -10.4399996f, -18.6800003f,
+        -1.97000003f, 0.460000008f, -7.57999992f, 4.57999992f, -0.519999981f, -1.96000004f,
+        -15.9499998f, 7.11000013f, -8.82999992f, -15.4799995f, 6.69000006f, -10.1199999f,
+        5.17000008f, -0.0199999996f, 16.7800007f, 7.96999979f, -8.34000015f, 17.7600002f,
+        -17.0599995f, -19.9300003f, 17.3899994f, 13.6700001f, -5.67000008f, 16.4400005f,
+    };
+    static const int kFineQuant[21] = {7, 3, 3, 4, 3, 4, 3, 6, 8, 6, 5,
+                                       1, 6, 2, 7, 5, 5, 6, 3, 1, 5};
+    static const int kFinePriority[21] = {1, 1, 1, 0, 1, 1, 0, 0, 0, 1, 0,
+                                          0, 1, 0, 1, 1, 0, 1, 1, 1, 1};
+    static const float kExpected[42] = {
+        2.17195296f, 12.1871042f, -6.0246582f, 5.27094746f, 0.637817383f, 7.21472168f,
+        14.0293751f, 11.6813231f, 22.3678284f, 17.0820847f, 26.4159241f, 39.4192123f,
+        18.5869141f, 24.2967529f, 39.7706871f, 42.4484329f, 21.6152344f, 32.916626f,
+        30.4665985f, 26.1835365f, 20.0053749f, -6.28992176f, -0.225981236f, -8.37970161f,
+        -1.14160156f, 12.3391504f, 0.111210823f, -2.94714355f, 15.2391701f, -7.6907959f,
+        -3.58959484f, -13.8945608f, -4.074296f, -11.9722118f, -15.5955906f, 0.0442047119f,
+        -25.4388428f, -27.5257568f, -6.84085941f, -0.692255974f, -25.781744f, -0.138271332f,
+    };
+
+    float energy[42];
+    std::copy(std::begin(kInit), std::end(kInit), energy);
+
+    player::audio::opus::RangeDecoder decoder(kPacket, sizeof(kPacket));
+    player::audio::opus::decodeCoarseEnergy(decoder, 0, 21, energy, /*intra=*/false, 2, 2);
+    player::audio::opus::decodeFineEnergy(decoder, 0, 21, energy, kFineQuant, 2);
+    player::audio::opus::decodeFinalEnergy(decoder, 0, 21, energy, kFineQuant, kFinePriority, 40, 2);
+
+    for (int i = 0; i < 42; ++i) {
+        EXPECT_NEAR(energy[i], kExpected[i], 1e-4f) << "band " << i;
+    }
 }

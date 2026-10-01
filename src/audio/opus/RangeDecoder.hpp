@@ -29,6 +29,7 @@ public:
 
     // Bits consumed so far, in 1/8 bit resolution.
     int tell() const;
+    size_t size() const { return size_; }
     bool error() const { return error_; }
 
 private:

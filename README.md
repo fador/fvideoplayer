@@ -155,11 +155,13 @@ The Opus decoder is also written from scratch. Implemented:
   window, logN, ICDFs) generated from the RFC tables
 - CELT PVQ (pyramid vector quantization) decoding, verified against pulse
   vectors produced by the reference encoder
+- CELT band energy decoding (coarse with prediction, fine and final bits),
+  verified against reference-encoded energy vectors
 
-Next milestones: CELT band energies, allocation and band decoding, the
-inverse MDCT/overlap-add and comb filter; then the SILK layer and hybrid
-frames. Until then Opus tracks are recognized, reported as unsupported once
-in the log, and skipped.
+Next milestones: CELT allocation and band decoding, the inverse MDCT and
+overlap-add with the comb filter; then the SILK layer and hybrid frames.
+Until then Opus tracks are recognized, reported as unsupported once in the
+log, and skipped.
 
 The player runs without a console window; messages are collected in a
 thread-safe log buffer and can be viewed in the in-app log console
