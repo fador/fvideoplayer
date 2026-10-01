@@ -187,6 +187,9 @@ The Opus decoder is also written from scratch. Implemented:
   interpolation, pitch lags and contours, LTP gains and scaling, seed),
   verified bit-exactly against the reference for all sampling rates,
   frame sizes and conditional coding modes
+- SILK gains, pitch lags and excitation (rate levels, shell coding, LSB
+  extensions, signs), verified bit-exactly against the reference for all
+  signal types, quantizer offsets and frame lengths
 
 Next milestones: the SILK layer and hybrid frames; until then those
 packets are reported as unsupported once in the log and skipped. CELT-only

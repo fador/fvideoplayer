@@ -47,4 +47,19 @@ extern const uint8_t kSilkPitchContourNbIcdf[11];
 extern const uint8_t kSilkPitchContour10msIcdf[12];
 extern const uint8_t kSilkPitchContour10msNbIcdf[3];
 
+// Excitation and pitch tables (tables_pulses_per_block.c, pitch_est_tables.c).
+extern const uint8_t kSilkRateLevelsIcdf[2 * 9];
+extern const uint8_t kSilkPulsesPerBlockIcdf[10 * 18];
+extern const uint8_t kSilkShellCodeTable0[152];
+extern const uint8_t kSilkShellCodeTable1[152];
+extern const uint8_t kSilkShellCodeTable2[152];
+extern const uint8_t kSilkShellCodeTable3[152];
+extern const uint8_t kSilkShellCodeOffsets[17];
+extern const uint8_t kSilkSignIcdf[42];
+extern const uint8_t kSilkLsbIcdf[2];
+extern const int8_t kSilkCbLagsStage2[4 * 11];
+extern const int8_t kSilkCbLagsStage3[4 * 34];
+extern const int8_t kSilkCbLagsStage2_10ms[2 * 3];
+extern const int8_t kSilkCbLagsStage3_10ms[2 * 12];
+
 }  // namespace player::audio::silk

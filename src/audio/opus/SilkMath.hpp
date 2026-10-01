@@ -9,6 +9,7 @@ namespace player::audio::silk {
 
 constexpr int32_t kInt16Max = 32767;
 constexpr int32_t kInt16Min = -32768;
+constexpr int32_t kInt32Max = 0x7FFFFFFF;
 
 inline int32_t sat16(int32_t a) {
     return a > kInt16Max ? kInt16Max : (a < kInt16Min ? kInt16Min : a);
