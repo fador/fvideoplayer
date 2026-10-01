@@ -459,6 +459,7 @@ void PlaybackEngine::configureAudioDecoder(const demux::AudioTrackInfo& track) {
         channels = opus_decoder_.channels();
         audio_frame_ms_ = 20;
     } else {
+        log::addf(log::Level::Warning, "No audio decoder for codec '%s'", track.codec.c_str());
         return;
     }
 

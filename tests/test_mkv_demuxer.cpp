@@ -1,6 +1,8 @@
 #include "demux/Demuxer.hpp"
 #include "demux/MkvDemuxer.hpp"
 
+#include "audio/opus/OpusDecoder.hpp"
+
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -171,7 +173,8 @@ Bytes videoTrackEntry() {
     return element(0xAE, children);
 }
 
-Bytes audioTrackEntry(uint64_t number, const std::string& language, const std::string& name) {
+Bytes audioTrackEntry(uint64_t number, const std::string& language, const std::string& name,
+                      const std::string& codec = "A_AAC", const Bytes& codec_private = {}) {
     Bytes audio;
     append(audio, floatElement(0xB5, 48000.0));  // SamplingFrequency
     append(audio, uintElement(0x9F, 2));         // Channels
@@ -179,7 +182,10 @@ Bytes audioTrackEntry(uint64_t number, const std::string& language, const std::s
     Bytes children;
     append(children, uintElement(0xD7, number));
     append(children, uintElement(0x83, 2));  // TrackType = audio
-    append(children, stringElement(0x86, "A_AAC"));
+    append(children, stringElement(0x86, codec));
+    if (!codec_private.empty()) {
+        append(children, element(0x63A2, codec_private));  // CodecPrivate
+    }
     append(children, stringElement(0x536E, name));      // TrackName
     append(children, stringElement(0x22B59C, language));  // Language
     append(children, element(0xE1, audio));
@@ -206,7 +212,8 @@ Bytes assEvent(const std::string& text) {
     return Bytes(payload.begin(), payload.end());
 }
 
-Bytes buildMkv(bool with_audio, bool with_subtitles = false, bool second_audio = false) {
+Bytes buildMkv(bool with_audio, bool with_subtitles = false, bool second_audio = false,
+               const std::string& audio_codec = "A_AAC", const Bytes& audio_private = {}) {
     Bytes ebml_header = element(0x1A45DFA3,
                                 concat({uintElement(0x4286, 1), uintElement(0x42F7, 1),
                                         uintElement(0x42F2, 4), uintElement(0x42F3, 8),
@@ -216,7 +223,7 @@ Bytes buildMkv(bool with_audio, bool with_subtitles = false, bool second_audio =
                          concat({uintElement(0x2AD7B1, 1000000), floatElement(0x4489, 133.3333)}));
     Bytes tracks_payload = videoTrackEntry();
     if (with_audio) {
-        append(tracks_payload, audioTrackEntry(2, "jpn", "Japanese"));
+        append(tracks_payload, audioTrackEntry(2, "jpn", "Japanese", audio_codec, audio_private));
     }
     if (second_audio) {
         append(tracks_payload, audioTrackEntry(4, "eng", "English"));
@@ -398,6 +405,31 @@ TEST(MkvDemuxer, SelectsAudioTrack) {
         EXPECT_EQ(sample.track, player::demux::TrackType::Audio);
 
         EXPECT_FALSE(demuxer.selectAudioTrack(7));
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(MkvDemuxer, MapsExperimentalOpusCodecId) {
+    // Old mkvmerge files use A_OPUS/EXPERIMENTAL as the codec id.
+    const Bytes head = {'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 2,
+                        0x38, 0x01, 0x80, 0xBB, 0, 0, 0, 0, 0};
+    const std::filesystem::path path = writeMkv(
+        buildMkv(true, false, false, "A_OPUS/EXPERIMENTAL", head),
+        "hevc_player_mkv_opus_experimental.mkv");
+    {
+        player::demux::MkvDemuxer demuxer;
+        std::string error;
+        ASSERT_TRUE(demuxer.open(path, error)) << error;
+
+        const std::vector<player::demux::AudioTrackInfo> audio = demuxer.audioTracks();
+        ASSERT_EQ(audio.size(), 1u);
+        EXPECT_EQ(audio[0].codec_fourcc, 0x4F707573u);  // 'Opus'
+        ASSERT_EQ(audio[0].extradata.size(), head.size());
+        EXPECT_EQ(audio[0].extradata[8], 1u);  // OpusHead version
+
+        player::audio::opus::Decoder decoder;
+        EXPECT_TRUE(decoder.configure(audio[0].extradata.data(), audio[0].extradata.size(), error))
+            << error;
     }
     std::filesystem::remove(path);
 }

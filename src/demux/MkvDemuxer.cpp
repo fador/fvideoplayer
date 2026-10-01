@@ -332,7 +332,7 @@ bool parseTrackEntry(const uint8_t* data, size_t size, MkvTrack& track) {
 
 uint32_t codecFourcc(const std::string& codec_id) {
     if (codec_id == "A_AAC") return 0x6D703461;      // 'mp4a'
-    if (codec_id == "A_OPUS") return 0x4F707573;     // 'Opus'
+    if (codec_id.rfind("A_OPUS", 0) == 0) return 0x4F707573;  // 'Opus', incl. A_OPUS/EXPERIMENTAL
     if (codec_id == "A_VORBIS") return 0x766F7262;   // 'vorb'
     if (codec_id == "A_FLAC") return 0x664C6143;     // 'fLaC'
     if (codec_id == "A_AC3") return 0x61632D33;      // 'ac-3'
