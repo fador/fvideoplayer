@@ -89,8 +89,13 @@ Bytes uintElement(uint32_t id, uint64_t value) {
 }
 
 Bytes floatElement(uint32_t id, double value) {
-    Bytes payload(8);
-    std::memcpy(payload.data(), &value, 8);
+    // EBML floats are big-endian.
+    uint64_t bits = 0;
+    std::memcpy(&bits, &value, 8);
+    Bytes payload;
+    for (int i = 7; i >= 0; --i) {
+        payload.push_back(static_cast<uint8_t>((bits >> (8 * i)) & 0xFF));
+    }
     return element(id, payload);
 }
 

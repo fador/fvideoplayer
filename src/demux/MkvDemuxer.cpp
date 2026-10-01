@@ -215,14 +215,18 @@ uint64_t readUint(const uint8_t* data, size_t size) {
 }
 
 double readFloat(const uint8_t* data, size_t size) {
+    // EBML floats are stored big-endian; build the value from the numeric bit
+    // pattern so this works regardless of host endianness.
     if (size == 4) {
+        const uint32_t bits = static_cast<uint32_t>(readUint(data, 4));
         float value = 0.0f;
-        std::memcpy(&value, data, 4);
+        std::memcpy(&value, &bits, sizeof(value));
         return static_cast<double>(value);
     }
     if (size == 8) {
+        const uint64_t bits = readUint(data, 8);
         double value = 0.0;
-        std::memcpy(&value, data, 8);
+        std::memcpy(&value, &bits, sizeof(value));
         return value;
     }
     return 0.0;

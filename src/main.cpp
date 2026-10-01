@@ -1,8 +1,11 @@
 #include "app/Application.hpp"
 #include "decode/DecodeDump.hpp"
+#include "demux/Demuxer.hpp"
+#include "demux/HvcC.hpp"
 
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <string>
 
 namespace {
@@ -11,11 +14,50 @@ void printUsage(const char* program) {
     std::printf("usage: %s [options] [file]\n", program);
     std::printf("  --frames N          quit after N rendered frames (smoke test)\n");
     std::printf("  --seek SECONDS      seek to the given position after opening\n");
+    std::printf("  --info              print stream information and exit\n");
     std::printf("  --dump-yuv PATH     decode the file to planar YUV and exit\n");
     std::printf("  --dump-frames N     limit --dump-yuv to N frames\n");
     std::printf("  --dump-skip N       skip N frames before --dump-yuv output\n");
     std::printf("  --screenshot PATH   write the rendered frame as PPM when quitting\n");
+    std::printf("  --screenshot-every N  with --screenshot, keep writing PPMs every N frames\n");
     std::printf("  -h, --help          show this help\n");
+}
+
+int printFileInfo(const std::string& input) {
+    std::string error;
+    std::unique_ptr<player::demux::IDemuxer> demuxer = player::demux::createDemuxer(input, error);
+    if (!demuxer) {
+        std::fprintf(stderr, "failed to open %s: %s\n", input.c_str(), error.c_str());
+        return EXIT_FAILURE;
+    }
+    const player::demux::VideoTrackInfo& video = demuxer->video();
+    const player::demux::AudioTrackInfo& audio = demuxer->audio();
+
+    std::printf("file: %s\n", input.c_str());
+    std::printf("video: HEVC %ux%u\n", video.width, video.height);
+    std::printf("fps: %.3f\n", video.fps);
+    std::printf("timescale: %u\n", video.timescale);
+    std::printf("duration: %.3f s\n", demuxer->duration());
+    std::printf("sample format: %s (nal length size %u)\n",
+                video.format.annexb ? "annex-b" : "length-prefixed",
+                video.format.nal_length_size);
+    if (!video.hvcc.empty()) {
+        player::demux::HvccInfo hvcc;
+        if (player::demux::parseHvcc(video.hvcc.data(), video.hvcc.size(), hvcc, nullptr)) {
+            std::printf("hvcC: %s @ %s, %d-bit, chroma idc %d, %u parameter sets\n",
+                        player::demux::hvccProfileName(hvcc).c_str(),
+                        player::demux::hvccLevelName(hvcc).c_str(),
+                        8 + hvcc.bit_depth_luma_minus8, hvcc.chroma_format_idc,
+                        static_cast<unsigned>(hvcc.nals.size()));
+        }
+    }
+    if (audio.present) {
+        std::printf("audio: fourcc 0x%08X, %u channels, %u Hz\n", audio.codec_fourcc,
+                    audio.channels, audio.sample_rate);
+    } else {
+        std::printf("audio: none\n");
+    }
+    return EXIT_SUCCESS;
 }
 
 }  // namespace
@@ -29,6 +71,7 @@ int main(int argc, char** argv) {
     double seek_seconds = -1.0;
     std::string screenshot;
     int screenshot_every = 0;
+    bool info_mode = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -46,12 +89,22 @@ int main(int argc, char** argv) {
             screenshot = argv[++i];
         } else if (arg == "--screenshot-every" && i + 1 < argc) {
             screenshot_every = std::atoi(argv[++i]);
+        } else if (arg == "--info") {
+            info_mode = true;
         } else if (arg == "--help" || arg == "-h") {
             printUsage(argv[0]);
             return EXIT_SUCCESS;
         } else if (input.empty()) {
             input = arg;
         }
+    }
+
+    if (info_mode) {
+        if (input.empty()) {
+            std::fprintf(stderr, "--info requires an input file\n");
+            return EXIT_FAILURE;
+        }
+        return printFileInfo(input);
     }
 
     if (!dump_yuv.empty()) {
