@@ -1,5 +1,6 @@
 add_executable(player_tests
     test_hvcc.cpp
+    test_mkv_demuxer.cpp
     test_mp4_demuxer.cpp
     test_raw_hevc_demuxer.cpp)
 target_link_libraries(player_tests PRIVATE player_demux GTest::gtest_main)

@@ -55,6 +55,7 @@ target_link_libraries(implot PUBLIC imgui)
 add_library(player_demux STATIC
     src/demux/Demuxer.cpp
     src/demux/HvcC.cpp
+    src/demux/MkvDemuxer.cpp
     src/demux/Mp4Demuxer.cpp
     src/demux/RawHevcDemuxer.cpp)
 target_include_directories(player_demux PUBLIC src)
