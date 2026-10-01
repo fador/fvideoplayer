@@ -12,6 +12,8 @@ constexpr int kCeltMaxLm = 3;          // 2.5 ms << 3 = 20 ms
 constexpr int kCeltFrame48k = 960;     // 20 ms at 48 kHz
 constexpr int kCeltMaxFineBits = 8;
 constexpr int kCeltBitsRes = 3;        // 1/8 bit resolution
+constexpr int kCeltHybridStartBand = 17;  // first band above the 8 kHz SILK range
+constexpr int kCeltSuperWideEndBand = 19;  // last band below 12 kHz
 
 // Energy band edges in MDCT bins for a 2.5 ms frame (kCeltBands + 1 entries).
 extern const int16_t kCeltEBands[kCeltBands + 1];
@@ -24,6 +26,15 @@ extern const uint8_t kCeltEnergyProb[4 * 2 * 42];
 
 // MDCT overlap window (Vorbis window), kCeltOverlap entries.
 extern const float kCeltWindow[kCeltOverlap];
+
+// MDCT pre-rotation twiddles of the static 48 kHz mode (1800 entries, all
+// frame sizes). The precomputed values differ by a few ULPs from runtime
+// cosines; using them keeps the output identical to the reference.
+extern const float kCeltMdctTwiddles[1800];
+
+// FFT twiddles of the static 48 kHz mode (480 complex values, shared by all
+// frame sizes).
+extern const float kCeltFftTwiddles[960];
 
 // log2 of the number of MDCT bins per energy band (Q? plain int).
 extern const int16_t kCeltLogN[kCeltBands];

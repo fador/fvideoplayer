@@ -23,7 +23,8 @@ public:
     // Decodes one CELT frame (a single Opus frame, no TOC) into interleaved
     // PCM at 48 kHz: frame_samples * channels floats. lm is 0..3 and
     // stream_channels 1 or 2.
-    void decode(RangeDecoder& decoder, int lm, int stream_channels, float* pcm);
+    void decode(RangeDecoder& decoder, int lm, int stream_channels, float* pcm, int start = 0,
+                int end = kCeltBands);
 
 private:
     static constexpr int kDecodeBufferSize = 2048;

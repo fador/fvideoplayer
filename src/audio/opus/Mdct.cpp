@@ -18,19 +18,7 @@ void MdctLookup::init(int n, int max_shift) {
     for (int s = 0, half = n >> 1; s <= max_shift; ++s, half >>= 1) {
         total += half;
     }
-    trig_.resize(total);
-
-    constexpr double kPi = 3.14159265358979323846;
-    int nn = n;
-    int offset = 0;
-    for (int s = 0; s <= max_shift; ++s) {
-        const int half = nn >> 1;
-        for (int i = 0; i < half; ++i) {
-            trig_[offset + i] = static_cast<float>(std::cos(2 * kPi * (i + 0.125) / nn));
-        }
-        offset += half;
-        nn >>= 1;
-    }
+    trig_.assign(kCeltMdctTwiddles, kCeltMdctTwiddles + total);
 }
 
 void MdctLookup::backward(const float* in, float* out, const float* window, int overlap, int shift,

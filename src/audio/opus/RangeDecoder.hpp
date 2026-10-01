@@ -33,6 +33,8 @@ public:
     int tellFrac() const;
     // Pretends total_bits bits were consumed (used by the CELT silence flag).
     void skipToEnd(int total_bits);
+    // Excludes trailing bytes (redundancy frames) from the packet.
+    void reduceSize(size_t bytes) { size_ -= bytes; }
     // Internal range state, used as the CELT folding seed (dec->rng).
     uint32_t rng() const { return range_; }
     size_t size() const { return size_; }

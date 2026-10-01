@@ -100,11 +100,10 @@ void CeltFrameDecoder::synthesis(const float* x, int start, int end, int stream_
     }
 }
 
-void CeltFrameDecoder::decode(RangeDecoder& decoder, int lm, int stream_channels, float* pcm) {
+void CeltFrameDecoder::decode(RangeDecoder& decoder, int lm, int stream_channels, float* pcm,
+                              int start, int end) {
     const int m = 1 << lm;
     const int n = m * kCeltShortMdct;
-    const int start = 0;
-    const int end = kCeltBands;
     const int len = static_cast<int>(decoder.size());
 
     float* out_syn[2];
@@ -227,6 +226,8 @@ void CeltFrameDecoder::decode(RangeDecoder& decoder, int lm, int stream_channels
     uint8_t collapse_masks[2 * kCeltBands] = {};
 
     BandsParams params;
+    params.start = start;
+    params.end = end;
     params.short_blocks = short_blocks;
     params.spread = static_cast<Spread>(spread);
     params.dual_stereo = allocation.dual_stereo;

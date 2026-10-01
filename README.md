@@ -209,10 +209,15 @@ The Opus decoder is also written from scratch. Implemented:
   stereo unmixing, resampling and interleaving. SILK-only Opus packets
   now decode to PCM, verified sample-exactly against reference-encoded
   and reference-decoded packets (mono/stereo, 10/20/40 ms, NB/WB)
+- Hybrid Opus packets: the wideband SILK layer plus the CELT high band
+  (with the bandwidth-dependent end band), the redundancy flag parsing
+  and the SILK + CELT sum. SILK-only packets are exact; hybrid output is
+  within 1% energy of the reference because the reference's static mode
+  uses precomputed tables that differ by a few ULPs from the
+  runtime-computed ones
 
-Next milestones: hybrid (SILK + CELT) packets and packet loss
-concealment; until then hybrid packets are reported as unsupported once
-in the log and skipped. CELT-only and SILK-only Opus tracks play.
+Next milestones: packet loss concealment and comfort noise; until then
+lost packets are gaps. CELT-only, SILK-only and hybrid Opus tracks play.
 
 The player runs without a console window; messages are collected in a
 thread-safe log buffer and can be viewed in the in-app log console

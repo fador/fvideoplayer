@@ -48,9 +48,8 @@ Status Decoder::decode(const uint8_t* data, size_t size, PcmBuffer& pcm, std::st
     if (info.mode == Mode::Silk) {
         return decodeSilk(data, info, pcm, error);
     }
-    if (info.mode != Mode::Celt) {
-        error = "Opus hybrid decoding not implemented yet";
-        return Status::Unsupported;
+    if (info.mode == Mode::Hybrid) {
+        return decodeHybrid(data, info, pcm, error);
     }
 
     const int stream_channels = info.stereo ? 2 : 1;
@@ -138,6 +137,78 @@ Status Decoder::decodeSilk(const uint8_t* data, const PacketInfo& info, PcmBuffe
                                 : silk::SilkDecoder::StartOfPacket::No,
                          out);
             out += static_cast<size_t>(silk_frame_samples) * channels;
+        }
+    }
+
+    pts_ += info.totalSamples();
+    return Status::Ok;
+}
+
+Status Decoder::decodeHybrid(const uint8_t* data, const PacketInfo& info, PcmBuffer& pcm,
+                             std::string& error) {
+    const int stream_channels = info.stereo ? 2 : 1;
+    if (static_cast<int>(head_.channels) != stream_channels) {
+        error = "Opus channel count changes are not supported yet";
+        return Status::Unsupported;
+    }
+
+    // Hybrid packets always use the wideband SILK layer plus CELT from the
+    // 8 kHz band up.
+    const int frame_ms = info.frame_samples == 480 ? 10 : 20;
+    const int frames = info.frame_samples / (frame_ms * 48);
+    int lm = 0;
+    while (lm <= kCeltMaxLm && (kCeltShortMdct << lm) != info.frame_samples) {
+        ++lm;
+    }
+    if (lm > kCeltMaxLm) {
+        error = "invalid Opus hybrid frame size";
+        return Status::Invalid;
+    }
+
+    const uint32_t channels = head_.channels;
+    pcm.channels = channels;
+    pcm.sample_rate = kOpusSampleRate;
+    pcm.pts = pts_;
+    pcm.samples.assign(static_cast<size_t>(info.totalSamples()) * channels, 0.0f);
+
+    const int silk_frame_samples = info.frame_samples / frames;
+    std::vector<float> silk_pcm(static_cast<size_t>(silk_frame_samples) * channels);
+    for (uint8_t f = 0; f < info.frame_count; ++f) {
+        const PacketInfo::Frame& frame = info.frames[f];
+        RangeDecoder decoder(data + frame.offset, frame.size);
+        float* out = pcm.samples.data() + static_cast<size_t>(f) * info.frame_samples * channels;
+
+        float* silk_out = silk_pcm.data();
+        for (int k = 0; k < frames; ++k) {
+            silk_.decode(decoder, 16, stream_channels, frames, frame_ms,
+                         k == 0 ? silk::SilkDecoder::StartOfPacket::Yes
+                                : silk::SilkDecoder::StartOfPacket::No,
+                         silk_out);
+            silk_out += static_cast<size_t>(silk_frame_samples) * channels;
+        }
+
+        // Hybrid packets can carry a redundant CELT frame after the SILK
+        // data; the flag and its length come before the CELT frame.
+        size_t len = frame.size;
+        if (decoder.tell() + 17 + 20 <= static_cast<int>(8 * len)) {
+            if (decoder.decodeBitLogp(12)) {
+                decoder.decodeBitLogp(1);  // celt_to_silk
+                const int redundancy_bytes = static_cast<int>(decoder.decodeUint(256)) + 2;
+                len -= static_cast<size_t>(redundancy_bytes);
+                if (static_cast<int>(len * 8) < decoder.tell()) {
+                    len = 0;
+                } else {
+                    decoder.reduceSize(static_cast<size_t>(redundancy_bytes));
+                }
+            }
+        }
+
+        // The CELT layer covers up to 12 kHz in superwideband hybrid mode.
+        const int end = info.bandwidth == Bandwidth::SuperWideband ? kCeltSuperWideEndBand
+                                                                    : kCeltBands;
+        celt_.decode(decoder, lm, stream_channels, out, kCeltHybridStartBand, end);
+        for (size_t i = 0; i < silk_pcm.size(); ++i) {
+            out[i] += silk_pcm[i];
         }
     }
 

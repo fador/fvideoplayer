@@ -132,6 +132,7 @@ void SilkDecoder::decodeFrame(ChannelState& channel, opus::RangeDecoder& decoder
     channel.first_frame_after_reset = 0;
     channel.lag_prev = control.pitch_l[channel.nb_subfr - 1];
 
+
     // Shift the output history and append this frame.
     const int move_len = channel.ltp_mem_length - channel.frame_length;
     std::copy(channel.out_buf.begin() + channel.frame_length,

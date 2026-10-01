@@ -1,4 +1,5 @@
 #include "audio/opus/KissFft.hpp"
+#include "audio/opus/OpusTables.hpp"
 
 #include <cmath>
 
@@ -91,10 +92,18 @@ void FftState::init(int nfft, const FftState* base) {
     } else {
         constexpr double kPi = 3.14159265358979323846264338327;
         owned_twiddles_.resize(nfft);
-        for (int i = 0; i < nfft; ++i) {
-            const double phase = (-2 * kPi / nfft) * i;
-            owned_twiddles_[i].r = static_cast<float>(std::cos(phase));
-            owned_twiddles_[i].i = static_cast<float>(std::sin(phase));
+        if (nfft == 480) {
+            // Use the static mode's precomputed twiddles for the base size.
+            for (int i = 0; i < nfft; ++i) {
+                owned_twiddles_[i].r = kCeltFftTwiddles[2 * i];
+                owned_twiddles_[i].i = kCeltFftTwiddles[2 * i + 1];
+            }
+        } else {
+            for (int i = 0; i < nfft; ++i) {
+                const double phase = (-2 * kPi / nfft) * i;
+                owned_twiddles_[i].r = static_cast<float>(std::cos(phase));
+                owned_twiddles_[i].i = static_cast<float>(std::sin(phase));
+            }
         }
         twiddles_ = owned_twiddles_.data();
         shift_ = -1;

@@ -42,6 +42,8 @@ public:
 private:
     Status decodeSilk(const uint8_t* data, const PacketInfo& info, PcmBuffer& pcm,
                       std::string& error);
+    Status decodeHybrid(const uint8_t* data, const PacketInfo& info, PcmBuffer& pcm,
+                        std::string& error);
 
     OpusHead head_;
     bool configured_ = false;
