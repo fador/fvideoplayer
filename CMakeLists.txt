@@ -88,7 +88,10 @@ target_compile_definitions(player_decode PRIVATE _CRT_SECURE_NO_WARNINGS)
 
 # --- player audio (PCM helpers + from-scratch AAC decoder, no GUI deps) ------
 add_library(player_audio STATIC
+    src/audio/AudioBuffer.cpp
     src/audio/PcmGain.cpp
+    src/audio/Simd.cpp
+    src/audio/SimdAvx2.cpp
     src/audio/aac/AacConfig.cpp
     src/audio/aac/AacDecoder.cpp
     src/audio/aac/AacFilterbank.cpp
@@ -98,6 +101,15 @@ add_library(player_audio STATIC
     src/audio/aac/Mdct.cpp
     src/audio/aac/Window.cpp)
 target_include_directories(player_audio PUBLIC src)
+
+# AVX2 kernels live in their own translation unit so it can be compiled with
+# the instruction set enabled while the rest stays baseline; they are only
+# called after simd::hasAvx2() (CPUID + XGETBV).
+if(MSVC)
+    set_source_files_properties(src/audio/SimdAvx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(src/audio/SimdAvx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2")
+endif()
 
 # --- SDL3 audio output driver (kept separate so tests can link it) ----------
 add_library(player_audio_sdl STATIC

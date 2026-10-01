@@ -105,6 +105,7 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
         sink().configure(format);
     }
     audio_warned_ = false;
+    audio_buffer_.clear();
     configureAudioDecoder(audio_info_);
 
     quit_ = false;
@@ -148,7 +149,14 @@ void PlaybackEngine::close() {
     decoder_.close();
     demuxer_.reset();
     current_.reset();
+    if (audio_info_.present && audio_decoding_.load() && sink().framesConsumed() > 0) {
+        log::addf(log::Level::Info, "Audio: %llu frames played, %llu dropped, %llu late",
+                  static_cast<unsigned long long>(sink().framesConsumed()),
+                  static_cast<unsigned long long>(sink().framesDropped()),
+                  static_cast<unsigned long long>(audio_buffer_.droppedChunks()));
+    }
     sink().reset();
+    audio_buffer_.clear();
     audio_decoder_.reset();
     audio_decoding_ = false;
     audio_warned_ = false;
@@ -266,7 +274,9 @@ bool PlaybackEngine::update() {
             ++popped;
         }
     }
-    if (state_.load() == State::Playing && eos_.load() && queue_.empty()) {
+    if (state_.load() == State::Playing && eos_.load() && queue_.empty() &&
+        (!audio_enabled_.load() ||
+         (audio_buffer_.empty() && sink().queuedMs() < kAudioLateMs))) {
         clock_.pause();
         state_ = State::Ended;
         stats_.setPlaying(false);
@@ -291,7 +301,9 @@ void PlaybackEngine::pipelineLoop() {
 
     for (;;) {
         std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [this] {
+        // The timeout keeps audio fed even while the video queue is full and
+        // there is nothing else to do.
+        cv_.wait_for(lock, std::chrono::milliseconds(10), [this] {
             return quit_.load() || seek_pending_ || audio_pending_ ||
                    (!eos_.load() && queue_.size() < queue_.capacity());
         });
@@ -311,9 +323,11 @@ void PlaybackEngine::pipelineLoop() {
             lock.unlock();
             if (target == kNoAudioTrack) {
                 audio_enabled_ = false;
+                audio_buffer_.clear();
                 sink().reset();
                 log::add(log::Level::Info, "Audio disabled");
             } else if (demuxer_->selectAudioTrack(target)) {
+                audio_buffer_.clear();
                 sink().reset();
                 selected_audio_ = target;
                 audio_enabled_ = true;
@@ -325,65 +339,62 @@ void PlaybackEngine::pipelineLoop() {
             }
             continue;
         }
+        const bool video_ready = !eos_.load() && queue_.size() < queue_.capacity();
         lock.unlock();
 
-        demux::Sample sample;
-        if (!demuxer_->readSample(sample)) {
-            std::vector<decode::DecodedFrame> frames;
-            decoder_.flush(frames);
-            for (decode::DecodedFrame& frame : frames) {
-                stats_.onFrameDecoded(frame, 0.0);
-                if (!queue_.push(std::move(frame), [this] { return quit_.load(); })) {
-                    break;
+        if (video_ready) {
+            demux::Sample sample;
+            if (!demuxer_->readSample(sample)) {
+                std::vector<decode::DecodedFrame> frames;
+                decoder_.flush(frames);
+                for (decode::DecodedFrame& frame : frames) {
+                    stats_.onFrameDecoded(frame, 0.0);
+                    if (!queue_.push(std::move(frame), [this] { return quit_.load(); })) {
+                        break;
+                    }
+                }
+                eos_ = true;
+                stats_.setEos(true);
+                log::addf(log::Level::Info, "End of stream (%lld frames decoded)",
+                          static_cast<long long>(stats_.snapshot().frames_decoded));
+            } else {
+                stats_.onBytesDemuxed(sample.data.size());
+                const auto start = std::chrono::steady_clock::now();
+                const bool ok =
+                    decoder_.pushSample(sample.data.data(), sample.data.size(), sample.pts,
+                                        video_info_.format.annexb, video_info_.format.nal_length_size);
+                std::vector<decode::DecodedFrame> frames;
+                if (ok) {
+                    decoder_.pullFrames(frames);
+                } else {
+                    log::addf(log::Level::Error, "Decoder rejected a sample (pts %lld)",
+                              static_cast<long long>(sample.pts));
+                }
+                const double elapsed_ms =
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                              start)
+                        .count();
+                const double per_frame_ms =
+                    frames.empty() ? elapsed_ms : elapsed_ms / static_cast<double>(frames.size());
+                for (decode::DecodedFrame& frame : frames) {
+                    frame.sample_bytes = sample.data.size();
+                    stats_.onFrameDecoded(frame, per_frame_ms);
+                    if (!queue_.push(std::move(frame), [this] { return quit_.load(); })) {
+                        break;
+                    }
                 }
             }
-            eos_ = true;
-            stats_.setEos(true);
-            stats_.setQueue(queue_.size(), queue_.capacity(), bufferedSeconds());
-            log::addf(log::Level::Info, "End of stream (%lld frames decoded)",
-                      static_cast<long long>(stats_.snapshot().frames_decoded));
-            continue;
         }
 
-        stats_.onBytesDemuxed(sample.data.size());
-        const auto start = std::chrono::steady_clock::now();
-        const bool ok =
-            decoder_.pushSample(sample.data.data(), sample.data.size(), sample.pts,
-                                video_info_.format.annexb, video_info_.format.nal_length_size);
-        std::vector<decode::DecodedFrame> frames;
-        if (ok) {
-            decoder_.pullFrames(frames);
-        } else {
-            log::addf(log::Level::Error, "Decoder rejected a sample (pts %lld)",
-                      static_cast<long long>(sample.pts));
-        }
-        const double elapsed_ms =
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
-                .count();
-        const double per_frame_ms =
-            frames.empty() ? elapsed_ms : elapsed_ms / static_cast<double>(frames.size());
-        for (decode::DecodedFrame& frame : frames) {
-            frame.sample_bytes = sample.data.size();
-            stats_.onFrameDecoded(frame, per_frame_ms);
-            if (!queue_.push(std::move(frame), [this] { return quit_.load(); })) {
-                break;
-            }
-        }
-
-        // Keep the audio lead bounded; the sink drops the rest if the device
-        // cannot keep up.
-        if (audio_enabled_.load()) {
-            constexpr int kAudioLeadMs = 150;
-            constexpr int kAudioBatch = 16;
-            demux::Sample audio_sample;
-            int guard = 0;
-            while (guard++ < kAudioBatch && sink().queuedMs() < kAudioLeadMs &&
-                   demuxer_->readAudioSample(audio_sample)) {
-                pushAudioPcm(audio_sample);
-            }
-        }
-
+        pumpAudio();
+        feedAudio();
         stats_.setQueue(queue_.size(), queue_.capacity(), bufferedSeconds());
+        if (audio_enabled_.load()) {
+            stats_.setAudio(audio_buffer_.durationMs(), sink().queuedMs(),
+                            audio_buffer_.endPtsMs() - positionMs());
+        } else {
+            stats_.setAudio(0, 0, 0);
+        }
     }
 }
 
@@ -397,8 +408,7 @@ void PlaybackEngine::performSeek(double seconds) {
         decoder_.pushParameterSets(video_info_.hvcc, nullptr);
     }
     demuxer_->seek(seconds);
-    audio_decoder_.flush();
-    sink().flush();
+    resetAudioState();
     eos_ = false;
     stats_.setEos(false);
     const double elapsed_ms =
@@ -409,41 +419,88 @@ void PlaybackEngine::performSeek(double seconds) {
 
 void PlaybackEngine::configureAudioDecoder(const demux::AudioTrackInfo& track) {
     audio_decoding_ = false;
+    audio_frame_ms_ = 21;
     if (!track.present || track.codec_fourcc != kMp4aFourcc) {
         return;
     }
     std::string error;
     if (audio_decoder_.configure(track.extradata.data(), track.extradata.size(), error)) {
         audio_decoding_ = true;
+        const uint32_t rate = audio_decoder_.config().sample_rate;
+        if (rate > 0) {
+            audio_frame_ms_ = static_cast<int>(1024ull * 1000 / rate);
+        }
         return;
     }
     log::addf(log::Level::Warning, "AAC decoder rejected the track config: %s", error.c_str());
 }
 
-void PlaybackEngine::pushAudioPcm(const demux::Sample& sample) {
-    if (!audio_decoding_.load()) {
+// Decodes audio ahead of the media clock into the audio buffer.
+void PlaybackEngine::pumpAudio() {
+    if (!audio_enabled_.load() || !audio_decoding_.load()) {
         return;
     }
-    std::string error;
-    const audio::aac::Status status =
-        audio_decoder_.decode(sample.data.data(), sample.data.size(), audio_pcm_, error);
-    if (status != audio::aac::Status::Ok) {
-        // Report once per track; the pipeline keeps consuming packets.
-        if (!audio_warned_) {
-            log::addf(log::Level::Warning, "Audio decode (%s): %s",
-                      status == audio::aac::Status::Unsupported ? "unsupported" : "invalid",
-                      error.c_str());
-            audio_warned_ = true;
+    const int64_t position = positionMs();
+    demux::Sample sample;
+    int guard = 0;
+    while (guard++ < 64 &&
+           audio_buffer_.durationMs() < kAudioBufferMs - audio_frame_ms_ &&
+           demuxer_->readAudioSample(sample)) {
+        if (sample.pts + audio_frame_ms_ < position - kAudioLateMs) {
+            continue;  // already late: drop without decoding
         }
+        std::string error;
+        const audio::aac::Status status =
+            audio_decoder_.decode(sample.data.data(), sample.data.size(), audio_pcm_, error);
+        if (status != audio::aac::Status::Ok) {
+            // Report once per track; the pipeline keeps consuming packets.
+            if (!audio_warned_) {
+                log::addf(log::Level::Warning, "Audio decode (%s): %s",
+                          status == audio::aac::Status::Unsupported ? "unsupported" : "invalid",
+                          error.c_str());
+                audio_warned_ = true;
+            }
+            continue;
+        }
+        audio_pcm_.pts = sample.pts;
+        audio_buffer_.push(std::move(audio_pcm_));
+    }
+}
+
+// Moves buffered PCM into the sink, keeping it around kAudioSinkLeadMs ahead
+// of the media clock so audio stays locked to the video.
+void PlaybackEngine::feedAudio() {
+    if (!audio_enabled_.load()) {
         return;
+    }
+    const int64_t position = positionMs();
+
+    audio::PcmBuffer chunk;
+    while (!audio_buffer_.empty() &&
+           audio_buffer_.frontEndPtsMs() < position - kAudioLateMs) {
+        audio_buffer_.pop(chunk);  // past its presentation time: drop
     }
 
     const audio::Mute mute = muted_.load() ? audio::Mute::On : audio::Mute::Off;
     const float gain = audio::volumeGain(volume_.load(), mute);
-    if (gain != 1.0f) {
-        audio::applyGain(audio_pcm_.samples.data(), audio_pcm_.samples.size(), gain);
+    while (!audio_buffer_.empty() && sink().queuedMs() < kAudioSinkLeadMs) {
+        if (audio_buffer_.frontPtsMs() > position + kAudioSinkLeadMs) {
+            break;  // wait until the chunk's time comes
+        }
+        if (!audio_buffer_.pop(chunk)) {
+            break;
+        }
+        if (gain != 1.0f) {
+            audio::applyGain(chunk.samples.data(), chunk.samples.size(), gain);
+        }
+        sink().push(chunk.samples.data(), chunk.frames());
     }
-    sink().push(audio_pcm_.samples.data(), audio_pcm_.frames());
+}
+
+void PlaybackEngine::resetAudioState() {
+    audio_buffer_.clear();
+    audio_decoder_.flush();
+    sink().flush();
 }
 
 }  // namespace player::playback

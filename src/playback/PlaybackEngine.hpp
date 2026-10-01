@@ -1,5 +1,6 @@
 #pragma once
 
+#include "audio/AudioBuffer.hpp"
 #include "audio/IAudioSink.hpp"
 #include "audio/NullAudioSink.hpp"
 #include "audio/Pcm.hpp"
@@ -98,10 +99,23 @@ public:
     stats::StatsCollector& stats() { return stats_; }
 
 private:
+    //    Audio scheduling: decoded PCM goes into audio_buffer_ up to
+    //    kAudioBufferMs ahead of the media clock; feedAudio() moves chunks
+    //    into the sink so the sink queue stays around kAudioSinkLeadMs.
+    //    Chunks that are more than kAudioLateMs behind are dropped.
+    static constexpr int kAudioBufferMs = 2000;
+    static constexpr int kAudioSinkLeadMs = 400;
+    static constexpr int kAudioLateMs = 120;
+
     void pipelineLoop();
     void performSeek(double seconds);
     void configureAudioDecoder(const demux::AudioTrackInfo& track);
-    void pushAudioPcm(const demux::Sample& sample);
+    void pumpAudio();
+    void feedAudio();
+    void resetAudioState();
+    int64_t positionMs() const {
+        return static_cast<int64_t>(clock_.position() * 1000.0);
+    }
     audio::IAudioSink& sink() {
         return audio_sink_ ? *audio_sink_ : null_sink_;
     }
@@ -124,10 +138,12 @@ private:
     audio::IAudioSink* audio_sink_ = nullptr;
     audio::NullAudioSink null_sink_;
     audio::aac::Decoder audio_decoder_;
+    audio::AudioBuffer audio_buffer_{kAudioBufferMs};
     audio::PcmBuffer audio_pcm_;
     std::atomic<float> volume_{1.0f};
     std::atomic<bool> muted_{false};
     std::atomic<bool> audio_decoding_{false};
+    int audio_frame_ms_ = 21;
     bool audio_warned_ = false;
 
     // UI-thread state.

@@ -1,7 +1,8 @@
 #include "audio/aac/Mdct.hpp"
 
+#include "audio/Simd.hpp"
+
 #include <cmath>
-#include <utility>
 
 namespace player::audio::aac {
 namespace {
@@ -28,38 +29,6 @@ Mdct::Mdct(size_t bins) : bins_(bins), fft_size_(2 * bins) {
     work_.resize(fft_size_);
 }
 
-// Iterative radix-2 DFT with a positive exponent.
-void Mdct::dft(std::complex<double>* data) const {
-    const size_t n = fft_size_;
-
-    for (size_t i = 1, j = 0; i < n; ++i) {
-        size_t bit = n >> 1;
-        for (; (j & bit) != 0; bit >>= 1) {
-            j ^= bit;
-        }
-        j ^= bit;
-        if (i < j) {
-            std::swap(data[i], data[j]);
-        }
-    }
-
-    for (size_t length = 2; length <= n; length <<= 1) {
-        const double angle = 2.0 * kPi / static_cast<double>(length);
-        const std::complex<double> step(std::cos(angle), std::sin(angle));
-        const size_t half = length >> 1;
-        for (size_t start = 0; start < n; start += length) {
-            std::complex<double> twiddle(1.0, 0.0);
-            for (size_t k = 0; k < half; ++k) {
-                const std::complex<double> even = data[start + k];
-                const std::complex<double> odd = data[start + k + half] * twiddle;
-                data[start + k] = even + odd;
-                data[start + k + half] = even - odd;
-                twiddle *= step;
-            }
-        }
-    }
-}
-
 void Mdct::inverse(const float* spectrum, float* time) const {
     for (size_t k = 0; k < bins_; ++k) {
         work_[k] = static_cast<double>(spectrum[k]) * pre_[k];
@@ -68,11 +37,13 @@ void Mdct::inverse(const float* spectrum, float* time) const {
         work_[k] = std::complex<double>(0.0, 0.0);
     }
 
-    dft(work_.data());
+    double* buffer = reinterpret_cast<double*>(work_.data());
+    simd::dft(buffer, fft_size_);
+    simd::complexMultiply(buffer, reinterpret_cast<const double*>(post_.data()), fft_size_);
 
     const double scale = 2.0 / static_cast<double>(bins_);
     for (size_t n = 0; n < fft_size_; ++n) {
-        time[n] = static_cast<float>(scale * (work_[n] * post_[n]).real());
+        time[n] = static_cast<float>(scale * buffer[2 * n]);
     }
 }
 

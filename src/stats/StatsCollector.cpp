@@ -37,6 +37,9 @@ void StatsCollector::reset() {
     queue_depth_ = 0;
     queue_capacity_ = 0;
     buffered_seconds_ = 0.0;
+    audio_buffer_ms_ = 0;
+    audio_sink_ms_ = 0;
+    audio_drift_ms_ = 0;
     eos_ = false;
     playing_ = false;
     decode_ms_history_.clear();
@@ -107,6 +110,13 @@ void StatsCollector::setQueue(size_t depth, size_t capacity, double buffered_sec
     buffered_seconds_ = buffered_seconds;
 }
 
+void StatsCollector::setAudio(int64_t buffer_ms, int64_t sink_ms, int64_t drift_ms) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    audio_buffer_ms_ = buffer_ms;
+    audio_sink_ms_ = sink_ms;
+    audio_drift_ms_ = drift_ms;
+}
+
 void StatsCollector::setPlaying(bool playing) {
     std::lock_guard<std::mutex> lock(mutex_);
     playing_ = playing;
@@ -131,6 +141,9 @@ Snapshot StatsCollector::snapshot() const {
     out.queue_depth = queue_depth_;
     out.queue_capacity = queue_capacity_;
     out.buffered_seconds = buffered_seconds_;
+    out.audio_buffer_ms = audio_buffer_ms_;
+    out.audio_sink_ms = audio_sink_ms_;
+    out.audio_drift_ms = audio_drift_ms_;
     out.eos = eos_;
     out.playing = playing_;
 

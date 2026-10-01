@@ -91,7 +91,8 @@ src/
   playback/   pipeline thread, frame queue, media clock
   render/     OpenGL YUV -> RGB renderer (8/10-bit, 4:2:0/4:2:2/4:4:4)
   stats/      thread-safe statistics collector
-  audio/      PCM types, volume/mute gain, SDL3 sink and the AAC decoder
+  audio/      PCM types, volume/mute gain, AVX2 kernels with CPUID dispatch,
+              timestamped audio buffer, SDL3 sink and the AAC decoder
               (aac/: bit reader, ADTS + AudioSpecificConfig parsers, Huffman
               codebooks, ICS/TNS tools, MDCT/filterbank)
 ```
@@ -101,10 +102,12 @@ frame queue (about two seconds, capped by a memory budget). The UI thread
 advances a monotonic clock and displays frames as their presentation
 timestamps become due, dropping frames that are already late.
 
-Audio follows the same pattern: the pipeline decodes packets and pushes float
-PCM to the sink, which keeps only a short queue (250 ms) so audio stays close
-to the video clock. Volume and mute are applied as a software gain before the
-samples reach the device.
+Audio follows the same pattern with its own buffer: the pipeline decodes AAC
+up to 2 seconds ahead of the media clock into a timestamped PCM buffer, and a
+feeder moves chunks into the sink so the device queue stays around 400 ms
+ahead of the video position. Chunks that fall behind the clock are dropped,
+which keeps audio locked to the video after stalls and seeks. Volume and mute
+are applied as a software gain when chunks leave the buffer.
 
 ## Audio decoding
 
@@ -121,6 +124,9 @@ Implemented:
 - Inverse MDCT (FFT based, verified against the direct transform), sine and
   KBD windows, all window sequences and the inter-frame overlap-add
 - PCM gain, mute and the SDL3 output path with a bounded queue
+- AVX2 kernels (MDCT/DFT, dequantization table lookup, windowing, M/S,
+  intensity and gain) with CPUID dispatch; the scalar path stays as fallback
+  and both are cross-checked by unit tests
 
 Not supported: SBR/PS (HE-AAC), AAC Main/LTP/SSR, 960-sample frames,
 coupling elements (CCE) and program config elements (PCE). Such tracks are

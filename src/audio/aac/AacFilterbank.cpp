@@ -1,5 +1,6 @@
 #include "audio/aac/AacFilterbank.hpp"
 
+#include "audio/Simd.hpp"
 #include "audio/aac/Window.hpp"
 
 #include <algorithm>
@@ -40,6 +41,12 @@ struct WindowSet {
                 shape == 0 ? sineWindow(kWindowSize) : kbdWindow(kWindowSize, 6.0f);
             std::copy(long_values.begin(), long_values.end(), long_window[shape]);
             std::copy(short_values.begin(), short_values.end(), short_window[shape]);
+            for (float& value : long_window[shape]) {
+                value *= kSynthesisScale;
+            }
+            for (float& value : short_window[shape]) {
+                value *= kSynthesisScale;
+            }
         }
     }
 };
@@ -70,11 +77,14 @@ void Filterbank::synthesize(const float* spectrum, const IcsInfo& info, float* o
         for (unsigned w = 0; w < 8; ++w) {
             short_mdct_.inverse(spectrum + w * kWindowSize, short_block_);
             float* destination = block_ + kFlat + w * kWindowSize;
-            for (unsigned i = 0; i < kShortSize; ++i) {
-                // Only the first short window straddles the frame boundary.
-                const float* window =
-                    (w == 0 && i < kWindowSize) ? short_previous : short_current;
-                destination[i] += short_block_[i] * window[i] * kSynthesisScale;
+            if (w == 0) {
+                // Only the first short window straddles the frame boundary:
+                // its left half matches the previous frame's window shape.
+                simd::addWindowed(destination, short_block_, short_previous, kWindowSize);
+                simd::addWindowed(destination + kWindowSize, short_block_ + kWindowSize,
+                                  short_current + kWindowSize, kWindowSize);
+            } else {
+                simd::addWindowed(destination, short_block_, short_current, kShortSize);
             }
         }
     } else {
@@ -83,21 +93,19 @@ void Filterbank::synthesize(const float* spectrum, const IcsInfo& info, float* o
             std::copy(long_current + kFrameSamples, long_current + kLongSize,
                       window_ + kFrameSamples);
         } else if (info.sequence == WindowSequence::LongStart) {
-            std::fill(window_ + kFrameSamples, window_ + kFrameSamples + kFlat, 1.0f);
+            std::fill(window_ + kFrameSamples, window_ + kFrameSamples + kFlat, kSynthesisScale);
             std::copy(short_current + kWindowSize, short_current + kShortSize,
                       window_ + kFrameSamples + kFlat);
             std::fill(window_ + kFrameSamples + kFlat + kWindowSize, window_ + kLongSize, 0.0f);
         } else {  // LongStop
             std::fill(window_, window_ + kFlat, 0.0f);
             std::copy(short_previous, short_previous + kWindowSize, window_ + kFlat);
-            std::fill(window_ + kFlat + kWindowSize, window_ + kFrameSamples, 1.0f);
+            std::fill(window_ + kFlat + kWindowSize, window_ + kFrameSamples, kSynthesisScale);
             std::copy(long_current + kFrameSamples, long_current + kLongSize,
                       window_ + kFrameSamples);
         }
         long_mdct_.inverse(spectrum, block_);
-        for (unsigned i = 0; i < kLongSize; ++i) {
-            block_[i] *= window_[i] * kSynthesisScale;
-        }
+        simd::windowMultiply(block_, window_, kLongSize);
     }
     previous_shape_ = info.kbd_window;
 

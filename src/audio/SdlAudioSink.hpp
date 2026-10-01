@@ -39,12 +39,14 @@ private:
     bool ensureStream();
     void closeStream();
 
-    static constexpr int kMaxQueuedMs = 250;
+    // Hard cap for the device queue; the engine feeds it in smaller chunks.
+    static constexpr int kMaxQueuedMs = 1000;
 
     mutable std::mutex mutex_;
     SDL_AudioStream* stream_ = nullptr;
     uint32_t channels_ = 0;
     uint32_t sample_rate_ = 0;
+    int device_latency_ms_ = 0;  // device buffer not reported by SDL_GetAudioStreamQueued
     bool audio_initialized_ = false;
     bool paused_ = true;
     uint64_t frames_consumed_ = 0;

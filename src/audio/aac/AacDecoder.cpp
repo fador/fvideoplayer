@@ -1,5 +1,7 @@
 #include "audio/aac/AacDecoder.hpp"
 
+#include "audio/Simd.hpp"
+
 #include <algorithm>
 
 namespace player::audio::aac {
@@ -208,12 +210,7 @@ void Decoder::applyMidSide(size_t first) {
             const unsigned width = offsets[sfb + 1] - offsets[sfb];
             for (unsigned j = 0; j < group_length; ++j) {
                 const unsigned base = (window_index + j) * kWindowSize + offsets[sfb];
-                for (unsigned k = 0; k < width; ++k) {
-                    const float mid = left.spectrum[base + k];
-                    const float side = right.spectrum[base + k];
-                    left.spectrum[base + k] = mid + side;
-                    right.spectrum[base + k] = mid - side;
-                }
+                simd::midSide(left.spectrum + base, right.spectrum + base, width);
             }
         }
         window_index += group_length;
@@ -246,9 +243,7 @@ void Decoder::applyIntensity(size_t first, bool ms_present) {
             const unsigned width = offsets[sfb + 1] - offsets[sfb];
             for (unsigned j = 0; j < group_length; ++j) {
                 const unsigned base = (window_index + j) * kWindowSize + offsets[sfb];
-                for (unsigned k = 0; k < width; ++k) {
-                    right.spectrum[base + k] = left.spectrum[base + k] * scale;
-                }
+                simd::scaleCopy(right.spectrum + base, left.spectrum + base, width, scale);
             }
         }
         window_index += group_length;

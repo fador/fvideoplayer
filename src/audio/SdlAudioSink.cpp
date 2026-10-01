@@ -56,8 +56,20 @@ bool SdlAudioSink::ensureStream() {
     }
     SDL_ResumeAudioStreamDevice(stream_);
     paused_ = false;
-    log::addf(log::Level::Info, "Audio output: %u Hz, %u channel(s), float32", sample_rate_,
-              channels_);
+
+    // The device keeps its own buffer, which SDL_GetAudioStreamQueued does
+    // not report; include it so the engine's A/V scheduling accounts for the
+    // full output latency.
+    device_latency_ms_ = 0;
+    const SDL_AudioDeviceID device = SDL_GetAudioStreamDevice(stream_);
+    SDL_AudioSpec device_spec{};
+    int sample_frames = 0;
+    if (device != 0 && SDL_GetAudioDeviceFormat(device, &device_spec, &sample_frames) &&
+        device_spec.freq > 0) {
+        device_latency_ms_ = sample_frames * 1000 / device_spec.freq;
+    }
+    log::addf(log::Level::Info, "Audio output: %u Hz, %u channel(s), float32, %d ms device buffer",
+              sample_rate_, channels_, device_latency_ms_);
     return true;
 }
 
@@ -70,6 +82,7 @@ void SdlAudioSink::closeStream() {
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
         audio_initialized_ = false;
     }
+    device_latency_ms_ = 0;
     paused_ = true;
 }
 
@@ -160,7 +173,7 @@ int SdlAudioSink::queuedMs() const {
     }
     const int bytes_per_frame = static_cast<int>(channels_ * sizeof(float));
     const int queued = SDL_GetAudioStreamQueued(stream_);
-    return queued * 1000 / (bytes_per_frame * static_cast<int>(sample_rate_));
+    return device_latency_ms_ + queued * 1000 / (bytes_per_frame * static_cast<int>(sample_rate_));
 }
 
 }  // namespace player::audio

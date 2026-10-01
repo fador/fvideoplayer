@@ -1,5 +1,7 @@
 #include "audio/PcmGain.hpp"
 
+#include "audio/Simd.hpp"
+
 #include <algorithm>
 
 namespace player::audio {
@@ -20,9 +22,7 @@ void applyGain(float* samples, size_t count, float gain) {
     if (gain == 1.0f) {
         return;
     }
-    for (size_t i = 0; i < count; ++i) {
-        samples[i] = std::clamp(samples[i] * gain, -1.0f, 1.0f);
-    }
+    simd::applyGain(samples, count, gain);
 }
 
 }  // namespace player::audio

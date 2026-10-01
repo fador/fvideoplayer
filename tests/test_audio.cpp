@@ -1,6 +1,8 @@
+#include "audio/AudioBuffer.hpp"
 #include "audio/BitReader.hpp"
 #include "audio/PcmGain.hpp"
 #include "audio/SdlAudioSink.hpp"
+#include "audio/Simd.hpp"
 #include "audio/aac/AacConfig.hpp"
 #include "audio/aac/AacDecoder.hpp"
 #include "audio/aac/AacTables.hpp"
@@ -12,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -368,14 +371,14 @@ TEST(SdlAudioSink, BoundsQueueAndCountsFrames) {
     format.sample_rate = 48000;
     sink.configure(format);
 
-    const std::vector<float> samples(48000 * 2, 0.0f);
-    sink.push(samples.data(), 48000);
+    const std::vector<float> samples(48000 * 2 * 3, 0.0f);  // 3 seconds, cap is 1
+    sink.push(samples.data(), 48000 * 3);
 
     const uint64_t consumed = sink.framesConsumed();
     EXPECT_GT(consumed, 0u);
-    EXPECT_LT(consumed, 48000u);
-    EXPECT_EQ(consumed + sink.framesDropped(), 48000u);
-    EXPECT_LE(sink.queuedMs(), 300);
+    EXPECT_LT(consumed, 48000u * 3);
+    EXPECT_EQ(consumed + sink.framesDropped(), 48000u * 3);
+    EXPECT_LE(sink.queuedMs(), 1100);
 
     sink.reset();
     EXPECT_EQ(sink.framesConsumed(), 0u);
@@ -526,4 +529,195 @@ TEST(AacDecoder, DecodesRawFrameWithAsc) {
     EXPECT_NEAR(pcm.samples[100], 0.0003602f, 1e-6f);
     EXPECT_NEAR(pcm.samples[500], -0.0005428f, 1e-6f);
     EXPECT_NEAR(pcm.samples[1000], 0.0009346f, 1e-6f);
+}
+
+namespace {
+
+player::audio::PcmBuffer makeChunk(int64_t pts_ms, uint32_t rate, size_t frames) {
+    player::audio::PcmBuffer chunk;
+    chunk.channels = 1;
+    chunk.sample_rate = rate;
+    chunk.pts = pts_ms;
+    chunk.samples.assign(frames, 0.25f);
+    return chunk;
+}
+
+}  // namespace
+
+TEST(AudioBuffer, PreservesOrderAndTimestamps) {
+    player::audio::AudioBuffer buffer(1000);
+    buffer.push(makeChunk(0, 1000, 250));    // 250 ms
+    buffer.push(makeChunk(250, 1000, 250));  // 250 ms
+
+    EXPECT_FALSE(buffer.empty());
+    EXPECT_EQ(buffer.chunks(), 2u);
+    EXPECT_EQ(buffer.durationMs(), 500);
+    EXPECT_EQ(buffer.frontPtsMs(), 0);
+    EXPECT_EQ(buffer.frontEndPtsMs(), 250);
+    EXPECT_EQ(buffer.endPtsMs(), 500);
+
+    player::audio::PcmBuffer out;
+    ASSERT_TRUE(buffer.pop(out));
+    EXPECT_EQ(out.pts, 0);
+    ASSERT_TRUE(buffer.pop(out));
+    EXPECT_EQ(out.pts, 250);
+    EXPECT_FALSE(buffer.pop(out));
+    EXPECT_TRUE(buffer.empty());
+    EXPECT_EQ(buffer.durationMs(), 0);
+}
+
+TEST(AudioBuffer, DropsOldestWhenFull) {
+    player::audio::AudioBuffer buffer(500);
+    buffer.push(makeChunk(0, 1000, 250));
+    buffer.push(makeChunk(250, 1000, 250));
+    buffer.push(makeChunk(500, 1000, 250));  // exceeds 500 ms: oldest is dropped
+
+    EXPECT_EQ(buffer.durationMs(), 500);
+    EXPECT_EQ(buffer.frontPtsMs(), 250);
+    EXPECT_EQ(buffer.endPtsMs(), 750);
+    EXPECT_EQ(buffer.droppedChunks(), 1u);
+
+    buffer.clear();
+    EXPECT_TRUE(buffer.empty());
+    EXPECT_EQ(buffer.droppedChunks(), 0u);
+}
+
+TEST(Simd, Pow34TableValues) {
+    const float* table = player::audio::simd::pow34Table();
+    ASSERT_NE(table, nullptr);
+    EXPECT_FLOAT_EQ(table[0], 0.0f);
+    EXPECT_FLOAT_EQ(table[8], 16.0f);
+    EXPECT_NEAR(table[8191], std::pow(8191.0, 4.0 / 3.0), 1.0);
+}
+
+TEST(Simd, GainMatchesScalar) {
+    if (!player::audio::simd::hasAvx2()) {
+        GTEST_SKIP() << "AVX2 not available";
+    }
+    uint32_t state = 0x12345678u;
+    std::vector<float> scalar(999);
+    for (float& value : scalar) {
+        state = state * 1664525u + 1013904223u;
+        value = static_cast<float>((state >> 8) & 0xFFFF) / 32768.0f - 1.0f;
+        value *= 2.0f;  // exercise clipping
+    }
+    std::vector<float> avx2 = scalar;
+    player::audio::simd::applyGainScalar(scalar.data(), scalar.size(), 0.37f);
+    player::audio::simd::applyGainAvx2(avx2.data(), avx2.size(), 0.37f);
+    for (size_t i = 0; i < scalar.size(); ++i) {
+        EXPECT_FLOAT_EQ(scalar[i], avx2[i]) << "i=" << i;
+    }
+}
+
+TEST(Simd, DequantizeMatchesScalar) {
+    if (!player::audio::simd::hasAvx2()) {
+        GTEST_SKIP() << "AVX2 not available";
+    }
+    std::vector<int16_t> quant(1000);
+    uint32_t state = 0x9E3779B9u;
+    for (size_t i = 0; i < quant.size(); ++i) {
+        state = state * 1664525u + 1013904223u;
+        const int mode = static_cast<int>((state >> 16) & 7);
+        if (mode == 0) {
+            quant[i] = 0;
+        } else if (mode == 1) {
+            quant[i] = 16;
+        } else if (mode == 2) {
+            quant[i] = -8191;
+        } else {
+            quant[i] = static_cast<int16_t>((state >> 8) & 0x3FF) - 512;
+        }
+    }
+    std::vector<float> scalar(quant.size());
+    std::vector<float> avx2(quant.size());
+    player::audio::simd::dequantizeBandScalar(quant.data(), scalar.data(), quant.size(), 3.5f);
+    player::audio::simd::dequantizeBandAvx2(quant.data(), avx2.data(), quant.size(), 3.5f);
+    for (size_t i = 0; i < quant.size(); ++i) {
+        EXPECT_FLOAT_EQ(scalar[i], avx2[i]) << "i=" << i;
+    }
+}
+
+TEST(Simd, WindowAndScaleMatchScalar) {
+    if (!player::audio::simd::hasAvx2()) {
+        GTEST_SKIP() << "AVX2 not available";
+    }
+    uint32_t state = 0xC0FFEEu;
+    std::vector<float> block(777);
+    std::vector<float> window(777);
+    for (size_t i = 0; i < block.size(); ++i) {
+        state = state * 1664525u + 1013904223u;
+        block[i] = static_cast<float>((state >> 8) & 0xFFFF) / 32768.0f - 1.0f;
+        state = state * 1664525u + 1013904223u;
+        window[i] = static_cast<float>((state >> 8) & 0xFFFF) / 65536.0f;
+    }
+
+    std::vector<float> a = block;
+    std::vector<float> b = block;
+    player::audio::simd::windowMultiplyScalar(a.data(), window.data(), a.size());
+    player::audio::simd::windowMultiplyAvx2(b.data(), window.data(), b.size());
+    for (size_t i = 0; i < a.size(); ++i) {
+        EXPECT_FLOAT_EQ(a[i], b[i]) << "i=" << i;
+    }
+
+    a = block;
+    b = block;
+    player::audio::simd::addWindowedScalar(a.data(), window.data(), window.data(), a.size());
+    player::audio::simd::addWindowedAvx2(b.data(), window.data(), window.data(), b.size());
+    for (size_t i = 0; i < a.size(); ++i) {
+        EXPECT_FLOAT_EQ(a[i], b[i]) << "i=" << i;
+    }
+
+    a = block;
+    b = block;
+    player::audio::simd::scaleCopyScalar(a.data(), block.data(), a.size(), -1.75f);
+    player::audio::simd::scaleCopyAvx2(b.data(), block.data(), b.size(), -1.75f);
+    for (size_t i = 0; i < a.size(); ++i) {
+        EXPECT_FLOAT_EQ(a[i], b[i]) << "i=" << i;
+    }
+}
+
+TEST(Simd, MidSideMatchesScalar) {
+    if (!player::audio::simd::hasAvx2()) {
+        GTEST_SKIP() << "AVX2 not available";
+    }
+    uint32_t state = 0xBEEF1234u;
+    std::vector<float> left(555);
+    std::vector<float> right(555);
+    for (size_t i = 0; i < left.size(); ++i) {
+        state = state * 1664525u + 1013904223u;
+        left[i] = static_cast<float>((state >> 8) & 0xFFFF) / 32768.0f - 1.0f;
+        state = state * 1664525u + 1013904223u;
+        right[i] = static_cast<float>((state >> 8) & 0xFFFF) / 32768.0f - 1.0f;
+    }
+    std::vector<float> left_scalar = left;
+    std::vector<float> right_scalar = right;
+    std::vector<float> left_avx2 = left;
+    std::vector<float> right_avx2 = right;
+    player::audio::simd::midSideScalar(left_scalar.data(), right_scalar.data(), left.size());
+    player::audio::simd::midSideAvx2(left_avx2.data(), right_avx2.data(), left.size());
+    for (size_t i = 0; i < left.size(); ++i) {
+        EXPECT_FLOAT_EQ(left_scalar[i], left_avx2[i]) << "i=" << i;
+        EXPECT_FLOAT_EQ(right_scalar[i], right_avx2[i]) << "i=" << i;
+    }
+}
+
+TEST(Simd, DftMatchesScalar) {
+    if (!player::audio::simd::hasAvx2()) {
+        GTEST_SKIP() << "AVX2 not available";
+    }
+    for (const size_t size : {256u, 2048u}) {
+        uint32_t state = 0xDEADBEEFu;
+        std::vector<double> input(2 * size);
+        for (double& value : input) {
+            state = state * 1664525u + 1013904223u;
+            value = static_cast<double>((state >> 8) & 0xFFFF) / 32768.0 - 1.0;
+        }
+        std::vector<double> scalar = input;
+        std::vector<double> avx2 = input;
+        player::audio::simd::dftScalar(scalar.data(), size);
+        player::audio::simd::dftAvx2(avx2.data(), size);
+        for (size_t i = 0; i < scalar.size(); ++i) {
+            EXPECT_NEAR(scalar[i], avx2[i], 1e-8) << "size=" << size << " i=" << i;
+        }
+    }
 }

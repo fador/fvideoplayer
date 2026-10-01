@@ -28,8 +28,6 @@ public:
     void inverseDirect(const float* spectrum, float* time) const;
 
 private:
-    void dft(std::complex<double>* data) const;
-
     size_t bins_ = 0;
     size_t fft_size_ = 0;
     std::vector<std::complex<double>> pre_;

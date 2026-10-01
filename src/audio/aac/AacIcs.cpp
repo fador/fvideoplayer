@@ -1,5 +1,6 @@
 #include "audio/aac/AacIcs.hpp"
 
+#include "audio/Simd.hpp"
 #include "audio/aac/Huffman.hpp"
 
 #include <algorithm>
@@ -14,7 +15,6 @@ constexpr int kScaleFactorZero = 60;
 constexpr int kNoiseOffset = 90;
 constexpr int kNoisePre = 256;
 constexpr unsigned kNoisePreBits = 9;
-constexpr float kDequantExponent = 4.0f / 3.0f;
 
 // Gain control modes: windows, first-window test flag, adjustment bit count.
 const uint8_t kGainMode[4][3] = {
@@ -427,16 +427,7 @@ void dequantize(ChannelData& channel) {
             const unsigned width = offsets[sfb + 1] - offsets[sfb];
             for (unsigned j = 0; j < group_length; ++j) {
                 const unsigned base = (window_index + j) * kWindowSize + offsets[sfb];
-                for (unsigned k = 0; k < width; ++k) {
-                    const int16_t value = channel.quant[base + k];
-                    if (value == 0) {
-                        channel.spectrum[base + k] = 0.0f;
-                        continue;
-                    }
-                    const float magnitude =
-                        std::pow(std::fabs(static_cast<float>(value)), kDequantExponent);
-                    channel.spectrum[base + k] = (value > 0 ? magnitude : -magnitude) * gain;
-                }
+                simd::dequantizeBand(channel.quant + base, channel.spectrum + base, width, gain);
             }
         }
         window_index += group_length;
