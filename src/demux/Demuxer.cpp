@@ -1,5 +1,6 @@
 #include "demux/Demuxer.hpp"
 
+#include "demux/Mp4Demuxer.hpp"
 #include "demux/RawHevcDemuxer.hpp"
 
 #include <algorithm>
@@ -65,9 +66,13 @@ std::unique_ptr<IDemuxer> createDemuxer(const std::filesystem::path& path, std::
             }
             return demuxer;
         }
-        case Container::Mp4:
-            error = "MP4 demuxer not implemented yet";
-            return nullptr;
+        case Container::Mp4: {
+            auto demuxer = std::make_unique<Mp4Demuxer>();
+            if (!demuxer->open(path, error)) {
+                return nullptr;
+            }
+            return demuxer;
+        }
         case Container::Mkv:
             error = "Matroska demuxer not implemented yet";
             return nullptr;
