@@ -75,11 +75,21 @@ target_include_directories(player_decode PUBLIC src)
 target_link_libraries(player_decode PUBLIC player_demux kvzdec)
 target_compile_definitions(player_decode PRIVATE _CRT_SECURE_NO_WARNINGS)
 
+# --- player playback (pipeline, no GUI dependencies) ------------------------
+add_library(player_playback STATIC
+    src/playback/PlaybackEngine.cpp
+    src/stats/StatsCollector.cpp)
+target_include_directories(player_playback PUBLIC src)
+target_link_libraries(player_playback PUBLIC player_decode player_demux Threads::Threads)
+
 # --- player -----------------------------------------------------------------
 add_library(player_core STATIC
-    src/app/Application.cpp)
+    src/app/Application.cpp
+    src/render/GLFunctions.cpp
+    src/render/VideoRenderer.cpp)
 target_include_directories(player_core PUBLIC src)
 target_link_libraries(player_core PUBLIC
+    player_playback
     player_decode
     player_demux
     kvzdec
@@ -92,6 +102,7 @@ target_link_libraries(player_core PUBLIC
 if(MSVC)
     target_compile_options(player_demux PRIVATE /W4 /permissive- /Zc:__cplusplus)
     target_compile_options(player_decode PRIVATE /W4 /permissive- /Zc:__cplusplus)
+    target_compile_options(player_playback PRIVATE /W4 /permissive- /Zc:__cplusplus)
     target_compile_options(player_core PRIVATE /W4 /permissive- /Zc:__cplusplus)
 endif()
 
