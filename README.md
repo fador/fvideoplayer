@@ -104,10 +104,11 @@ timestamps become due, dropping frames that are already late.
 
 Audio follows the same pattern with its own buffer: the pipeline decodes AAC
 up to 2 seconds ahead of the media clock into a timestamped PCM buffer, and a
-feeder moves chunks into the sink so the device queue stays around 400 ms
-ahead of the video position. Chunks that fall behind the clock are dropped,
-which keeps audio locked to the video after stalls and seeks. Volume and mute
-are applied as a software gain when chunks leave the buffer.
+feeder (called by both the pipeline and the UI thread, so a busy video decode
+cannot starve it) moves chunks into the sink to keep the device queue around
+400 ms ahead of the video position. Chunks that fall behind the clock are
+dropped, which keeps audio locked to the video after stalls and seeks. Volume
+and mute are applied as a software gain when chunks leave the buffer.
 
 ## Audio decoding
 

@@ -83,6 +83,7 @@ void SdlAudioSink::closeStream() {
         audio_initialized_ = false;
     }
     device_latency_ms_ = 0;
+    queue_was_empty_ = false;
     paused_ = true;
 }
 
@@ -154,6 +155,8 @@ void SdlAudioSink::reset() {
     }
     frames_consumed_ = 0;
     frames_dropped_ = 0;
+    underruns_ = 0;
+    queue_was_empty_ = false;
 }
 
 uint64_t SdlAudioSink::framesConsumed() const {
@@ -173,7 +176,21 @@ int SdlAudioSink::queuedMs() const {
     }
     const int bytes_per_frame = static_cast<int>(channels_ * sizeof(float));
     const int queued = SDL_GetAudioStreamQueued(stream_);
+    if (!paused_) {
+        // Diagnostic: the device queue ran dry while playing.
+        if (queued == 0 && !queue_was_empty_) {
+            ++underruns_;
+            queue_was_empty_ = true;
+        } else if (queued > 0) {
+            queue_was_empty_ = false;
+        }
+    }
     return device_latency_ms_ + queued * 1000 / (bytes_per_frame * static_cast<int>(sample_rate_));
+}
+
+uint64_t SdlAudioSink::underruns() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return underruns_;
 }
 
 }  // namespace player::audio

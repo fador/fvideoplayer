@@ -64,6 +64,7 @@ struct Snapshot {
     int64_t audio_buffer_ms = 0;
     int64_t audio_sink_ms = 0;
     int64_t audio_drift_ms = 0;
+    int64_t audio_underruns = 0;
 
     std::vector<float> decode_history_ms;
     std::vector<float> queue_history;
@@ -81,7 +82,7 @@ public:
     void onBytesDemuxed(size_t bytes);
     void onSeek(double duration_ms);
     void setQueue(size_t depth, size_t capacity, double buffered_seconds);
-    void setAudio(int64_t buffer_ms, int64_t sink_ms, int64_t drift_ms);
+    void setAudio(int64_t buffer_ms, int64_t sink_ms, int64_t drift_ms, int64_t underruns);
     void setPlaying(bool playing);
     void setEos(bool eos);
 
@@ -103,6 +104,7 @@ private:
     int64_t audio_buffer_ms_ = 0;
     int64_t audio_sink_ms_ = 0;
     int64_t audio_drift_ms_ = 0;
+    int64_t audio_underruns_ = 0;
     bool eos_ = false;
     bool playing_ = false;
 

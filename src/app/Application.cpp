@@ -531,10 +531,11 @@ void Application::drawStatsWindow() {
             ImGui::Text("Audio PCM: %llu frames played, %llu dropped",
                         static_cast<unsigned long long>(engine_.audioFrames()),
                         static_cast<unsigned long long>(engine_.audioFramesDropped()));
-            ImGui::Text("Audio buffer: %lld ms  sink: %lld ms  A/V drift: %lld ms",
+            ImGui::Text("Audio buffer: %lld ms  sink: %lld ms  A/V drift: %lld ms  underruns: %lld",
                         static_cast<long long>(snapshot.audio_buffer_ms),
                         static_cast<long long>(snapshot.audio_sink_ms),
-                        static_cast<long long>(snapshot.audio_drift_ms));
+                        static_cast<long long>(snapshot.audio_drift_ms),
+                        static_cast<long long>(snapshot.audio_underruns));
         } else {
             ImGui::TextUnformatted("Audio: none");
         }

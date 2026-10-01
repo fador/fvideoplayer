@@ -434,23 +434,22 @@ void dequantize(ChannelData& channel) {
     }
 }
 
-// Reflection coefficients to LPC via the Levinson-Durbin recursion.
+// Reflection coefficients to LPC via the Levinson-Durbin recursion. Both
+// values of a symmetric pair are read before either is written, which matters
+// for the middle coefficient of odd orders.
 void computeLpc(const float* reflection, unsigned order, float* lpc) {
     for (unsigned i = 0; i < order; ++i) {
         lpc[i] = 0.0f;
     }
     for (unsigned i = 0; i < order; ++i) {
-        const float r = reflection[i];
-        unsigned j = 0;
-        for (; j < (i + 1) / 2; ++j) {
-            const float tmp = lpc[j];
-            lpc[j] += r * lpc[i - 1 - j];
-            lpc[i - 1 - j] += r * tmp;
+        const float r = -reflection[i];
+        lpc[i] = r;
+        for (unsigned j = 0; j < (i + 1) / 2; ++j) {
+            const float f = lpc[j];
+            const float b = lpc[i - 1 - j];
+            lpc[j] = f + r * b;
+            lpc[i - 1 - j] = b + r * f;
         }
-        if ((i & 1) != 0) {
-            lpc[j] += lpc[j] * r;
-        }
-        lpc[i] = -r;
     }
 }
 

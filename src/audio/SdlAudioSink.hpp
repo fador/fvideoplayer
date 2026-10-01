@@ -33,6 +33,7 @@ public:
     uint64_t framesConsumed() const override;
     uint64_t framesDropped() const override;
     int queuedMs() const override;
+    uint64_t underruns() const;
     bool open() const { return stream_ != nullptr; }
 
 private:
@@ -51,6 +52,8 @@ private:
     bool paused_ = true;
     uint64_t frames_consumed_ = 0;
     uint64_t frames_dropped_ = 0;
+    mutable uint64_t underruns_ = 0;
+    mutable bool queue_was_empty_ = false;
 };
 
 }  // namespace player::audio

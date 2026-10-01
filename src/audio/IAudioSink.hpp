@@ -33,6 +33,8 @@ public:
     virtual uint64_t framesDropped() const { return 0; }
     // Playback delay of the queued audio in milliseconds.
     virtual int queuedMs() const { return 0; }
+    // Times the device queue ran dry while playing (diagnostic).
+    virtual uint64_t underruns() const { return 0; }
 };
 
 }  // namespace player::audio

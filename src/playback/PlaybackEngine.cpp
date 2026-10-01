@@ -105,6 +105,8 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
         sink().configure(format);
     }
     audio_warned_ = false;
+    audio_late_drops_ = 0;
+    audio_eos_ = false;
     audio_buffer_.clear();
     configureAudioDecoder(audio_info_);
 
@@ -150,10 +152,12 @@ void PlaybackEngine::close() {
     demuxer_.reset();
     current_.reset();
     if (audio_info_.present && audio_decoding_.load() && sink().framesConsumed() > 0) {
-        log::addf(log::Level::Info, "Audio: %llu frames played, %llu dropped, %llu late",
+        log::addf(log::Level::Info, "Audio: %llu frames played, %llu dropped, %llu late, %llu stale, %llu underruns",
                   static_cast<unsigned long long>(sink().framesConsumed()),
                   static_cast<unsigned long long>(sink().framesDropped()),
-                  static_cast<unsigned long long>(audio_buffer_.droppedChunks()));
+                  static_cast<unsigned long long>(audio_buffer_.droppedChunks()),
+                  static_cast<unsigned long long>(audio_late_drops_),
+                  static_cast<unsigned long long>(sink().underruns()));
     }
     sink().reset();
     audio_buffer_.clear();
@@ -274,9 +278,12 @@ bool PlaybackEngine::update() {
             ++popped;
         }
     }
+    // Feed audio from the UI thread as well: the pipeline thread can be busy
+    // decoding video or reading from disk, and the sink must not run dry.
+    feedAudio();
     if (state_.load() == State::Playing && eos_.load() && queue_.empty() &&
         (!audio_enabled_.load() ||
-         (audio_buffer_.empty() && sink().queuedMs() < kAudioLateMs))) {
+         (audio_eos_.load() && audio_buffer_.empty() && sink().queuedMs() < kAudioLateMs))) {
         clock_.pause();
         state_ = State::Ended;
         stats_.setPlaying(false);
@@ -323,14 +330,21 @@ void PlaybackEngine::pipelineLoop() {
             lock.unlock();
             if (target == kNoAudioTrack) {
                 audio_enabled_ = false;
-                audio_buffer_.clear();
-                sink().reset();
+                {
+                    std::lock_guard<std::mutex> audio_lock(audio_mutex_);
+                    audio_buffer_.clear();
+                    sink().reset();
+                }
                 log::add(log::Level::Info, "Audio disabled");
             } else if (demuxer_->selectAudioTrack(target)) {
-                audio_buffer_.clear();
-                sink().reset();
+                {
+                    std::lock_guard<std::mutex> audio_lock(audio_mutex_);
+                    audio_buffer_.clear();
+                    sink().reset();
+                }
                 selected_audio_ = target;
                 audio_enabled_ = true;
+                audio_eos_ = false;
                 audio_warned_ = false;
                 configureAudioDecoder(audio_track_infos_[target]);
                 log::addf(log::Level::Info, "Audio track %zu selected", target);
@@ -391,9 +405,10 @@ void PlaybackEngine::pipelineLoop() {
         stats_.setQueue(queue_.size(), queue_.capacity(), bufferedSeconds());
         if (audio_enabled_.load()) {
             stats_.setAudio(audio_buffer_.durationMs(), sink().queuedMs(),
-                            audio_buffer_.endPtsMs() - positionMs());
+                            audio_buffer_.endPtsMs() - positionMs(),
+                            static_cast<int64_t>(sink().underruns()));
         } else {
-            stats_.setAudio(0, 0, 0);
+            stats_.setAudio(0, 0, 0, 0);
         }
     }
 }
@@ -437,16 +452,23 @@ void PlaybackEngine::configureAudioDecoder(const demux::AudioTrackInfo& track) {
 
 // Decodes audio ahead of the media clock into the audio buffer.
 void PlaybackEngine::pumpAudio() {
-    if (!audio_enabled_.load() || !audio_decoding_.load()) {
+    if (!audio_enabled_.load()) {
+        return;
+    }
+    if (!audio_decoding_.load()) {
+        audio_eos_ = true;  // nothing to decode for this track
         return;
     }
     const int64_t position = positionMs();
     demux::Sample sample;
     int guard = 0;
-    while (guard++ < 64 &&
-           audio_buffer_.durationMs() < kAudioBufferMs - audio_frame_ms_ &&
-           demuxer_->readAudioSample(sample)) {
+    while (guard++ < 64 && audio_buffer_.durationMs() < kAudioBufferMs - audio_frame_ms_) {
+        if (!demuxer_->readAudioSample(sample)) {
+            audio_eos_ = true;
+            break;
+        }
         if (sample.pts + audio_frame_ms_ < position - kAudioLateMs) {
+            ++audio_late_drops_;
             continue;  // already late: drop without decoding
         }
         std::string error;
@@ -468,8 +490,10 @@ void PlaybackEngine::pumpAudio() {
 }
 
 // Moves buffered PCM into the sink, keeping it around kAudioSinkLeadMs ahead
-// of the media clock so audio stays locked to the video.
+// of the media clock so audio stays locked to the video. Called from both the
+// pipeline and the UI thread.
 void PlaybackEngine::feedAudio() {
+    std::lock_guard<std::mutex> lock(audio_mutex_);
     if (!audio_enabled_.load()) {
         return;
     }
@@ -498,9 +522,11 @@ void PlaybackEngine::feedAudio() {
 }
 
 void PlaybackEngine::resetAudioState() {
+    std::lock_guard<std::mutex> lock(audio_mutex_);
     audio_buffer_.clear();
     audio_decoder_.flush();
     sink().flush();
+    audio_eos_ = false;
 }
 
 }  // namespace player::playback

@@ -143,8 +143,11 @@ private:
     std::atomic<float> volume_{1.0f};
     std::atomic<bool> muted_{false};
     std::atomic<bool> audio_decoding_{false};
+    std::atomic<bool> audio_eos_{false};
     int audio_frame_ms_ = 21;
+    uint64_t audio_late_drops_ = 0;
     bool audio_warned_ = false;
+    std::mutex audio_mutex_;  // serializes feeding with seek/track resets
 
     // UI-thread state.
     FrameQueue queue_{16};
