@@ -169,6 +169,10 @@ The Opus decoder is also written from scratch. Implemented:
   stereo
 - CELT denormalisation and anti-collapse, verified against reference
   outputs
+- CELT inverse MDCT (kiss_fft radix-2/3/4/5 transforms with shared
+  twiddle tables, pre/post rotation and the integrated overlap window),
+  verified against reference outputs for every frame size and stride
+  combination
 
 Next milestones: the inverse MDCT and overlap-add with the comb filter,
 then the SILK layer and hybrid frames. Until then Opus tracks are
