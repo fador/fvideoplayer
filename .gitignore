@@ -1,0 +1,25 @@
+# Build outputs
+/build/
+/out/
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
+*.exp
+
+# IDE / editor
+.vs/
+.idea/
+.vscode/
+*.user
+CMakeUserPresets.json
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Test artifacts
+/testdata/generated/
