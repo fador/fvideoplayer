@@ -183,6 +183,10 @@ The Opus decoder is also written from scratch. Implemented:
 - SILK NLSF decoding (codebook unpacking, predictive residual
   dequantization, stabilization), verified bit-exactly against the
   reference for both narrowband/mediumband and wideband codebooks
+- SILK side information decoding (signal type, gains, NLSF indices,
+  interpolation, pitch lags and contours, LTP gains and scaling, seed),
+  verified bit-exactly against the reference for all sampling rates,
+  frame sizes and conditional coding modes
 
 Next milestones: the SILK layer and hybrid frames; until then those
 packets are reported as unsupported once in the log and skipped. CELT-only

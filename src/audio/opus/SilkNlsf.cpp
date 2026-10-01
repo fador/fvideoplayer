@@ -10,18 +10,6 @@ constexpr int kQuantMaxAmplitude = 4;  // NLSF_QUANT_MAX_AMPLITUDE
 constexpr int32_t kQuantLevelAdjQ10 = 102;  // SILK_FIX_CONST(0.1, 10)
 constexpr int kMaxLoops = 20;
 
-// silk_NLSF_unpack: entropy table indices and predictors per coefficient.
-void unpack(int16_t* ec_ix, uint8_t* pred_q8, const NlsfCodebook& cb, int cb1_index) {
-    const uint8_t* ec_sel = cb.ec_sel + cb1_index * cb.order / 2;
-    for (int i = 0; i < cb.order; i += 2) {
-        const uint8_t entry = *ec_sel++;
-        ec_ix[i] = static_cast<int16_t>(smulbb((entry >> 1) & 7, 2 * kQuantMaxAmplitude + 1));
-        pred_q8[i] = cb.pred_q8[i + (entry & 1) * (cb.order - 1)];
-        ec_ix[i + 1] = static_cast<int16_t>(smulbb((entry >> 5) & 7, 2 * kQuantMaxAmplitude + 1));
-        pred_q8[i + 1] = cb.pred_q8[i + ((entry >> 4) & 1) * (cb.order - 1) + 1];
-    }
-}
-
 // silk_NLSF_residual_dequant: backward-predictive dequantizer.
 void residualDequant(int16_t* x_q10, const int8_t* indices, const uint8_t* pred_coef_q8,
                      int quant_step_size_q16, int order) {
@@ -107,12 +95,23 @@ void stabilize(int16_t* nlsf_q15, const int16_t* delta_min_q15, int order) {
 
 }  // namespace
 
+void nlsfUnpack(int16_t* ec_ix, uint8_t* pred_q8, const NlsfCodebook& codebook, int cb1_index) {
+    const uint8_t* ec_sel = codebook.ec_sel + cb1_index * codebook.order / 2;
+    for (int i = 0; i < codebook.order; i += 2) {
+        const uint8_t entry = *ec_sel++;
+        ec_ix[i] = static_cast<int16_t>(smulbb((entry >> 1) & 7, 2 * kQuantMaxAmplitude + 1));
+        pred_q8[i] = codebook.pred_q8[i + (entry & 1) * (codebook.order - 1)];
+        ec_ix[i + 1] = static_cast<int16_t>(smulbb((entry >> 5) & 7, 2 * kQuantMaxAmplitude + 1));
+        pred_q8[i + 1] = codebook.pred_q8[i + ((entry >> 4) & 1) * (codebook.order - 1) + 1];
+    }
+}
+
 void nlsfDecode(int16_t* nlsf_q15, const int8_t* indices, const NlsfCodebook& codebook) {
     uint8_t pred_q8[kMaxLpcOrder];
     int16_t ec_ix[kMaxLpcOrder];
     int16_t res_q10[kMaxLpcOrder];
 
-    unpack(ec_ix, pred_q8, codebook, indices[0]);
+    nlsfUnpack(ec_ix, pred_q8, codebook, indices[0]);
     residualDequant(res_q10, indices + 1, pred_q8, codebook.quant_step_size_q16, codebook.order);
 
     const uint8_t* cb_element = codebook.cb1_nlsf_q8 + indices[0] * codebook.order;

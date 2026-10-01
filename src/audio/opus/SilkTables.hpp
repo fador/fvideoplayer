@@ -23,4 +23,28 @@ struct NlsfCodebook {
 extern const NlsfCodebook kNlsfCodebookNbMb;
 extern const NlsfCodebook kNlsfCodebookWb;
 
+// Side information inverse CDFs (tables_other.c, tables_gain.c, tables_LTP.c,
+// tables_pitch_lag.c).
+extern const uint8_t kSilkTypeOffsetVadIcdf[4];
+extern const uint8_t kSilkTypeOffsetNoVadIcdf[2];
+extern const uint8_t kSilkDeltaGainIcdf[41];
+extern const uint8_t kSilkGainIcdf[3 * 8];
+extern const uint8_t kSilkUniform4Icdf[4];
+extern const uint8_t kSilkUniform6Icdf[6];
+extern const uint8_t kSilkUniform8Icdf[8];
+extern const uint8_t kSilkNlsfExtIcdf[7];
+extern const uint8_t kSilkNlsfInterpIcdf[5];
+extern const uint8_t kSilkPitchDeltaIcdf[21];
+extern const uint8_t kSilkPitchLagIcdf[32];
+extern const uint8_t kSilkLtpPerIndexIcdf[3];
+extern const uint8_t kSilkLtpGainIcdf0[8];
+extern const uint8_t kSilkLtpGainIcdf1[16];
+extern const uint8_t kSilkLtpGainIcdf2[32];
+extern const uint8_t* const kSilkLtpGainIcdf[3];
+extern const uint8_t kSilkLtpScaleIcdf[3];
+extern const uint8_t kSilkPitchContourIcdf[34];
+extern const uint8_t kSilkPitchContourNbIcdf[11];
+extern const uint8_t kSilkPitchContour10msIcdf[12];
+extern const uint8_t kSilkPitchContour10msNbIcdf[3];
+
 }  // namespace player::audio::silk

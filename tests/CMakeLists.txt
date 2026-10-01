@@ -6,6 +6,7 @@ add_executable(player_tests
     test_celt_post.cpp
     test_celt_vq.cpp
     test_mdct.cpp
+    test_silk_indices.cpp
     test_silk_nlsf.cpp
     test_avi_demuxer.cpp
     test_hvcc.cpp

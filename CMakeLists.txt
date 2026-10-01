@@ -110,6 +110,7 @@ add_library(player_audio STATIC
     src/audio/opus/CeltFrame.cpp
     src/audio/opus/KissFft.cpp
     src/audio/opus/Mdct.cpp
+    src/audio/opus/SilkIndices.cpp
     src/audio/opus/SilkNlsf.cpp
     src/audio/opus/SilkTables.cpp
     src/audio/opus/OpusDecoder.cpp

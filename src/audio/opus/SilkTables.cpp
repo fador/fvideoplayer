@@ -4,6 +4,79 @@
 
 namespace player::audio::silk {
 
+const uint8_t kSilkTypeOffsetVadIcdf[4] = {
+232, 158, 10, 0, };
+
+const uint8_t kSilkTypeOffsetNoVadIcdf[2] = {
+230, 0, };
+
+const uint8_t kSilkDeltaGainIcdf[41] = {
+250, 245, 234, 203, 71, 50, 42, 38, 35, 33, 31, 29, 28, 27, 26, 25, 
+24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 
+8, 7, 6, 5, 4, 3, 2, 1, 0, };
+
+const uint8_t kSilkGainIcdf[24] = {
+224, 112, 44, 15, 3, 2, 1, 0, 254, 237, 192, 132, 70, 23, 4, 0, 
+255, 252, 226, 155, 61, 11, 2, 0, };
+
+const uint8_t kSilkUniform4Icdf[4] = {
+192, 128, 64, 0, };
+
+const uint8_t kSilkUniform6Icdf[6] = {
+213, 171, 128, 85, 43, 0, };
+
+const uint8_t kSilkUniform8Icdf[8] = {
+224, 192, 160, 128, 96, 64, 32, 0, };
+
+const uint8_t kSilkNlsfExtIcdf[7] = {
+100, 40, 16, 7, 3, 1, 0, };
+
+const uint8_t kSilkNlsfInterpIcdf[5] = {
+243, 221, 192, 181, 0, };
+
+const uint8_t kSilkPitchDeltaIcdf[21] = {
+210, 208, 206, 203, 199, 193, 183, 168, 142, 104, 74, 52, 37, 27, 20, 14, 
+10, 6, 4, 2, 0, };
+
+const uint8_t kSilkPitchLagIcdf[32] = {
+253, 250, 244, 233, 212, 182, 150, 131, 120, 110, 98, 85, 72, 60, 49, 40, 
+32, 25, 19, 15, 13, 11, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 
+};
+
+const uint8_t kSilkLtpPerIndexIcdf[3] = {
+179, 99, 0, };
+
+const uint8_t kSilkLtpGainIcdf0[8] = {
+71, 56, 43, 30, 21, 12, 6, 0, };
+
+const uint8_t kSilkLtpGainIcdf1[16] = {
+199, 165, 144, 124, 109, 96, 84, 71, 61, 51, 42, 32, 23, 15, 8, 0, 
+};
+
+const uint8_t kSilkLtpGainIcdf2[32] = {
+241, 225, 211, 199, 187, 175, 164, 153, 142, 132, 123, 114, 105, 96, 88, 80, 
+72, 64, 57, 50, 44, 38, 33, 29, 24, 20, 16, 12, 9, 5, 2, 0, 
+};
+
+const uint8_t kSilkLtpScaleIcdf[3] = {
+128, 64, 0, };
+
+const uint8_t kSilkPitchContourIcdf[34] = {
+223, 201, 183, 167, 152, 138, 124, 111, 98, 88, 79, 70, 62, 56, 50, 44, 
+39, 35, 31, 27, 24, 21, 18, 16, 14, 12, 10, 8, 6, 4, 3, 2, 
+1, 0, };
+
+const uint8_t kSilkPitchContourNbIcdf[11] = {
+188, 176, 155, 138, 119, 97, 67, 43, 26, 10, 0, };
+
+const uint8_t kSilkPitchContour10msIcdf[12] = {
+165, 119, 80, 61, 47, 35, 27, 20, 14, 9, 4, 0, };
+
+const uint8_t kSilkPitchContour10msNbIcdf[3] = {
+113, 63, 0, };
+
+const uint8_t* const kSilkLtpGainIcdf[3] = {kSilkLtpGainIcdf0, kSilkLtpGainIcdf1, kSilkLtpGainIcdf2};
+
 const uint8_t kNlsfNbMbCb1NlsfQ8[320] = {
 12, 35, 60, 83, 108, 132, 157, 180, 206, 228, 15, 32, 55, 77, 101, 125, 
 151, 175, 201, 225, 19, 42, 66, 89, 114, 137, 162, 184, 209, 230, 12, 25, 
