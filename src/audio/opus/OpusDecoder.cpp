@@ -24,6 +24,7 @@ bool Decoder::configure(const uint8_t* config, size_t size, std::string& error) 
     celt_.init(static_cast<int>(head_.channels));
     silk_.init(static_cast<int>(head_.channels));
     pre_skip_remaining_ = head_.pre_skip;
+    output_gain_factor_ = outputGainFactor(head_.output_gain);
     configured_ = true;
     return true;
 }
@@ -64,6 +65,11 @@ Status Decoder::decode(const uint8_t* data, size_t size, PcmBuffer& pcm, std::st
             pcm.samples.erase(pcm.samples.begin(),
                               pcm.samples.begin() + static_cast<ptrdiff_t>(drop * pcm.channels));
             pre_skip_remaining_ -= static_cast<uint32_t>(drop);
+        }
+        if (output_gain_factor_ != 1.0f) {
+            for (float& sample : pcm.samples) {
+                sample *= output_gain_factor_;
+            }
         }
     }
     return status;

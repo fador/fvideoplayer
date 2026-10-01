@@ -216,7 +216,8 @@ The Opus decoder is also written from scratch. Implemented:
   uses precomputed tables that differ by a few ULPs from the
   runtime-computed ones
 - OpusHead pre-skip trimming (the decoder ramp-up samples are dropped,
-  spanning packets when a frame is shorter than the pre-skip)
+  spanning packets when a frame is shorter than the pre-skip) and the
+  output gain applied to the decoded samples
 - CELT packet loss concealment: pitch-based extrapolation of the last
   frame for short bursts, noise shaped by the decaying band energies for
   longer losses

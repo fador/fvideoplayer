@@ -1169,6 +1169,37 @@ TEST(OpusDecoder, ConcealsLostCeltPackets) {
     EXPECT_EQ(pcm.pts, 1920);
 }
 
+TEST(OpusDecoder, AppliesOutputGain) {
+    // CELT fullband 20 ms mono (config 31, one frame) with a patterned
+    // payload so the decoded frame is not silent.
+    const std::vector<uint8_t> packet = makePacket(0xF8, std::vector<uint8_t>(16, 0x55));
+
+    const auto decodeWithGain = [&](int16_t gain) {
+        const std::vector<uint8_t> head = makeOpusHead(1, 0, 48000, gain, 0);
+        player::audio::opus::Decoder decoder;
+        std::string error;
+        EXPECT_TRUE(decoder.configure(head.data(), head.size(), error)) << error;
+        player::audio::PcmBuffer pcm;
+        EXPECT_EQ(decoder.decode(packet.data(), packet.size(), pcm, error),
+                  player::audio::opus::Status::Ok)
+            << error;
+        return pcm.samples;
+    };
+
+    const std::vector<float> plain = decodeWithGain(0);
+    const std::vector<float> boosted = decodeWithGain(256);  // Q7.8: +1 dB
+
+    ASSERT_EQ(plain.size(), boosted.size());
+    const float factor = player::audio::opus::outputGainFactor(256);
+    ASSERT_GT(factor, 1.0f);
+    bool nonzero = false;
+    for (size_t i = 0; i < plain.size(); ++i) {
+        EXPECT_NEAR(boosted[i], plain[i] * factor, 1e-6f) << "sample " << i;
+        nonzero = nonzero || plain[i] != 0.0f;
+    }
+    EXPECT_TRUE(nonzero);
+}
+
 TEST(CeltPvq, CountsCodewords) {
     EXPECT_EQ(player::audio::opus::pvqCount(2, 1), 4u);
     EXPECT_EQ(player::audio::opus::pvqCount(2, 2), 8u);

@@ -55,6 +55,7 @@ private:
     bool configured_ = false;
     int64_t pts_ = 0;
     uint32_t pre_skip_remaining_ = 0;
+    float output_gain_factor_ = 1.0f;
     Mode last_mode_ = Mode::Celt;
     int last_lm_ = 0;
     int last_stream_channels_ = 0;
