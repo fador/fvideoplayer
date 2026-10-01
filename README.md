@@ -196,6 +196,10 @@ The Opus decoder is also written from scratch. Implemented:
 - SILK parameter decoding: gain dequantization, interpolated LPC sets,
   LTP coefficients and scaling, verified bit-exactly against the
   reference for all rates, frame sizes, signal types and loss states
+- SILK core synthesis: excitation offsets and sign randomization, LTP
+  rewhitening and prediction, LPC synthesis with gain adjustment and the
+  voiced-to-unvoiced loss transition, verified bit-exactly against the
+  reference for voiced and unvoiced frames at all rates
 
 Next milestones: the SILK layer and hybrid frames; until then those
 packets are reported as unsupported once in the log and skipped. CELT-only

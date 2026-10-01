@@ -31,6 +31,12 @@ void findPoly(int32_t* out, const int32_t* c_lsf, int dd) {
 }
 
 // Variable-Q reciprocal (silk_INVERSE32_varQ from Inlines.h).
+int32_t mul32FracQ(int32_t a, int32_t b, int q) {
+    return static_cast<int32_t>(rshiftRound64(smull(a, b), q));
+}
+
+}  // namespace
+
 int32_t inverse32VarQ(int32_t b32, int qres) {
     const int b_headrm = clz32(std::abs(b32)) - 1;
     const int32_t b32_nrm = b32 << b_headrm;
@@ -50,11 +56,52 @@ int32_t inverse32VarQ(int32_t b32, int qres) {
     return 0;
 }
 
-int32_t mul32FracQ(int32_t a, int32_t b, int q) {
-    return static_cast<int32_t>(rshiftRound64(smull(a, b), q));
+int32_t div32VarQ(int32_t a32, int32_t b32, int qres) {
+    const int a_headrm = clz32(std::abs(a32)) - 1;
+    int32_t a32_nrm = a32 << a_headrm;
+    const int b_headrm = clz32(std::abs(b32)) - 1;
+    const int32_t b32_nrm = b32 << b_headrm;
+    const int32_t b32_inv = (kInt32Max >> 2) / (b32_nrm >> 16);
+
+    int32_t result = smulwb(a32_nrm, b32_inv);
+    a32_nrm = static_cast<int32_t>(static_cast<uint32_t>(a32_nrm) -
+                                   (static_cast<uint32_t>(smmul(b32_nrm, result)) << 3));
+    result = smlawb(result, a32_nrm, b32_inv);
+
+    const int lshift = 29 + a_headrm - b_headrm - qres;
+    if (lshift < 0) {
+        return lshiftSat32(result, -lshift);
+    }
+    if (lshift < 32) {
+        return result >> lshift;
+    }
+    return 0;
 }
 
-}  // namespace
+void lpcAnalysisFilter(int16_t* out, const int16_t* in, const int16_t* b, int len, int d) {
+    for (int ix = d; ix < len; ++ix) {
+        const int16_t* in_ptr = &in[ix - 1];
+
+        int32_t out32_q12 = smulbb(in_ptr[0], b[0]);
+        out32_q12 = smlabbOvflw(out32_q12, in_ptr[-1], b[1]);
+        out32_q12 = smlabbOvflw(out32_q12, in_ptr[-2], b[2]);
+        out32_q12 = smlabbOvflw(out32_q12, in_ptr[-3], b[3]);
+        out32_q12 = smlabbOvflw(out32_q12, in_ptr[-4], b[4]);
+        out32_q12 = smlabbOvflw(out32_q12, in_ptr[-5], b[5]);
+        for (int j = 6; j < d; j += 2) {
+            out32_q12 = smlabbOvflw(out32_q12, in_ptr[-j], b[j]);
+            out32_q12 = smlabbOvflw(out32_q12, in_ptr[-j - 1], b[j + 1]);
+        }
+
+        // Subtract the prediction and scale to Q0.
+        out32_q12 = static_cast<int32_t>(static_cast<uint32_t>(in_ptr[1]) << 12) -
+                    static_cast<uint32_t>(out32_q12);
+        out[ix] = static_cast<int16_t>(sat16(rshiftRound(out32_q12, 12)));
+    }
+    for (int j = 0; j < d; ++j) {
+        out[j] = 0;
+    }
+}
 
 void lpcFit(int16_t* a_qout, int32_t* a_qin, int qout, int qin, int d) {
     int i = 0;

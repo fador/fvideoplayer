@@ -105,6 +105,19 @@ inline int32_t subSat32(int32_t a, int32_t b) {
                                                                 : static_cast<int32_t>(result));
 }
 
+inline int32_t addSat32(int32_t a, int32_t b) {
+    const int64_t result = static_cast<int64_t>(a) + b;
+    return result > kInt32Max ? kInt32Max : (result < kInt32Min ? kInt32Min
+                                                                : static_cast<int32_t>(result));
+}
+
+// a + (int16)b * (int16)c with a wrapping add (silk_SMLABB_ovflw).
+inline int32_t smlabbOvflw(int32_t a, int32_t b, int32_t c) {
+    const int32_t product = static_cast<int32_t>(static_cast<int16_t>(b)) *
+                            static_cast<int32_t>(static_cast<int16_t>(c));
+    return static_cast<int32_t>(static_cast<uint32_t>(a) + static_cast<uint32_t>(product));
+}
+
 inline int32_t lshiftSat32(int32_t a, int shift) {
     return limit(a, kInt32Min >> shift, kInt32Max >> shift) << shift;
 }

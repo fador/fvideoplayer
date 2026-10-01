@@ -25,4 +25,12 @@ void bwexpander32(int32_t* ar, int d, int32_t chirp_q16);
 // Interpolates two vectors (silk_interpolate).
 void interpolate(int16_t* xi, const int16_t* x0, const int16_t* x1, int ifact_q2, int d);
 
+// LPC analysis filter; the first d output samples are zero
+// (silk_LPC_analysis_filter).
+void lpcAnalysisFilter(int16_t* out, const int16_t* in, const int16_t* b, int len, int d);
+
+// Variable-Q division and reciprocal (Inlines.h).
+int32_t div32VarQ(int32_t a32, int32_t b32, int qres);
+int32_t inverse32VarQ(int32_t b32, int qres);
+
 }  // namespace player::audio::silk
