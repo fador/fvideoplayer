@@ -180,6 +180,9 @@ The Opus decoder is also written from scratch. Implemented:
   synthesis and the pitch post-filter, with inter-frame state. CELT-only
   Opus packets now decode to PCM, verified against reference-encoded and
   reference-decoded frame sequences (mono/stereo, several frame sizes)
+- SILK NLSF decoding (codebook unpacking, predictive residual
+  dequantization, stabilization), verified bit-exactly against the
+  reference for both narrowband/mediumband and wideband codebooks
 
 Next milestones: the SILK layer and hybrid frames; until then those
 packets are reported as unsupported once in the log and skipped. CELT-only
