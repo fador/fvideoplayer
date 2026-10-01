@@ -33,7 +33,44 @@ public:
     void decode(opus::RangeDecoder& decoder, int fs_khz, int stereo, int frames, int frame_ms,
                 StartOfPacket start, float* pcm);
 
+    // Conceals one lost SILK frame (silk_Decode with the packet-lost flag).
+    // fs_khz, stereo, frames and frame_ms describe the packet that would have
+    // arrived (the last received one for the first loss).
+    void decodeLost(int fs_khz, int stereo, int frames, int frame_ms, float* pcm);
+
 private:
+    // Packet loss concealment state (silk_PLC_struct).
+    struct PlcState {
+        int32_t pitch_l_q8 = 0;
+        int16_t prev_lpc_q12[kMaxLpcOrder] = {};
+        int32_t prev_ltp_scale_q14 = 0;
+        int32_t prev_gain_q16[2] = {65536, 65536};
+        int16_t ltp_coef_q14[kLtpOrder] = {};
+        int16_t rand_scale_q14 = 0;
+        int32_t rand_seed = 0;
+        int32_t conc_energy = 0;
+        int conc_energy_shift = 0;
+        int last_frame_lost = 0;
+        int fs_khz = 0;
+        int subfr_length = 20;
+        int nb_subfr = 2;
+    };
+
+    // Comfort noise generator state (silk_CNG_struct).
+    struct CngState {
+        int32_t exc_buf_q14[kMaxNbSubfr * 80] = {};
+        int16_t smth_nlsf_q15[kMaxLpcOrder] = {};
+        int32_t synth_state[kMaxLpcOrder] = {};
+        int32_t smth_gain_q16 = 0;
+        int32_t rand_seed = 0;
+        int fs_khz = 0;
+    };
+
+    enum class Lost {
+        No,
+        Yes,
+    };
+
     struct ChannelState {
         int fs_khz = 0;
         int nb_subfr = 0;
@@ -59,14 +96,27 @@ private:
         int lag_prev = 100;
         int32_t prev_gain_q16 = 65536;
         int32_t s_lpc_q14_buf[kMaxLpcOrder] = {};
+        int32_t exc_q14[kMaxFrameLength] = {};
         std::vector<int16_t> out_buf;
         SilkResampler resampler;
+        PlcState plc;
+        CngState cng;
+        int loss_cnt = 0;
     };
 
     void setFs(ChannelState& channel, int fs_khz, int nb_subfr);
     void decodeFrame(ChannelState& channel, opus::RangeDecoder& decoder, int16_t* out,
                      CondCoding cond_coding);
+    void decodeFrameLost(ChannelState& channel, int16_t* out);
     static SilkState makeIndState(const ChannelState& channel);
+
+    // Packet loss concealment and comfort noise (PLC.c and CNG.c).
+    void plc(ChannelState& channel, SilkDecoderControl& control, int16_t* frame, Lost lost);
+    void plcUpdate(ChannelState& channel, const SilkDecoderControl& control);
+    void plcConceal(ChannelState& channel, SilkDecoderControl& control, int16_t* frame);
+    void plcGlueFrames(ChannelState& channel, int16_t* frame, int length);
+    void cng(ChannelState& channel, const SilkDecoderControl& control, int16_t* frame, int length);
+    void cngReset(ChannelState& channel);
 
     int api_channels_ = 0;
     ChannelState channels_[2];

@@ -57,6 +57,12 @@ private:
     uint32_t pre_skip_remaining_ = 0;
     Mode last_mode_ = Mode::Celt;
     int last_lm_ = 0;
+    int last_stream_channels_ = 0;
+    int last_frame_samples_ = 0;
+    int last_silk_frames_ = 0;
+    int last_frame_ms_ = 0;
+    int last_fs_khz_ = 0;
+    Bandwidth last_bandwidth_ = Bandwidth::Fullband;
     CeltFrameDecoder celt_;
     silk::SilkDecoder silk_;
 };

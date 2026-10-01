@@ -29,8 +29,9 @@ public:
 
     // Conceals a lost frame: extrapolates the last decoded signal (pitch-based
     // for short bursts, noise-based after 5 frames or when no pitch history
-    // exists) and writes frame_samples * channels floats.
-    void decodeLost(int lm, float* pcm);
+    // exists) and writes frame_samples * channels floats. A non-zero start
+    // band (hybrid) always uses the noise-based path.
+    void decodeLost(int lm, float* pcm, int start = 0, int end = kCeltBands);
 
 private:
     static constexpr int kDecodeBufferSize = 2048;

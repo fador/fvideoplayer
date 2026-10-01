@@ -342,7 +342,7 @@ void CeltFrameDecoder::decode(RangeDecoder& decoder, int lm, int stream_channels
 // when there is no reliable pitch history, the output falls back to noise
 // shaped by the (decaying) band energies; otherwise the last pitch period is
 // repeated with an attenuation that grows with each loss.
-void CeltFrameDecoder::decodeLost(int lm, float* pcm) {
+void CeltFrameDecoder::decodeLost(int lm, float* pcm, int start, int end) {
     const int n = kCeltShortMdct << lm;
     const int overlap = kCeltOverlap;
     const int channels = channels_;
@@ -351,16 +351,15 @@ void CeltFrameDecoder::decodeLost(int lm, float* pcm) {
     out_syn[1] = decode_mem_[1].data() + kDecodeBufferSize - n;
 
     const int loss_count = loss_count_;
-    const int start = 0;
     const bool noise_based = loss_count >= 5 || start != 0 || skip_plc_ != 0;
 
     if (noise_based) {
-        const int eff_end = kCeltBands;
+        const int eff_end = std::max(start, std::min(end, kCeltBands));
 
         // Decay the band energies towards the noise floor.
         const float decay = loss_count == 0 ? 1.5f : 0.5f;
         for (int c = 0; c < channels; ++c) {
-            for (int i = start; i < eff_end; ++i) {
+            for (int i = start; i < end; ++i) {
                 const int idx = c * kCeltBands + i;
                 old_band_e_[idx] = std::max(background_log_e_[idx], old_band_e_[idx] - decay);
             }

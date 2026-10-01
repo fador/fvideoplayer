@@ -99,7 +99,7 @@ void SilkDecoder::decodeFrame(ChannelState& channel, opus::RangeDecoder& decoder
     std::copy(channel.prev_nlsf_q15, channel.prev_nlsf_q15 + kMaxLpcOrder, params.prev_nlsf_q15);
     params.last_gain_index = channel.last_gain_index;
     params.first_frame_after_reset = channel.first_frame_after_reset;
-    params.loss_count = 0;
+    params.loss_count = channel.loss_cnt;
 
     SilkDecoderControl control;
     decodeParameters(params, channel.indices, cond_coding, control);
@@ -114,7 +114,7 @@ void SilkDecoder::decodeFrame(ChannelState& channel, opus::RangeDecoder& decoder
     core.quant_offset_type = channel.indices.quant_offset_type;
     core.nlsf_interp_coef_q2 = channel.indices.nlsf_interp_coef_q2;
     core.seed = channel.indices.seed;
-    core.loss_count = 0;
+    core.loss_count = channel.loss_cnt;
     core.prev_signal_type = channel.prev_signal_type;
     core.lag_prev = channel.lag_prev;
     core.prev_gain_q16 = channel.prev_gain_q16;
@@ -123,21 +123,45 @@ void SilkDecoder::decodeFrame(ChannelState& channel, opus::RangeDecoder& decoder
 
     decodeCore(core, control, out, pulses.data());
 
+    std::copy(core.exc_q14, core.exc_q14 + channel.frame_length, channel.exc_q14);
     channel.prev_gain_q16 = core.prev_gain_q16;
     std::copy(core.s_lpc_q14_buf, core.s_lpc_q14_buf + kMaxLpcOrder, channel.s_lpc_q14_buf);
     channel.out_buf = core.out_buf;
     std::copy(params.prev_nlsf_q15, params.prev_nlsf_q15 + kMaxLpcOrder, channel.prev_nlsf_q15);
     channel.last_gain_index = params.last_gain_index;
+
+    // Update the PLC state, then clear the loss flags before CNG.
+    plc(channel, control, out, Lost::No);
+    channel.loss_cnt = 0;
     channel.prev_signal_type = channel.indices.signal_type;
     channel.first_frame_after_reset = 0;
-    channel.lag_prev = control.pitch_l[channel.nb_subfr - 1];
-
 
     // Shift the output history and append this frame.
     const int move_len = channel.ltp_mem_length - channel.frame_length;
     std::copy(channel.out_buf.begin() + channel.frame_length,
               channel.out_buf.begin() + channel.frame_length + move_len, channel.out_buf.begin());
     std::copy(out, out + channel.frame_length, channel.out_buf.begin() + move_len);
+
+    cng(channel, control, out, channel.frame_length);
+    plcGlueFrames(channel, out, channel.frame_length);
+    channel.lag_prev = control.pitch_l[channel.nb_subfr - 1];
+}
+
+void SilkDecoder::decodeFrameLost(ChannelState& channel, int16_t* out) {
+    SilkDecoderControl control;
+    channel.indices.signal_type = channel.prev_signal_type;
+
+    plc(channel, control, out, Lost::Yes);
+
+    // Shift the output history and append the concealed frame.
+    const int move_len = channel.ltp_mem_length - channel.frame_length;
+    std::copy(channel.out_buf.begin() + channel.frame_length,
+              channel.out_buf.begin() + channel.frame_length + move_len, channel.out_buf.begin());
+    std::copy(out, out + channel.frame_length, channel.out_buf.begin() + move_len);
+
+    cng(channel, control, out, channel.frame_length);
+    plcGlueFrames(channel, out, channel.frame_length);
+    channel.lag_prev = control.pitch_l[channel.nb_subfr - 1];
 }
 
 void SilkDecoder::decode(opus::RangeDecoder& decoder, int fs_khz, int stereo, int frames,
@@ -293,6 +317,69 @@ void SilkDecoder::decode(opus::RangeDecoder& decoder, int fs_khz, int stereo, in
     }
 
     prev_decode_only_middle_ = decode_only_middle;
+}
+
+void SilkDecoder::decodeLost(int fs_khz, int stereo, int frames, int frame_ms, float* pcm) {
+    const int n_ch = stereo;
+    const int nb_subfr = frame_ms == 10 ? 2 : 4;
+    for (int n = 0; n < n_ch; ++n) {
+        channels_[n].n_frames_per_packet = frames;
+        setFs(channels_[n], fs_khz, nb_subfr);
+    }
+
+    // The stereo predictors carry over from the last received frame.
+    int32_t ms_pred[2] = {stereo_.pred_prev_q13[0], stereo_.pred_prev_q13[1]};
+
+    // Reset the side channel when side coding resumes (mirrors decode()).
+    if (n_ch == 2 && prev_decode_only_middle_ == 1) {
+        std::fill(channels_[1].out_buf.begin(), channels_[1].out_buf.end(), static_cast<int16_t>(0));
+        std::fill(channels_[1].s_lpc_q14_buf, channels_[1].s_lpc_q14_buf + kMaxLpcOrder, 0);
+        channels_[1].lag_prev = 100;
+        channels_[1].last_gain_index = 10;
+        channels_[1].prev_signal_type = kTypeNoVoiceActivity;
+        channels_[1].first_frame_after_reset = 1;
+    }
+
+    const bool has_side = prev_decode_only_middle_ == 0;
+    const int frame_len = channels_[0].frame_length;
+    std::vector<int16_t> samples[2];
+    samples[0].assign(frame_len + 3, 0);
+    samples[1].assign(frame_len + 3, 0);
+
+    for (int n = 0; n < n_ch; ++n) {
+        if (n == 0 || has_side) {
+            decodeFrameLost(channels_[n], &samples[n][2]);
+        } else {
+            std::fill(&samples[n][2], &samples[n][2] + frame_len, static_cast<int16_t>(0));
+        }
+        channels_[n].n_frames_decoded++;
+    }
+
+    if (n_ch == 2) {
+        stereoMsToLr(stereo_, samples[0].data(), samples[1].data(), ms_pred,
+                     channels_[0].fs_khz, frame_len);
+    } else {
+        samples[0][0] = stereo_.s_mid[0];
+        samples[0][1] = stereo_.s_mid[1];
+        stereo_.s_mid[0] = samples[0][frame_len];
+        stereo_.s_mid[1] = samples[0][frame_len + 1];
+    }
+
+    const int out_samples = frame_len * 48000 / (channels_[0].fs_khz * 1000);
+    std::vector<int16_t> resampled(out_samples);
+    if (n_ch == 2) {
+        for (int n = 0; n < 2; ++n) {
+            channels_[n].resampler.process(resampled.data(), &samples[n][1], frame_len);
+            for (int i = 0; i < out_samples; ++i) {
+                pcm[2 * i + n] = static_cast<float>(resampled[i]) * kPcmScale;
+            }
+        }
+    } else {
+        channels_[0].resampler.process(resampled.data(), &samples[0][1], frame_len);
+        for (int i = 0; i < out_samples; ++i) {
+            pcm[i] = static_cast<float>(resampled[i]) * kPcmScale;
+        }
+    }
 }
 
 }  // namespace player::audio::silk

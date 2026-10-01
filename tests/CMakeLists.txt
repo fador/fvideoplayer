@@ -4,6 +4,7 @@ add_executable(player_tests
     test_celt_filter.cpp
     test_celt_frame.cpp
 test_celt_plc.cpp
+test_silk_plc.cpp
     test_celt_post.cpp
     test_celt_vq.cpp
     test_mdct.cpp

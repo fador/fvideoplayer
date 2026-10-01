@@ -220,10 +220,11 @@ The Opus decoder is also written from scratch. Implemented:
 - CELT packet loss concealment: pitch-based extrapolation of the last
   frame for short bursts, noise shaped by the decaying band energies for
   longer losses
+- SILK packet loss concealment and comfort noise, including the hybrid
+  case where the CELT layer conceals the band above 8 kHz with noise
 
-Next milestones: SILK packet loss concealment and comfort noise; until
-then lost SILK packets are gaps. CELT-only, SILK-only and hybrid Opus
-tracks play.
+CELT-only, SILK-only and hybrid Opus tracks play, with packet loss
+concealed in all three modes.
 
 The player runs without a console window; messages are collected in a
 thread-safe log buffer and can be viewed in the in-app log console

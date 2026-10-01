@@ -70,20 +70,54 @@ Status Decoder::decode(const uint8_t* data, size_t size, PcmBuffer& pcm, std::st
 }
 
 Status Decoder::conceal(PcmBuffer& pcm, std::string& error) {
-    if (last_mode_ != Mode::Celt) {
-        error = "Opus packet loss concealment is only implemented for CELT";
-        return Status::Unsupported;
+    if (last_frame_samples_ == 0) {
+        error = "no Opus packet decoded yet";
+        return Status::Invalid;
     }
 
     const uint32_t channels = head_.channels;
-    const int frames = kCeltShortMdct << last_lm_;
+    const int frame_samples = last_frame_samples_;
+
+    if (last_mode_ == Mode::Celt) {
+        pcm.channels = channels;
+        pcm.sample_rate = kOpusSampleRate;
+        pcm.pts = pts_;
+        pcm.samples.assign(static_cast<size_t>(frame_samples) * channels, 0.0f);
+        celt_.decodeLost(last_lm_, pcm.samples.data());
+
+        pts_ += frame_samples;
+        return Status::Ok;
+    }
+
+    // SILK or hybrid: conceal the SILK layer for the whole Opus frame.
+    const int frames = last_silk_frames_;
+    const int silk_frame_samples = frame_samples / frames;
+    std::vector<float> silk_pcm(static_cast<size_t>(frame_samples) * channels);
+    float* out = silk_pcm.data();
+    for (int k = 0; k < frames; ++k) {
+        silk_.decodeLost(last_fs_khz_, last_stream_channels_, frames, last_frame_ms_, out);
+        out += static_cast<size_t>(silk_frame_samples) * channels;
+    }
+
     pcm.channels = channels;
     pcm.sample_rate = kOpusSampleRate;
     pcm.pts = pts_;
-    pcm.samples.assign(static_cast<size_t>(frames) * channels, 0.0f);
-    celt_.decodeLost(last_lm_, pcm.samples.data());
+    if (last_mode_ == Mode::Silk) {
+        pcm.samples = std::move(silk_pcm);
+        pts_ += frame_samples;
+        return Status::Ok;
+    }
 
-    pts_ += frames;
+    // Hybrid: the CELT layer conceals the band above 8 kHz with noise.
+    const int end =
+        last_bandwidth_ == Bandwidth::SuperWideband ? kCeltSuperWideEndBand : kCeltBands;
+    pcm.samples.assign(static_cast<size_t>(frame_samples) * channels, 0.0f);
+    celt_.decodeLost(last_lm_, pcm.samples.data(), kCeltHybridStartBand, end);
+    for (size_t i = 0; i < silk_pcm.size(); ++i) {
+        pcm.samples[i] += silk_pcm[i];
+    }
+
+    pts_ += frame_samples;
     return Status::Ok;
 }
 
@@ -121,6 +155,8 @@ Status Decoder::decodeCelt(const uint8_t* data, const PacketInfo& info, PcmBuffe
     pts_ += info.totalSamples();
     last_mode_ = Mode::Celt;
     last_lm_ = lm;
+    last_stream_channels_ = stream_channels;
+    last_frame_samples_ = static_cast<int>(info.totalSamples());
     return Status::Ok;
 }
 
@@ -134,6 +170,12 @@ void Decoder::reset() {
     pts_ = 0;
     last_mode_ = Mode::Celt;
     last_lm_ = 0;
+    last_stream_channels_ = 0;
+    last_frame_samples_ = 0;
+    last_silk_frames_ = 0;
+    last_frame_ms_ = 0;
+    last_fs_khz_ = 0;
+    last_bandwidth_ = Bandwidth::Fullband;
     celt_.reset();
     silk_.reset();
 }
@@ -183,6 +225,11 @@ Status Decoder::decodeSilk(const uint8_t* data, const PacketInfo& info, PcmBuffe
 
     pts_ += info.totalSamples();
     last_mode_ = Mode::Silk;
+    last_stream_channels_ = stream_channels;
+    last_frame_samples_ = static_cast<int>(info.totalSamples());
+    last_silk_frames_ = frames;
+    last_frame_ms_ = frame_ms;
+    last_fs_khz_ = fs_khz;
     return Status::Ok;
 }
 
@@ -257,6 +304,12 @@ Status Decoder::decodeHybrid(const uint8_t* data, const PacketInfo& info, PcmBuf
     pts_ += info.totalSamples();
     last_mode_ = Mode::Hybrid;
     last_lm_ = lm;
+    last_stream_channels_ = stream_channels;
+    last_frame_samples_ = static_cast<int>(info.totalSamples());
+    last_silk_frames_ = frames;
+    last_frame_ms_ = frame_ms;
+    last_fs_khz_ = 16;
+    last_bandwidth_ = info.bandwidth;
     return Status::Ok;
 }
 
