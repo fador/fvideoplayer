@@ -160,6 +160,8 @@ The Opus decoder is also written from scratch. Implemented:
 - CELT bit allocation (dynalloc boosts, skip/intensity/dual decisions and
   the fine-energy versus PVQ split), verified against reference-encoded
   allocations for mono/stereo and several frame sizes
+- CELT spreading rotation and vector normalization, verified against
+  reference outputs
 
 Next milestones: CELT band decoding (PVQ integration, splitting, stereo and
 folding), the inverse MDCT and overlap-add with the comb filter; then the
