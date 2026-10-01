@@ -211,6 +211,12 @@ const uint8_t kSilkStereoPredJointIcdf[25] = {
 const uint8_t kSilkStereoOnlyMidIcdf[2] = {
 64, 0, };
 
+const uint8_t kSilkLbrrFlags2Icdf[3] = {
+203, 150, 0, };
+
+const uint8_t kSilkLbrrFlags3Icdf[7] = {
+215, 195, 166, 125, 110, 82, 0, };
+
 const int16_t kSilkStereoPredQuantQ13[16] = {
 -13732, -10050, -8266, -7526, -6500, -5000, -2950, -820, 820, 2950, 5000, 6500, 
 7526, 8266, 10050, 13732, };

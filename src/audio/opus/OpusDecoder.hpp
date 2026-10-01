@@ -4,6 +4,7 @@
 #include "audio/opus/CeltFrame.hpp"
 #include "audio/opus/OpusHead.hpp"
 #include "audio/opus/OpusPacket.hpp"
+#include "audio/opus/SilkDecoder.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -21,8 +22,8 @@ enum class Status {
 // (or MP4); output is interleaved float PCM at 48 kHz.
 //
 // Current state: OpusHead and packet framing (TOC, codes 0..3, VBR/CBR,
-// padding), the range decoder and the CELT layer for CELT-only streams.
-// SILK and hybrid packets report Unsupported.
+// padding), the range decoder, the CELT layer for CELT-only streams and the
+// SILK layer for SILK-only streams. Hybrid packets report Unsupported.
 class Decoder {
 public:
     // config is an OpusHead as stored in Matroska CodecPrivate / MP4 dOps.
@@ -39,10 +40,14 @@ public:
     void reset();
 
 private:
+    Status decodeSilk(const uint8_t* data, const PacketInfo& info, PcmBuffer& pcm,
+                      std::string& error);
+
     OpusHead head_;
     bool configured_ = false;
     int64_t pts_ = 0;
     CeltFrameDecoder celt_;
+    silk::SilkDecoder silk_;
 };
 
 }  // namespace player::audio::opus

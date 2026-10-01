@@ -204,10 +204,15 @@ The Opus decoder is also written from scratch. Implemented:
   left/right) and the decoder resampler (allpass 2x upsampling plus FIR
   interpolation from 8/12/16 kHz to 48 kHz), verified bit-exactly
   against the reference including resampler state across calls
+- SILK frame decoding and Opus wiring: payload parsing (VAD and LBRR
+  flags, LBRR skipping), per-frame parameter and excitation decoding,
+  stereo unmixing, resampling and interleaving. SILK-only Opus packets
+  now decode to PCM, verified sample-exactly against reference-encoded
+  and reference-decoded packets (mono/stereo, 10/20/40 ms, NB/WB)
 
-Next milestones: the SILK layer and hybrid frames; until then those
-packets are reported as unsupported once in the log and skipped. CELT-only
-Opus tracks (the common case at high bitrates) play.
+Next milestones: hybrid (SILK + CELT) packets and packet loss
+concealment; until then hybrid packets are reported as unsupported once
+in the log and skipped. CELT-only and SILK-only Opus tracks play.
 
 The player runs without a console window; messages are collected in a
 thread-safe log buffer and can be viewed in the in-app log console
