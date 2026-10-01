@@ -62,4 +62,7 @@ extern const int8_t kSilkCbLagsStage3[4 * 34];
 extern const int8_t kSilkCbLagsStage2_10ms[2 * 3];
 extern const int8_t kSilkCbLagsStage3_10ms[2 * 12];
 
+// Piecewise linear LSF cosine approximation (table_LSF_cos.c).
+extern const int16_t kLsfCosTableQ12[129];
+
 }  // namespace player::audio::silk

@@ -10,6 +10,7 @@ namespace player::audio::silk {
 constexpr int32_t kInt16Max = 32767;
 constexpr int32_t kInt16Min = -32768;
 constexpr int32_t kInt32Max = 0x7FFFFFFF;
+constexpr int32_t kInt32Min = -0x7FFFFFFF - 1;
 
 inline int32_t sat16(int32_t a) {
     return a > kInt16Max ? kInt16Max : (a < kInt16Min ? kInt16Min : a);
@@ -57,6 +58,55 @@ inline void insertionSortIncreasing(int16_t* a, int n) {
         }
         a[j + 1] = value;
     }
+}
+
+// Number of leading zeros, 32 for zero (silk_CLZ32).
+inline int32_t clz32(int32_t x) {
+    uint32_t value = static_cast<uint32_t>(x);
+    int bits = 0;
+    while (value != 0) {
+        ++bits;
+        value >>= 1;
+    }
+    return 32 - bits;
+}
+
+// (a * b) >> 32
+inline int32_t smmul(int32_t a, int32_t b) {
+    return static_cast<int32_t>((static_cast<int64_t>(a) * b) >> 32);
+}
+
+// silk_MUL: 32-bit multiply with wraparound.
+inline int32_t mul32(int32_t a, int32_t b) {
+    return static_cast<int32_t>(static_cast<uint32_t>(a) * static_cast<uint32_t>(b));
+}
+
+// (a * b) >> 16 with a 32-bit result
+inline int32_t smulww(int32_t a, int32_t b) {
+    return static_cast<int32_t>((static_cast<int64_t>(a) * b) >> 16);
+}
+
+// a + ((b * c) >> 16)
+inline int32_t smlaww(int32_t a, int32_t b, int32_t c) {
+    return static_cast<int32_t>(a + ((static_cast<int64_t>(b) * c) >> 16));
+}
+
+inline int64_t smull(int32_t a, int32_t b) {
+    return static_cast<int64_t>(a) * b;
+}
+
+inline int64_t rshiftRound64(int64_t a, int shift) {
+    return shift == 1 ? ((a >> 1) + (a & 1)) : (((a >> (shift - 1)) + 1) >> 1);
+}
+
+inline int32_t subSat32(int32_t a, int32_t b) {
+    const int64_t result = static_cast<int64_t>(a) - b;
+    return result > kInt32Max ? kInt32Max : (result < kInt32Min ? kInt32Min
+                                                                : static_cast<int32_t>(result));
+}
+
+inline int32_t lshiftSat32(int32_t a, int shift) {
+    return limit(a, kInt32Min >> shift, kInt32Max >> shift) << shift;
 }
 
 }  // namespace player::audio::silk
