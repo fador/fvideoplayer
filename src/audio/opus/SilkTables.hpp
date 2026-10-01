@@ -65,4 +65,12 @@ extern const int8_t kSilkCbLagsStage3_10ms[2 * 12];
 // Piecewise linear LSF cosine approximation (table_LSF_cos.c).
 extern const int16_t kLsfCosTableQ12[129];
 
+// LTP gain codebooks and quantization constants (tables_LTP.c,
+// tables_other.c).
+extern const int8_t kSilkLtpGainVq0[8 * 5];
+extern const int8_t kSilkLtpGainVq1[16 * 5];
+extern const int8_t kSilkLtpGainVq2[32 * 5];
+extern const int16_t kSilkLtpScalesQ14[3];
+extern const int16_t kSilkQuantOffsetsQ10[2 * 2];
+
 }  // namespace player::audio::silk

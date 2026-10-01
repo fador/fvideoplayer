@@ -115,6 +115,7 @@ add_library(player_audio STATIC
     src/audio/opus/SilkIndices.cpp
     src/audio/opus/SilkLpc.cpp
     src/audio/opus/SilkNlsf.cpp
+    src/audio/opus/SilkParameters.cpp
     src/audio/opus/SilkPitch.cpp
     src/audio/opus/SilkTables.cpp
     src/audio/opus/OpusDecoder.cpp

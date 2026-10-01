@@ -193,6 +193,9 @@ The Opus decoder is also written from scratch. Implemented:
 - SILK NLSF to LPC conversion (cosine approximation table, polynomial
   expansion, coefficient fitting with bandwidth expansion, stability
   check and interpolation), verified bit-exactly against the reference
+- SILK parameter decoding: gain dequantization, interpolated LPC sets,
+  LTP coefficients and scaling, verified bit-exactly against the
+  reference for all rates, frame sizes, signal types and loss states
 
 Next milestones: the SILK layer and hybrid frames; until then those
 packets are reported as unsupported once in the log and skipped. CELT-only
