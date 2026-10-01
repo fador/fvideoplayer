@@ -50,4 +50,7 @@ constexpr int kCeltCacheBitsSize = 392;
 extern const int16_t kCeltCacheIndex[kCeltBands * (kCeltMaxLm + 2)];
 extern const uint8_t kCeltCacheBits[kCeltCacheBitsSize];
 
+// Mean energy per band (25 entries; only the first kCeltBands are used).
+extern const float kCeltEMeans[25];
+
 }  // namespace player::audio::opus
