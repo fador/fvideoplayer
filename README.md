@@ -173,6 +173,8 @@ The Opus decoder is also written from scratch. Implemented:
   twiddle tables, pre/post rotation and the integrated overlap window),
   verified against reference outputs for every frame size and stride
   combination
+- CELT pitch comb filter (with crossfade and tap presets) and
+  de-emphasis, verified against reference outputs
 
 Next milestones: the inverse MDCT and overlap-add with the comb filter,
 then the SILK layer and hybrid frames. Until then Opus tracks are

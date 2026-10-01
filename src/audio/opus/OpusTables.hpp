@@ -53,4 +53,10 @@ extern const uint8_t kCeltCacheBits[kCeltCacheBitsSize];
 // Mean energy per band (25 entries; only the first kCeltBands are used).
 extern const float kCeltEMeans[25];
 
+// 48 kHz pre/de-emphasis coefficient (1 - 0.85 z^-1).
+constexpr float kCeltPreemph48k = 0.8500061035f;
+
+// Internal CELT signal scale; the PCM output is divided by it.
+constexpr float kCeltSigScale = 32768.0f;
+
 }  // namespace player::audio::opus
