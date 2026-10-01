@@ -1,24 +1,56 @@
 #include "app/Application.hpp"
+#include "decode/DecodeDump.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 #include <string>
 
+namespace {
+
+void printUsage(const char* program) {
+    std::printf("usage: %s [options] [file]\n", program);
+    std::printf("  --frames N          quit after N rendered frames (smoke test)\n");
+    std::printf("  --dump-yuv PATH     decode the file to planar YUV and exit\n");
+    std::printf("  -h, --help          show this help\n");
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
     std::string input;
+    std::string dump_yuv;
     int max_frames = -1;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--frames" && i + 1 < argc) {
             max_frames = std::atoi(argv[++i]);
+        } else if (arg == "--dump-yuv" && i + 1 < argc) {
+            dump_yuv = argv[++i];
         } else if (arg == "--help" || arg == "-h") {
-            std::printf("usage: %s [options] [file]\n", argv[0]);
-            std::printf("  --frames N   quit after N rendered frames (smoke test)\n");
+            printUsage(argv[0]);
             return EXIT_SUCCESS;
         } else if (input.empty()) {
             input = arg;
         }
+    }
+
+    if (!dump_yuv.empty()) {
+        if (input.empty()) {
+            std::fprintf(stderr, "--dump-yuv requires an input file\n");
+            return EXIT_FAILURE;
+        }
+        player::decode::DumpStats stats;
+        std::string error;
+        if (player::decode::dumpToYuv(input, dump_yuv, &stats, &error) != 0) {
+            std::fprintf(stderr, "dump failed: %s\n", error.c_str());
+            return EXIT_FAILURE;
+        }
+        const double fps = stats.seconds > 0.0 ? stats.frames / stats.seconds : 0.0;
+        std::printf("Decoded %lld frames (%ux%u) in %.3f s (%.1f fps)\n",
+                    static_cast<long long>(stats.frames), stats.width, stats.height, stats.seconds,
+                    fps);
+        return EXIT_SUCCESS;
     }
 
     player::Application app;

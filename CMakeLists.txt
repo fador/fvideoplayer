@@ -20,6 +20,10 @@ set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(BUILD_KVZDEC_BINARY OFF CACHE BOOL "" FORCE)
 set(GIT_SUBMODULE OFF CACHE BOOL "" FORCE)
 add_subdirectory(external/kvzdec EXCLUDE_FROM_ALL)
+if(NOT BUILD_SHARED_LIBS)
+    # kvzdec's public header needs this to avoid __declspec(dllimport) on Windows.
+    target_compile_definitions(kvzdec INTERFACE KVZDEC_STATIC_LIB)
+endif()
 
 # --- SDL3: static, no tests/examples/install -------------------------------
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
@@ -62,11 +66,21 @@ add_library(player_demux STATIC
 target_include_directories(player_demux PUBLIC src)
 target_compile_definitions(player_demux PRIVATE _CRT_SECURE_NO_WARNINGS)
 
+# --- player decode (kvzdec wrapper, no GUI dependencies) --------------------
+add_library(player_decode STATIC
+    src/decode/DecodeDump.cpp
+    src/decode/KvzdecDecoder.cpp
+    src/decode/NalUnits.cpp)
+target_include_directories(player_decode PUBLIC src)
+target_link_libraries(player_decode PUBLIC player_demux kvzdec)
+target_compile_definitions(player_decode PRIVATE _CRT_SECURE_NO_WARNINGS)
+
 # --- player -----------------------------------------------------------------
 add_library(player_core STATIC
     src/app/Application.cpp)
 target_include_directories(player_core PUBLIC src)
 target_link_libraries(player_core PUBLIC
+    player_decode
     player_demux
     kvzdec
     imgui
@@ -77,6 +91,7 @@ target_link_libraries(player_core PUBLIC
 
 if(MSVC)
     target_compile_options(player_demux PRIVATE /W4 /permissive- /Zc:__cplusplus)
+    target_compile_options(player_decode PRIVATE /W4 /permissive- /Zc:__cplusplus)
     target_compile_options(player_core PRIVATE /W4 /permissive- /Zc:__cplusplus)
 endif()
 
