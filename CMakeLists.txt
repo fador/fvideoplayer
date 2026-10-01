@@ -53,6 +53,7 @@ target_link_libraries(implot PUBLIC imgui)
 
 # --- player demux (no GUI dependencies) --------------------------------------
 add_library(player_demux STATIC
+    src/demux/AviDemuxer.cpp
     src/demux/Demuxer.cpp
     src/demux/HvcC.cpp
     src/demux/MkvDemuxer.cpp

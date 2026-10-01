@@ -1,4 +1,5 @@
 add_executable(player_tests
+    test_avi_demuxer.cpp
     test_hvcc.cpp
     test_mkv_demuxer.cpp
     test_mp4_demuxer.cpp

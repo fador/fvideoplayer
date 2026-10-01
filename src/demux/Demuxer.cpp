@@ -1,5 +1,6 @@
 #include "demux/Demuxer.hpp"
 
+#include "demux/AviDemuxer.hpp"
 #include "demux/MkvDemuxer.hpp"
 #include "demux/Mp4Demuxer.hpp"
 #include "demux/RawHevcDemuxer.hpp"
@@ -81,9 +82,13 @@ std::unique_ptr<IDemuxer> createDemuxer(const std::filesystem::path& path, std::
             }
             return demuxer;
         }
-        case Container::Avi:
-            error = "AVI demuxer not implemented yet";
-            return nullptr;
+        case Container::Avi: {
+            auto demuxer = std::make_unique<AviDemuxer>();
+            if (!demuxer->open(path, error)) {
+                return nullptr;
+            }
+            return demuxer;
+        }
         case Container::Unknown:
             break;
     }
