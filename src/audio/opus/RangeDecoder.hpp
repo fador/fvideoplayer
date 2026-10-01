@@ -27,8 +27,10 @@ public:
     uint32_t decodeUint(uint32_t total);
     uint32_t decodeBits(unsigned bits);
 
-    // Bits consumed so far, in 1/8 bit resolution.
+    // Whole bits consumed so far (ec_tell).
     int tell() const;
+    // Bits consumed so far in 1/8 bit resolution (ec_tell_frac).
+    int tellFrac() const;
     size_t size() const { return size_; }
     bool error() const { return error_; }
 

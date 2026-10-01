@@ -11,6 +11,7 @@ constexpr uint32_t kCodeTop = 1u << (kCodeBits - 1);
 constexpr uint32_t kCodeBot = kCodeTop >> kSymBits;
 constexpr unsigned kCodeExtra = (kCodeBits - 2) % kSymBits + 1;  // 7
 constexpr uint32_t kSymMax = (1u << kSymBits) - 1;
+constexpr unsigned kBitRes = 3;  // ec_tell_frac resolution
 
 unsigned ilog(uint32_t value) {
     unsigned bits = 0;
@@ -155,6 +156,18 @@ uint32_t RangeDecoder::decodeBits(unsigned bits) {
 
 int RangeDecoder::tell() const {
     return bits_total_ - static_cast<int>(ilog(range_));
+}
+
+int RangeDecoder::tellFrac() const {
+    // Fractional part from a linear estimate corrected by a lookup (entcode.c).
+    static const unsigned correction[8] = {35733, 38967, 42495, 46340,
+                                           50535, 55109, 60097, 65535};
+    const uint32_t nbits = static_cast<uint32_t>(bits_total_) << kBitRes;
+    const unsigned l = ilog(range_);
+    const uint32_t r = range_ >> (l - 16);
+    unsigned b = (r >> 12) - 8;
+    b += r > correction[b] ? 1 : 0;
+    return static_cast<int>(nbits - ((l << kBitRes) + b));
 }
 
 }  // namespace player::audio::opus

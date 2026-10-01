@@ -43,4 +43,11 @@ extern const uint8_t kCeltLog2Frac[24];
 // Bit-reversal ordering used by anti-collapse (30 entries).
 extern const int16_t kCeltOrdery[30];
 
+// Pulse cache: bits2pulses()/pulses2bits() lookups. Index maps
+// [LM + 1][band] to an offset in the bits array; the first bits entry is the
+// number of pulse counts and the rest are the cost in 1/8 bit units.
+constexpr int kCeltCacheBitsSize = 392;
+extern const int16_t kCeltCacheIndex[kCeltBands * (kCeltMaxLm + 2)];
+extern const uint8_t kCeltCacheBits[kCeltCacheBitsSize];
+
 }  // namespace player::audio::opus

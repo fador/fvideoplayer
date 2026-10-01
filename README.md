@@ -162,11 +162,15 @@ The Opus decoder is also written from scratch. Implemented:
   allocations for mono/stereo and several frame sizes
 - CELT spreading rotation and vector normalization, verified against
   reference outputs
+- CELT band decoding (PVQ integration, recursive band splitting, theta
+  angles, folding and noise fill, stereo mid/side, time/frequency
+  resolution changes), verified against reference round trips for mono
+  and stereo, long and transient frames, all spread levels and intensity
+  stereo
 
-Next milestones: CELT band decoding (PVQ integration, splitting, stereo and
-folding), the inverse MDCT and overlap-add with the comb filter; then the
-SILK layer and hybrid frames. Until then Opus tracks are recognized,
-reported as unsupported once in the log, and skipped.
+Next milestones: the inverse MDCT and overlap-add with the comb filter,
+then the SILK layer and hybrid frames. Until then Opus tracks are
+recognized, reported as unsupported once in the log, and skipped.
 
 The player runs without a console window; messages are collected in a
 thread-safe log buffer and can be viewed in the in-app log console

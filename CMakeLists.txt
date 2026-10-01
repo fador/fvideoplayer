@@ -103,6 +103,7 @@ add_library(player_audio STATIC
     src/audio/opus/CeltAlloc.cpp
     src/audio/opus/CeltEnergy.cpp
     src/audio/opus/CeltPvq.cpp
+    src/audio/opus/CeltBands.cpp
     src/audio/opus/CeltVq.cpp
     src/audio/opus/OpusDecoder.cpp
     src/audio/opus/OpusHead.cpp

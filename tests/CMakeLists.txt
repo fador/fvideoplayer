@@ -1,5 +1,6 @@
 add_executable(player_tests
     test_audio.cpp
+    test_celt_bands.cpp
     test_celt_vq.cpp
     test_avi_demuxer.cpp
     test_hvcc.cpp
