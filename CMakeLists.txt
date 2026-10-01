@@ -86,12 +86,31 @@ target_include_directories(player_decode PUBLIC src)
 target_link_libraries(player_decode PUBLIC player_demux kvzdec)
 target_compile_definitions(player_decode PRIVATE _CRT_SECURE_NO_WARNINGS)
 
+# --- player audio (PCM helpers + from-scratch AAC decoder, no GUI deps) ------
+add_library(player_audio STATIC
+    src/audio/PcmGain.cpp
+    src/audio/aac/AacConfig.cpp
+    src/audio/aac/AacDecoder.cpp
+    src/audio/aac/AacFilterbank.cpp
+    src/audio/aac/AacIcs.cpp
+    src/audio/aac/AacTables.cpp
+    src/audio/aac/Huffman.cpp
+    src/audio/aac/Mdct.cpp
+    src/audio/aac/Window.cpp)
+target_include_directories(player_audio PUBLIC src)
+
+# --- SDL3 audio output driver (kept separate so tests can link it) ----------
+add_library(player_audio_sdl STATIC
+    src/audio/SdlAudioSink.cpp)
+target_include_directories(player_audio_sdl PUBLIC src)
+target_link_libraries(player_audio_sdl PUBLIC player_audio player_util SDL3::SDL3)
+
 # --- player playback (pipeline, no GUI dependencies) ------------------------
 add_library(player_playback STATIC
     src/playback/PlaybackEngine.cpp
     src/stats/StatsCollector.cpp)
 target_include_directories(player_playback PUBLIC src)
-target_link_libraries(player_playback PUBLIC player_decode player_demux player_util Threads::Threads)
+target_link_libraries(player_playback PUBLIC player_audio player_decode player_demux player_util Threads::Threads)
 
 # --- player -----------------------------------------------------------------
 add_library(player_core STATIC
@@ -106,6 +125,8 @@ target_link_libraries(player_core PUBLIC
     player_demux
     player_subtitle
     player_util
+    player_audio
+    player_audio_sdl
     kvzdec
     imgui
     implot
@@ -114,6 +135,8 @@ target_link_libraries(player_core PUBLIC
     Threads::Threads)
 
 if(MSVC)
+    target_compile_options(player_audio PRIVATE /W4 /permissive- /Zc:__cplusplus)
+    target_compile_options(player_audio_sdl PRIVATE /W4 /permissive- /Zc:__cplusplus)
     target_compile_options(player_demux PRIVATE /W4 /permissive- /Zc:__cplusplus)
     target_compile_options(player_decode PRIVATE /W4 /permissive- /Zc:__cplusplus)
     target_compile_options(player_playback PRIVATE /W4 /permissive- /Zc:__cplusplus)

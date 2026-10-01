@@ -1,4 +1,5 @@
 add_executable(player_tests
+    test_audio.cpp
     test_avi_demuxer.cpp
     test_hvcc.cpp
     test_log.cpp
@@ -8,6 +9,8 @@ add_executable(player_tests
     test_raw_hevc_demuxer.cpp
     test_subtitle.cpp)
 target_link_libraries(player_tests PRIVATE
+    player_audio
+    player_audio_sdl
     player_demux
     player_decode
     player_subtitle

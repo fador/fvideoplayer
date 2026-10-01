@@ -1,5 +1,6 @@
 #pragma once
 
+#include "audio/SdlAudioSink.hpp"
 #include "playback/PlaybackEngine.hpp"
 #include "render/VideoRenderer.hpp"
 #include "utils/Log.hpp"
@@ -35,12 +36,15 @@ public:
     void setScreenshotWindow(bool window) { screenshot_window_ = window; }
     void selectSubtitle(int option) { activateSubtitle(option); }
     void selectAudio(int track) { engine_.selectAudioTrack(static_cast<size_t>(track)); }
+    void setVolume(float volume) { engine_.setVolume(volume); }
+    void setMuted(audio::Mute mute) { engine_.setMuted(mute); }
 
 private:
     void drawUI();
     void drawMenuBar();
     void drawVideoArea();
     void drawTransport();
+    void drawAudioControls();
     void drawStatsWindow();
     void drawLogWindow();
     void handleShortcuts();
@@ -70,6 +74,7 @@ private:
     int frame_count_ = 0;
 
     playback::PlaybackEngine engine_;
+    audio::SdlAudioSink audio_sink_;
     render::VideoRenderer renderer_;
     render::VideoColorSettings color_;
 

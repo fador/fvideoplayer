@@ -11,6 +11,9 @@
 namespace player::playback {
 namespace {
 
+// 'mp4a': AAC audio in MP4/Matroska/AVI containers.
+constexpr uint32_t kMp4aFourcc = 0x6D703461;
+
 std::string containerName(const std::filesystem::path& path) {
     std::string ext = path.extension().string();
     if (!ext.empty() && ext[0] == '.') {
@@ -99,8 +102,10 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
         format.codec_fourcc = audio_info_.codec_fourcc;
         format.channels = audio_info_.channels;
         format.sample_rate = audio_info_.sample_rate;
-        audio_sink_.configure(format);
+        sink().configure(format);
     }
+    audio_warned_ = false;
+    configureAudioDecoder(audio_info_);
 
     quit_ = false;
     eos_ = false;
@@ -119,8 +124,9 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
               info.container.c_str(), video_info_.width, video_info_.height, video_info_.fps,
               duration_, queue_.capacity());
     if (audio_info_.present) {
-        log::addf(log::Level::Info, "Audio: fourcc 0x%08X, %u channels, %u Hz (not decoded)",
-                  audio_info_.codec_fourcc, audio_info_.channels, audio_info_.sample_rate);
+        log::addf(log::Level::Info, "Audio: fourcc 0x%08X, %u channels, %u Hz%s",
+                  audio_info_.codec_fourcc, audio_info_.channels, audio_info_.sample_rate,
+                  audio_decoding_.load() ? " (AAC)" : " (no decoder)");
     }
     thread_ = std::thread([this] { pipelineLoop(); });
     return true;
@@ -142,6 +148,10 @@ void PlaybackEngine::close() {
     decoder_.close();
     demuxer_.reset();
     current_.reset();
+    sink().reset();
+    audio_decoder_.reset();
+    audio_decoding_ = false;
+    audio_warned_ = false;
     audio_track_infos_.clear();
     subtitle_track_infos_.clear();
     audio_enabled_ = false;
@@ -185,6 +195,7 @@ void PlaybackEngine::play() {
     clock_.start(clock_.position());
     state_ = State::Playing;
     stats_.setPlaying(true);
+    sink().resume();
     cv_.notify_all();
 }
 
@@ -195,6 +206,7 @@ void PlaybackEngine::pause() {
     clock_.pause();
     state_ = State::Paused;
     stats_.setPlaying(false);
+    sink().pause();
 }
 
 void PlaybackEngine::togglePlayPause() {
@@ -299,12 +311,14 @@ void PlaybackEngine::pipelineLoop() {
             lock.unlock();
             if (target == kNoAudioTrack) {
                 audio_enabled_ = false;
-                audio_sink_.reset();
+                sink().reset();
                 log::add(log::Level::Info, "Audio disabled");
             } else if (demuxer_->selectAudioTrack(target)) {
-                audio_sink_.reset();
+                sink().reset();
                 selected_audio_ = target;
                 audio_enabled_ = true;
+                audio_warned_ = false;
+                configureAudioDecoder(audio_track_infos_[target]);
                 log::addf(log::Level::Info, "Audio track %zu selected", target);
             } else {
                 log::addf(log::Level::Warning, "Failed to select audio track %zu", target);
@@ -356,12 +370,16 @@ void PlaybackEngine::pipelineLoop() {
             }
         }
 
-        // Dummy audio path: consume packets if a demuxer provides them.
+        // Keep the audio lead bounded; the sink drops the rest if the device
+        // cannot keep up.
         if (audio_enabled_.load()) {
+            constexpr int kAudioLeadMs = 150;
+            constexpr int kAudioBatch = 16;
             demux::Sample audio_sample;
             int guard = 0;
-            while (guard++ < 64 && demuxer_->readAudioSample(audio_sample)) {
-                audio_sink_.push(audio_sample);
+            while (guard++ < kAudioBatch && sink().queuedMs() < kAudioLeadMs &&
+                   demuxer_->readAudioSample(audio_sample)) {
+                pushAudioPcm(audio_sample);
             }
         }
 
@@ -379,13 +397,53 @@ void PlaybackEngine::performSeek(double seconds) {
         decoder_.pushParameterSets(video_info_.hvcc, nullptr);
     }
     demuxer_->seek(seconds);
-    audio_sink_.reset();
+    audio_decoder_.flush();
+    sink().flush();
     eos_ = false;
     stats_.setEos(false);
     const double elapsed_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     stats_.onSeek(elapsed_ms);
     log::addf(log::Level::Debug, "Seek to %.3f s (%.1f ms)", seconds, elapsed_ms);
+}
+
+void PlaybackEngine::configureAudioDecoder(const demux::AudioTrackInfo& track) {
+    audio_decoding_ = false;
+    if (!track.present || track.codec_fourcc != kMp4aFourcc) {
+        return;
+    }
+    std::string error;
+    if (audio_decoder_.configure(track.extradata.data(), track.extradata.size(), error)) {
+        audio_decoding_ = true;
+        return;
+    }
+    log::addf(log::Level::Warning, "AAC decoder rejected the track config: %s", error.c_str());
+}
+
+void PlaybackEngine::pushAudioPcm(const demux::Sample& sample) {
+    if (!audio_decoding_.load()) {
+        return;
+    }
+    std::string error;
+    const audio::aac::Status status =
+        audio_decoder_.decode(sample.data.data(), sample.data.size(), audio_pcm_, error);
+    if (status != audio::aac::Status::Ok) {
+        // Report once per track; the pipeline keeps consuming packets.
+        if (!audio_warned_) {
+            log::addf(log::Level::Warning, "Audio decode (%s): %s",
+                      status == audio::aac::Status::Unsupported ? "unsupported" : "invalid",
+                      error.c_str());
+            audio_warned_ = true;
+        }
+        return;
+    }
+
+    const audio::Mute mute = muted_.load() ? audio::Mute::On : audio::Mute::Off;
+    const float gain = audio::volumeGain(volume_.load(), mute);
+    if (gain != 1.0f) {
+        audio::applyGain(audio_pcm_.samples.data(), audio_pcm_.samples.size(), gain);
+    }
+    sink().push(audio_pcm_.samples.data(), audio_pcm_.frames());
 }
 
 }  // namespace player::playback

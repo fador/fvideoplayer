@@ -1,6 +1,10 @@
 #pragma once
 
+#include "audio/IAudioSink.hpp"
 #include "audio/NullAudioSink.hpp"
+#include "audio/Pcm.hpp"
+#include "audio/PcmGain.hpp"
+#include "audio/aac/AacDecoder.hpp"
 #include "decode/KvzdecDecoder.hpp"
 #include "demux/Demuxer.hpp"
 #include "playback/FrameQueue.hpp"
@@ -78,13 +82,29 @@ public:
     // thread; uses a private file handle).
     bool loadSubtitleTrack(size_t index, std::vector<subtitle::SubtitleBlock>& blocks,
                            std::string& error);
+    // Audio output is injected by the app (SDL sink in the GUI); without a
+    // sink PCM is discarded through an internal null sink.
+    void setAudioSink(audio::IAudioSink* sink) { audio_sink_ = sink; }
+    void setVolume(float volume) { volume_ = audio::clampVolume(volume); }
+    float volume() const { return volume_.load(); }
+    void setMuted(audio::Mute mute) { muted_ = mute == audio::Mute::On; }
+    audio::Mute muted() const { return muted_.load() ? audio::Mute::On : audio::Mute::Off; }
+    uint64_t audioFrames() { return sink().framesConsumed(); }
+    uint64_t audioFramesDropped() { return sink().framesDropped(); }
+    // True when the selected track is AAC and the decoder accepted its config.
+    bool audioDecoding() const { return audio_decoding_.load(); }
+
     const std::string& lastError() const { return last_error_; }
     stats::StatsCollector& stats() { return stats_; }
-    const audio::NullAudioSink& audioSink() const { return audio_sink_; }
 
 private:
     void pipelineLoop();
     void performSeek(double seconds);
+    void configureAudioDecoder(const demux::AudioTrackInfo& track);
+    void pushAudioPcm(const demux::Sample& sample);
+    audio::IAudioSink& sink() {
+        return audio_sink_ ? *audio_sink_ : null_sink_;
+    }
 
     std::thread thread_;
     std::atomic<bool> quit_{false};
@@ -101,7 +121,14 @@ private:
     // Pipeline-thread state.
     std::unique_ptr<demux::IDemuxer> demuxer_;
     decode::KvzdecDecoder decoder_;
-    audio::NullAudioSink audio_sink_;
+    audio::IAudioSink* audio_sink_ = nullptr;
+    audio::NullAudioSink null_sink_;
+    audio::aac::Decoder audio_decoder_;
+    audio::PcmBuffer audio_pcm_;
+    std::atomic<float> volume_{1.0f};
+    std::atomic<bool> muted_{false};
+    std::atomic<bool> audio_decoding_{false};
+    bool audio_warned_ = false;
 
     // UI-thread state.
     FrameQueue queue_{16};

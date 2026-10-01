@@ -16,7 +16,9 @@ A focused HEVC/H.265 video player built around the custom
   switchable on the fly; external files next to the video are discovered
   automatically
 - **Audio**: container audio tracks are listed and selectable from the Audio
-  menu; playback uses a dummy sink (packets are counted but not decoded yet)
+  menu. AAC-LC is decoded by a from-scratch decoder (no external codec
+  libraries) and played through an SDL3 float sink with software volume and
+  mute; see [Audio decoding](#audio-decoding) for details
 
 ## Building
 
@@ -39,8 +41,10 @@ prompt (`vcvars64.bat`).
 ctest --test-dir build --output-on-failure
 ```
 
-Unit tests cover the hvcC parser, NAL splitting and all three container
-demuxers (built from minimal in-test MP4/MKV/AVI files).
+Unit tests cover the hvcC parser, NAL splitting, all three container
+demuxers (built from minimal in-test MP4/MKV/AVI files) and the audio
+modules (bit reader, Huffman codebooks, MDCT/windows, volume gain, SDL sink
+and AAC frame decoding from embedded ADTS/raw vectors).
 
 ## Usage
 
@@ -52,6 +56,8 @@ hevc_player [options] [file]
   --info             print stream information and exit
   --subtitle N       select subtitle option N (-1 = none)
   --audio N          select audio track N
+  --volume X         set volume 0.0..1.0
+  --mute             start muted
   --screenshot PATH  write the first rendered frame as a PPM image and quit
   --screenshot-every N  with --screenshot, keep writing PPMs every N frames
   --dump-yuv PATH    decode the file to planar YUV and exit
@@ -66,6 +72,8 @@ hevc_player [options] [file]
 | --- | --- |
 | Space | play / pause |
 | Left / Right | seek 5 seconds |
+| Up / Down | volume +/- 5% |
+| M | mute / unmute |
 | S | toggle statistics window |
 | L | toggle log console |
 | F | toggle fullscreen |
@@ -83,13 +91,47 @@ src/
   playback/   pipeline thread, frame queue, media clock
   render/     OpenGL YUV -> RGB renderer (8/10-bit, 4:2:0/4:2:2/4:4:4)
   stats/      thread-safe statistics collector
-  audio/      audio sink interface + null sink
+  audio/      PCM types, volume/mute gain, SDL3 sink and the AAC decoder
+              (aac/: bit reader, ADTS + AudioSpecificConfig parsers, Huffman
+              codebooks, ICS/TNS tools, MDCT/filterbank)
 ```
 
 The demux + decode pipeline runs on a dedicated thread and fills a bounded
 frame queue (about two seconds, capped by a memory budget). The UI thread
 advances a monotonic clock and displays frames as their presentation
 timestamps become due, dropping frames that are already late.
+
+Audio follows the same pattern: the pipeline decodes packets and pushes float
+PCM to the sink, which keeps only a short queue (250 ms) so audio stays close
+to the video clock. Volume and mute are applied as a software gain before the
+samples reach the device.
+
+## Audio decoding
+
+The AAC-LC decoder is written from scratch, with no external codec library.
+Implemented:
+
+- MPEG-4 AudioSpecificConfig parsing (MP4/Matroska extradata), including
+  SBR/PS detection and explicit sample rates, plus ADTS framing for
+  raw/AVI streams
+- Huffman codebooks 0..11 with escape sequences, section data, differential
+  scale factors, pulse data and TNS (Levinson-Durbin LPC)
+- M/S stereo, intensity stereo, perceptual noise substitution (PNS) and
+  the channel maps for configurations 1..6 (mono to 5.1)
+- Inverse MDCT (FFT based, verified against the direct transform), sine and
+  KBD windows, all window sequences and the inter-frame overlap-add
+- PCM gain, mute and the SDL3 output path with a bounded queue
+
+Not supported: SBR/PS (HE-AAC), AAC Main/LTP/SSR, 960-sample frames,
+coupling elements (CCE) and program config elements (PCE). Such tracks are
+reported once in the log and skipped. Audio access units are read from
+Matroska; MP4 and AVI audio tracks are listed but their samples are not read
+yet.
+
+The decoder was verified sample-exact against a reference decoder for mono,
+stereo, 5.1, short-window transients, PNS/intensity and all 12 sampling
+frequencies; unit tests cover the codebook tables, the KBD window values and
+full frame decoding from both ADTS and raw access units.
 
 The player runs without a console window; messages are collected in a
 thread-safe log buffer and can be viewed in the in-app log console

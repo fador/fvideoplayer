@@ -146,6 +146,7 @@ bool Application::init(const std::string& title) {
         std::fprintf(stderr, "video renderer init failed: %s\n", renderer_error.c_str());
         return false;
     }
+    engine_.setAudioSink(&audio_sink_);
 
     log::addf(log::Level::Info, "HEVC Player started (kvzdec %s)",
               kvzdec_get_version_string());
@@ -333,6 +334,17 @@ void Application::drawMenuBar() {
         }
         if (ImGui::BeginMenu("Audio")) {
             const bool has_file = engine_.hasFile();
+            const bool muted = engine_.muted() == audio::Mute::On;
+            if (ImGui::MenuItem("Mute", "M", muted, has_file)) {
+                engine_.setMuted(muted ? audio::Mute::Off : audio::Mute::On);
+            }
+            int volume_percent = static_cast<int>(engine_.volume() * 100.0f + 0.5f);
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::SliderInt("Volume", &volume_percent, 0, 100, "%d%%",
+                                 ImGuiSliderFlags_AlwaysClamp)) {
+                engine_.setVolume(static_cast<float>(volume_percent) / 100.0f);
+            }
+            ImGui::Separator();
             if (ImGui::MenuItem("None", nullptr, !engine_.audioEnabled(), has_file)) {
                 engine_.selectAudioTrack(playback::PlaybackEngine::kNoAudioTrack);
             }
@@ -366,6 +378,7 @@ void Application::drawMenuBar() {
         }
         if (ImGui::BeginMenu("Help")) {
             ImGui::MenuItem("Space: play/pause  Left/Right: seek 5s", nullptr, false, false);
+            ImGui::MenuItem("Up/Down: volume  M: mute", nullptr, false, false);
             ImGui::MenuItem("F: fullscreen  S: statistics  L: log", nullptr, false, false);
             ImGui::EndMenu();
         }
@@ -430,12 +443,14 @@ void Application::drawTransport() {
         engine_.stop();
     }
     ImGui::SameLine();
+    drawAudioControls();
+    ImGui::SameLine();
 
     const double current = engine_.position();
     if (!dragging_seek_) {
         drag_position_ = static_cast<float>(current);
     }
-    ImGui::SetNextItemWidth(std::max(120.0f, ImGui::GetContentRegionAvail().x - 220.0f));
+    ImGui::SetNextItemWidth(std::max(120.0f, ImGui::GetContentRegionAvail().x - 260.0f));
     if (ImGui::SliderFloat("##seek", &drag_position_, 0.0f,
                            static_cast<float>(duration > 0.0 ? duration : 1.0), "%.3f s")) {
     }
@@ -468,6 +483,24 @@ void Application::drawTransport() {
     }
 }
 
+void Application::drawAudioControls() {
+    const bool muted = engine_.muted() == audio::Mute::On;
+    if (ImGui::Button(muted ? "Unmute" : "Mute", ImVec2(64.0f, 0.0f))) {
+        engine_.setMuted(muted ? audio::Mute::Off : audio::Mute::On);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("M toggles mute, Up/Down adjust volume");
+    }
+
+    ImGui::SameLine();
+    int volume_percent = static_cast<int>(engine_.volume() * 100.0f + 0.5f);
+    ImGui::SetNextItemWidth(120.0f);
+    if (ImGui::SliderInt("##volume", &volume_percent, 0, 100, "vol %d%%",
+                         ImGuiSliderFlags_AlwaysClamp)) {
+        engine_.setVolume(static_cast<float>(volume_percent) / 100.0f);
+    }
+}
+
 void Application::drawStatsWindow() {
     if (!show_stats_) {
         return;
@@ -493,8 +526,11 @@ void Application::drawStatsWindow() {
                 static_cast<char>(audio.codec_fourcc & 0xFF),
                 0,
             };
-            ImGui::Text("Audio: '%s' %u ch @ %u Hz (dummy sink, not decoded)", fourcc,
-                        audio.channels, audio.sample_rate);
+            ImGui::Text("Audio: '%s' %u ch @ %u Hz (%s)", fourcc, audio.channels, audio.sample_rate,
+                        engine_.audioDecoding() ? "AAC" : "no decoder");
+            ImGui::Text("Audio PCM: %llu frames played, %llu dropped",
+                        static_cast<unsigned long long>(engine_.audioFrames()),
+                        static_cast<unsigned long long>(engine_.audioFramesDropped()));
         } else {
             ImGui::TextUnformatted("Audio: none");
         }
@@ -636,6 +672,15 @@ void Application::handleShortcuts() {
     }
     if (ImGui::IsKeyPressed(ImGuiKey_RightArrow) && engine_.hasFile()) {
         engine_.seek(engine_.position() + 5.0);
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) {
+        engine_.setVolume(engine_.volume() + 0.05f);
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) {
+        engine_.setVolume(engine_.volume() - 0.05f);
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_M, false)) {
+        engine_.setMuted(engine_.muted() == audio::Mute::On ? audio::Mute::Off : audio::Mute::On);
     }
     if (ImGui::IsKeyPressed(ImGuiKey_S, false)) {
         show_stats_ = !show_stats_;
@@ -972,6 +1017,10 @@ bool Application::saveScreenshot() {
 
 void Application::shutdown() {
     engine_.close();
+    // Detach before audio_sink_ is destroyed; the engine destructor runs after
+    // the sink member and must not touch it.
+    engine_.setAudioSink(nullptr);
+    audio_sink_.close();
     if (imgui_ready_) {
         renderer_.shutdown();
         ImGui_ImplOpenGL3_Shutdown();

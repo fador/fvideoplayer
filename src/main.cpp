@@ -38,6 +38,8 @@ void printUsage(const char* program) {
     std::printf("  --screenshot-ui     capture the whole window instead of just the video\n");
     std::printf("  --subtitle N        select subtitle option N (-1 = none)\n");
     std::printf("  --audio N           select audio track N\n");
+    std::printf("  --volume X          set volume 0.0..1.0\n");
+    std::printf("  --mute              start muted\n");
     std::printf("  -h, --help          show this help\n");
 }
 
@@ -109,6 +111,8 @@ int main(int argc, char** argv) {
     bool info_mode = false;
     int subtitle_option = -2;  // -1 disables, >= 0 selects, -2 unset
     int audio_track = -1;      // -1 unset
+    double volume = -1.0;      // < 0 unset
+    bool mute = false;
     bool help_requested = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -133,6 +137,10 @@ int main(int argc, char** argv) {
             subtitle_option = std::atoi(argv[++i]);
         } else if (arg == "--audio" && i + 1 < argc) {
             audio_track = std::atoi(argv[++i]);
+        } else if (arg == "--volume" && i + 1 < argc) {
+            volume = std::atof(argv[++i]);
+        } else if (arg == "--mute") {
+            mute = true;
         } else if (arg == "--info") {
             info_mode = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -186,6 +194,12 @@ int main(int argc, char** argv) {
         app.setScreenshotPath(screenshot);
         app.setScreenshotEvery(screenshot_every);
         app.setScreenshotWindow(screenshot_ui);
+    }
+    if (volume >= 0.0) {
+        app.setVolume(static_cast<float>(volume));
+    }
+    if (mute) {
+        app.setMuted(player::audio::Mute::On);
     }
     if (!input.empty()) {
         app.openFile(input);
