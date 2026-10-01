@@ -3,6 +3,7 @@
 #include "render/GLFunctions.hpp"
 
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 namespace player::render {
@@ -139,8 +140,8 @@ bool VideoRenderer::init(std::string* error) {
     uniform_crop_ = gl.GetUniformLocation(program_, "u_crop");
 
     const float vertices[] = {
-        -1.0f, -1.0f, 0.0f, 0.0f, 1.0f, -1.0f, 1.0f, 0.0f,
-        1.0f,  1.0f,  1.0f, 1.0f, -1.0f, 1.0f, 0.0f, 1.0f,
+        -1.0f, -1.0f, 0.0f, 0.0f, 1.0f, -1.0f, 1.0f, 0.0f, 1.0f,  1.0f,  1.0f, 1.0f,
+        -1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 1.0f,  1.0f, 1.0f, -1.0f, 1.0f,  0.0f, 1.0f,
     };
     gl.GenVertexArrays(1, &vao_);
     gl.BindVertexArray(vao_);
@@ -183,7 +184,17 @@ void VideoRenderer::ensureTextures(const kvzdec_picture* picture) {
         const int height = chroma ? picture->height_c : picture->height;
         const int stride = chroma ? picture->stride_c : picture->stride;
         const int bits = picture->pixel_size == 2 ? 16 : 8;
-        const void* data = picture->data[plane];
+        const uint8_t* data = static_cast<const uint8_t*>(picture->data[plane]);
+
+        // Repack into tightly packed rows so the upload does not depend on
+        // GL_UNPACK_ROW_LENGTH handling.
+        const size_t row_bytes = static_cast<size_t>(width) * picture->pixel_size;
+        staging_[plane].resize(row_bytes * static_cast<size_t>(height));
+        for (int y = 0; y < height; ++y) {
+            std::memcpy(staging_[plane].data() + static_cast<size_t>(y) * row_bytes,
+                        data + static_cast<size_t>(y) * stride * picture->pixel_size, row_bytes);
+        }
+        const void* packed = staging_[plane].data();
 
         if (textures_[plane] == 0) {
             glGenTextures(1, &textures_[plane]);
@@ -202,10 +213,9 @@ void VideoRenderer::ensureTextures(const kvzdec_picture* picture) {
             texture_bits_[plane] = bits;
             texture_allocated_[plane] = true;
         }
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, stride);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RED,
-                        bits == 16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE, data);
         glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RED,
+                        bits == 16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE, packed);
     }
 }
 
@@ -323,13 +333,33 @@ unsigned int VideoRenderer::render(const VideoColorSettings& settings) {
     gl.ActiveTexture(GL_TEXTURE0);
 
     gl.BindVertexArray(vao_);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
     gl.BindVertexArray(0);
     gl.UseProgram(0);
 
     glEnable(GL_BLEND);
     gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
     return framebuffer_texture_;
+}
+
+bool VideoRenderer::readback(std::vector<uint8_t>& rgb, int& width, int& height) {
+    if (!hasFrame() || framebuffer_ == 0) {
+        return false;
+    }
+    width = cropped_width_;
+    height = cropped_height_;
+    rgb.resize(static_cast<size_t>(width) * height * 3);
+
+    gl.BindFramebuffer(GL_FRAMEBUFFER, framebuffer_);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());
+    gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // glReadPixels returns the framebuffer bottom row first. The FBO was
+    // rendered with the picture's top row at the framebuffer bottom (so that
+    // ImGui, which samples texture row 0 at the top, shows it upright), which
+    // means the returned rows are already in top-down order.
+    return true;
 }
 
 }  // namespace player::render

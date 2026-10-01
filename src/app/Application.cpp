@@ -199,6 +199,10 @@ int Application::run(int max_frames) {
             uploaded_frame_ = current;
         }
         video_texture_ = renderer_.render(color_);
+        if (!screenshot_path_.empty() && video_texture_ != 0) {
+            saveScreenshot();
+            running = false;
+        }
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
@@ -509,6 +513,26 @@ void Application::fileDialogCallback(void* userdata, const char* const* filelist
     }
     std::lock_guard<std::mutex> lock(app->pending_mutex_);
     app->pending_path_ = filelist[0];
+}
+
+bool Application::saveScreenshot() {
+    std::vector<uint8_t> rgb;
+    int width = 0;
+    int height = 0;
+    if (!renderer_.readback(rgb, width, height)) {
+        return false;
+    }
+    FILE* file = std::fopen(screenshot_path_.c_str(), "wb");
+    if (!file) {
+        return false;
+    }
+    std::fprintf(file, "P6\n%d %d\n255\n", width, height);
+    std::fwrite(rgb.data(), 1, rgb.size(), file);
+    std::fclose(file);
+    std::fprintf(stderr, "screenshot written to %s (%dx%d)\n", screenshot_path_.c_str(), width,
+                 height);
+    screenshot_path_.clear();
+    return true;
 }
 
 void Application::shutdown() {

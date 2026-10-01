@@ -43,10 +43,13 @@ demuxers (built from minimal in-test MP4/MKV/AVI files).
 ```
 hevc_player [options] [file]
 
-  --frames N       quit after N rendered frames (smoke test)
-  --seek SECONDS   seek to the given position after opening
-  --dump-yuv PATH  decode the file to planar YUV and exit
-  -h, --help       show help
+  --frames N         quit after N rendered frames (smoke test)
+  --seek SECONDS     seek to the given position after opening
+  --screenshot PATH  write the first rendered frame as a PPM image and quit
+  --dump-yuv PATH    decode the file to planar YUV and exit
+  --dump-frames N    limit --dump-yuv to N frames
+  --dump-skip N      skip N frames before --dump-yuv output
+  -h, --help         show help
 ```
 
 ### Controls

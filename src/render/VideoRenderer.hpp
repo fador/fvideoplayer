@@ -2,7 +2,9 @@
 
 #include <kvzdec.h>
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace player::render {
 
@@ -27,6 +29,9 @@ public:
     int videoHeight() const { return cropped_height_; }
     bool hasFrame() const { return cropped_width_ > 0; }
 
+    // Reads the rendered FBO back into a top-down RGB24 buffer (for tests).
+    bool readback(std::vector<uint8_t>& rgb, int& width, int& height);
+
 private:
     void ensureTextures(const kvzdec_picture* picture);
     void ensureFramebuffer(int width, int height);
@@ -42,6 +47,7 @@ private:
     int texture_height_[3] = {0, 0, 0};
     int texture_bits_[3] = {0, 0, 0};
     bool texture_allocated_[3] = {false, false, false};
+    std::vector<uint8_t> staging_[3];
 
     unsigned int framebuffer_ = 0;
     unsigned int framebuffer_texture_ = 0;

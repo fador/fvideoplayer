@@ -3,6 +3,7 @@
 #include "decode/NalUnits.hpp"
 #include "demux/HvcC.hpp"
 
+#include <algorithm>
 #include <utility>
 
 namespace player::decode {
@@ -83,6 +84,13 @@ bool KvzdecDecoder::open(std::string* error, int threads, int owf, bool hash_che
 
 void KvzdecDecoder::close() {
     if (decoder_ && api_) {
+        // Flush and release any pictures the decoder still holds; closing
+        // without draining corrupts the decoder state.
+        {
+            std::vector<DecodedFrame> pending;
+            api_->decoder_flush(decoder_);
+            pullFrames(pending);
+        }
         api_->decoder_close(decoder_);
         decoder_ = nullptr;
     }
@@ -131,7 +139,14 @@ bool KvzdecDecoder::pushSample(const uint8_t* data, size_t size, int64_t pts, bo
         return false;
     }
     if (annexb) {
-        return api_->decoder_push(decoder_, data, size, pts) != 0;
+        constexpr size_t kPushChunk = 1 << 16;
+        for (size_t offset = 0; offset < size; offset += kPushChunk) {
+            const size_t count = std::min(kPushChunk, size - offset);
+            if (!api_->decoder_push(decoder_, data + offset, count, pts)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     std::vector<NalView> nals;

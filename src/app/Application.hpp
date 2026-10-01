@@ -25,6 +25,7 @@ public:
     bool openFile(const std::string& path);
     void seek(double seconds);
     void play();
+    void setScreenshotPath(const std::string& path) { screenshot_path_ = path; }
 
 private:
     void drawUI();
@@ -51,6 +52,8 @@ private:
     const decode::DecodedFrame* uploaded_frame_ = nullptr;
     unsigned int video_texture_ = 0;
     std::string status_;
+    std::string screenshot_path_;
+    bool saveScreenshot();
 
     std::mutex pending_mutex_;
     std::string pending_path_;

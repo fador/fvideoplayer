@@ -4,6 +4,7 @@
 #include "demux/Demuxer.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <cstdio>
 #include <vector>
 
@@ -40,7 +41,7 @@ bool writePicture(FILE* out, const kvzdec_picture* picture) {
 }  // namespace
 
 int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& output,
-              DumpStats* stats, std::string* error) {
+              int max_frames, int skip_frames, DumpStats* stats, std::string* error) {
     std::string local_error;
     std::unique_ptr<demux::IDemuxer> demuxer = demux::createDemuxer(input, local_error);
     if (!demuxer) {
@@ -59,7 +60,9 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
     }
 
     KvzdecDecoder decoder;
-    if (!decoder.open(&local_error)) {
+    const int threads = std::getenv("HEVC_PLAYER_THREADS") ? std::atoi(std::getenv("HEVC_PLAYER_THREADS")) : -1;
+    const int owf = std::getenv("HEVC_PLAYER_OWF") ? std::atoi(std::getenv("HEVC_PLAYER_OWF")) : -1;
+    if (!decoder.open(&local_error, threads, owf)) {
         std::fclose(out);
         if (error) {
             *error = local_error;
@@ -80,6 +83,28 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
     local_stats.width = demuxer->video().width;
     local_stats.height = demuxer->video().height;
 
+    int64_t decoded_count = 0;
+    const auto writeFrames = [&](std::vector<DecodedFrame>& frames) {
+        bool wrote = true;
+        for (DecodedFrame& frame : frames) {
+            if (skip_frames > 0 && decoded_count < skip_frames) {
+                ++decoded_count;
+                continue;
+            }
+            if (max_frames >= 0 && local_stats.frames >= max_frames) {
+                break;
+            }
+            if (!writePicture(out, frame.picture)) {
+                local_error = "failed to write output";
+                wrote = false;
+                break;
+            }
+            ++local_stats.frames;
+            ++decoded_count;
+        }
+        return wrote;
+    };
+
     std::vector<DecodedFrame> frames;
     demux::Sample sample;
     bool ok = true;
@@ -94,29 +119,20 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
         }
         frames.clear();
         decoder.pullFrames(frames);
-        for (DecodedFrame& frame : frames) {
-            if (!writePicture(out, frame.picture)) {
-                local_error = "failed to write output";
-                ok = false;
-                break;
-            }
-            ++local_stats.frames;
+        if (!writeFrames(frames)) {
+            ok = false;
+            break;
         }
-        if (!ok) {
+        if (max_frames >= 0 && local_stats.frames >= max_frames) {
             break;
         }
     }
 
-    if (ok) {
+    if (ok && (max_frames < 0 || local_stats.frames < max_frames)) {
         frames.clear();
         decoder.flush(frames);
-        for (DecodedFrame& frame : frames) {
-            if (!writePicture(out, frame.picture)) {
-                local_error = "failed to write output";
-                ok = false;
-                break;
-            }
-            ++local_stats.frames;
+        if (!writeFrames(frames)) {
+            ok = false;
         }
     }
 
