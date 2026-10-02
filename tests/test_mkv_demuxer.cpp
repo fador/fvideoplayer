@@ -342,6 +342,41 @@ TEST(MkvDemuxer, SeeksToPreviousKeyframe) {
     std::filesystem::remove(path);
 }
 
+TEST(MkvDemuxer, SeekRepositionsAudioCursor) {
+    const std::filesystem::path path =
+        writeMkv(buildMkv(true), "hevc_player_mkv_seek_audio.mkv");
+    {
+        player::demux::MkvDemuxer demuxer;
+        std::string error;
+        ASSERT_TRUE(demuxer.open(path, error)) << error;
+        ASSERT_TRUE(demuxer.selectAudioTrack(0));
+
+        // Play the audio track to its end so the cursor sits past every packet.
+        player::demux::Sample sample;
+        int64_t last_pts = -1;
+        while (demuxer.readAudioSample(sample)) {
+            last_pts = sample.pts;
+        }
+        ASSERT_GE(last_pts, 0);
+        ASSERT_FALSE(demuxer.readAudioSample(sample));
+
+        // Seeking back must rewind the audio cursor too. Left at the end, the
+        // player would have no packets at all and stay silent.
+        ASSERT_TRUE(demuxer.seek(0.0));
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
+        EXPECT_EQ(sample.pts, 0);
+
+        // Draining again and seeking to a time covered by the second audio
+        // packet must land on that packet rather than past it.
+        while (demuxer.readAudioSample(sample)) {
+        }
+        ASSERT_TRUE(demuxer.seek(0.08));  // 80 ms -> the packet starting at 67 ms
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
+        EXPECT_EQ(sample.pts, 67);
+    }
+    std::filesystem::remove(path);
+}
+
 TEST(MkvDemuxer, ListsAudioAndSubtitleTracks) {
     const std::filesystem::path path =
         writeMkv(buildMkv(true, true, true), "hevc_player_mkv_tracks.mkv");

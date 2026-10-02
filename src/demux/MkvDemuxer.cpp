@@ -1002,6 +1002,23 @@ bool MkvDemuxer::seek(double seconds) {
         index = keyframes_.front().second;
     }
     next_sample_ = index;
+
+    // Every track keeps its own cursor, so the audio ones have to move as well.
+    // A cursor left ahead of the new playhead hands the player packets from the
+    // future: the audio buffer fills with chunks that are not due yet and the
+    // sink never plays them, so playback stays silent until the track is
+    // selected again. Timestamps are milliseconds for every track.
+    for (TrackSamples& track : audio_samples_) {
+        const auto first_after = std::lower_bound(
+            track.samples.begin(), track.samples.end(), target,
+            [](const SampleInfo& info, int64_t value) { return info.pts < value; });
+        // Step back to the packet that covers the target so the decoder gets a
+        // short lead instead of starting late.
+        track.next = first_after == track.samples.begin()
+                         ? 0
+                         : static_cast<size_t>(std::prev(first_after) -
+                                               track.samples.begin());
+    }
     return true;
 }
 
