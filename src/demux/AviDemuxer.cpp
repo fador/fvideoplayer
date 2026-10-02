@@ -69,10 +69,12 @@ bool readChunkHeader(FILE* file, ChunkHeader& out) {
     return true;
 }
 
+// VFW fourccs are not case sensitive: ffmpeg writes lowercase "hevc" while
+// other muxers use "HEVC" or "H265".
 bool isHevcFourcc(uint32_t value) {
-    return value == fourcc('H', 'E', 'V', 'C') || value == fourcc('H', '2', '6', '5') ||
-           value == fourcc('h', 'v', 'c', '1') || value == fourcc('h', 'e', 'v', '1') ||
-           value == fourcc('x', '2', '6', '5');
+    return value == fourcc('H', 'E', 'V', 'C') || value == fourcc('h', 'e', 'v', 'c') ||
+           value == fourcc('H', '2', '6', '5') || value == fourcc('h', 'v', 'c', '1') ||
+           value == fourcc('h', 'e', 'v', '1') || value == fourcc('x', '2', '6', '5');
 }
 
 struct AviStream {
@@ -88,6 +90,8 @@ struct AviStream {
     uint16_t audio_format_tag = 0;
     uint16_t audio_channels = 0;
     uint32_t audio_sample_rate = 0;
+    uint16_t audio_block_align = 0;
+    uint16_t audio_bits = 0;
 };
 
 bool parseStrh(const uint8_t* data, size_t size, AviStream& stream) {
@@ -118,9 +122,23 @@ bool parseStrf(const uint8_t* data, size_t size, AviStream& stream) {
             stream.extradata.assign(data + 40, data + size);
         }
     } else if (stream.fcc_type == fourcc('a', 'u', 'd', 's')) {
+        // WAVEFORMATEX: tag, channels, rate, average rate, block align, bits
+        // and the trailing codec specific bytes.
         stream.audio_format_tag = readU16Le(data);
         stream.audio_channels = readU16Le(data + 2);
         stream.audio_sample_rate = readU32Le(data + 4);
+        stream.audio_block_align = readU16Le(data + 12);
+        stream.audio_bits = readU16Le(data + 14);
+        if (size >= 18) {
+            const uint16_t extra_size = readU16Le(data + 16);
+            const size_t available = size - 18;
+            // Some writers leave cbSize at zero while still appending data.
+            const size_t take = extra_size != 0 ? std::min<size_t>(extra_size, available)
+                                                : available;
+            if (take > 0) {
+                stream.extradata.assign(data + 18, data + 18 + take);
+            }
+        }
     }
     return true;
 }
@@ -240,10 +258,40 @@ bool looksLikeAnnexBHevc(const std::vector<uint8_t>& data) {
     return false;
 }
 
+// Maps a WAVEFORMATEX tag to the fourcc the audio decoders are keyed by. Only
+// tags with a matching decoder are translated; anything else keeps its raw tag
+// so the log can name it.
 uint32_t audioFourcc(uint16_t format_tag) {
-    if (format_tag == 0x00FF) return 0x6D703461;  // AAC -> 'mp4a'
-    if (format_tag == 0x0055) return 0x6D703320;  // MP3 -> 'mp3 '
-    return format_tag;
+    switch (format_tag) {
+        case 0x0055:
+            return 0x6D703320;  // MPEG audio -> 'mp3 '
+        case 0x00FF:
+            return 0x6D703461;  // AAC -> 'mp4a'
+        case 0x704F:
+            return 0x4F707573;  // Opus -> 'Opus'
+        case 0x0001:            // integer PCM
+        case 0x0003:            // IEEE float PCM
+        case 0x0006:
+        case 0x0010:
+            return 0x72617720;  // 'raw '
+        default:
+            return format_tag;
+    }
+}
+
+// Codecs whose decoder configuration lives in the WAVEFORMATEX trailing bytes:
+// AAC carries its AudioSpecificConfig there, Opus a complete OpusHead.
+bool audioUsesExtradata(uint16_t format_tag) {
+    return format_tag == 0x00FF || format_tag == 0x704F;
+}
+
+std::string fourccText(uint32_t value) {
+    std::string text;
+    for (int i = 3; i >= 0; --i) {
+        const char letter = static_cast<char>((value >> (i * 8)) & 0xFF);
+        text.push_back(letter >= 0x20 && letter < 0x7F ? letter : '?');
+    }
+    return text;
 }
 
 }  // namespace
@@ -368,65 +416,72 @@ bool AviDemuxer::open(const std::filesystem::path& path, std::string& error) {
         }
     }
 
-    // Collect video chunk positions from idx1 or by scanning movi.
+    // Collect chunk positions from idx1 or by scanning movi.
     struct ChunkRef {
         int64_t offset = 0;
         uint32_t size = 0;
         bool flagged_keyframe = false;
     };
-    std::vector<ChunkRef> chunks;
 
-    const uint8_t stream_digit_high = static_cast<uint8_t>('0' + (video_stream_index / 10) % 10);
-    const uint8_t stream_digit_low = static_cast<uint8_t>('0' + video_stream_index % 10);
-    const uint32_t video_chunk_id =
-        (static_cast<uint32_t>(stream_digit_high) << 24) |
-        (static_cast<uint32_t>(stream_digit_low) << 16) | (static_cast<uint32_t>('d') << 8) |
-        static_cast<uint32_t>('c');
+    const auto chunk_id_for = [](uint32_t stream_number) {
+        return (static_cast<uint32_t>('0' + (stream_number / 10) % 10) << 24) |
+               (static_cast<uint32_t>('0' + stream_number % 10) << 16);
+    };
 
-    if (idx1_offset >= 0 && idx1_size >= 16) {
-        const uint32_t entry_count = idx1_size / 16;
-        for (uint32_t i = 0; i < entry_count; ++i) {
-            uint8_t entry[16] = {};
-            if (!readAt(file_, idx1_offset + static_cast<int64_t>(i) * 16, entry, 16)) {
-                break;
-            }
-            const uint32_t chunk_id = readU32(entry);
-            const uint32_t flags = readU32Le(entry + 4);
-            const uint32_t offset = readU32Le(entry + 8);
-            if ((chunk_id & 0xFFFF0000u) != (video_chunk_id & 0xFFFF0000u)) {
-                continue;
-            }
-            if ((chunk_id & 0xFFFFu) != fourcc(0, 0, 'd', 'c') &&
-                (chunk_id & 0xFFFFu) != fourcc(0, 0, 'd', 'b')) {
-                continue;
-            }
-            // Muxers disagree on the idx1 offset base: after the 'movi' fourcc,
-            // at the 'movi' fourcc, or at the LIST header. Probe all three and
-            // keep the one where the chunk id actually matches.
-            const int64_t candidates[3] = {
-                movi_data_start + offset,
-                movi_data_start - 4 + offset,
-                movi_data_start - 12 + offset,
-            };
-            int64_t absolute = candidates[0];
-            for (int64_t candidate : candidates) {
-                uint8_t probe[4] = {};
-                if (candidate >= 0 && readAt(file_, candidate, probe, 4) &&
-                    readU32(probe) == chunk_id) {
-                    absolute = candidate;
+    // Audio chunk ids only pin the stream number ("01wb"), while video chunks
+    // use the "00dc"/"00db" compressed forms, so the caller says which ones it
+    // accepts.
+    const auto collect_chunks = [&](uint32_t stream_number, bool audio_stream) {
+        std::vector<ChunkRef> found;
+        const uint32_t stream_prefix = chunk_id_for(stream_number);
+
+        if (idx1_offset >= 0 && idx1_size >= 16) {
+            const uint32_t entry_count = idx1_size / 16;
+            for (uint32_t i = 0; i < entry_count; ++i) {
+                uint8_t entry[16] = {};
+                if (!readAt(file_, idx1_offset + static_cast<int64_t>(i) * 16, entry, 16)) {
                     break;
                 }
+                const uint32_t chunk_id = readU32(entry);
+                if ((chunk_id & 0xFFFF0000u) != stream_prefix) {
+                    continue;
+                }
+                const uint16_t suffix = static_cast<uint16_t>(chunk_id & 0xFFFFu);
+                if (!audio_stream && suffix != fourcc(0, 0, 'd', 'c') &&
+                    suffix != fourcc(0, 0, 'd', 'b')) {
+                    continue;
+                }
+                const uint32_t flags = readU32Le(entry + 4);
+                const uint32_t offset = readU32Le(entry + 8);
+                // Muxers disagree on the idx1 offset base: after the 'movi'
+                // fourcc, at the 'movi' fourcc, or at the LIST header. Probe all
+                // three and keep the one where the chunk id actually matches.
+                const int64_t candidates[3] = {
+                    movi_data_start + offset,
+                    movi_data_start - 4 + offset,
+                    movi_data_start - 12 + offset,
+                };
+                int64_t absolute = candidates[0];
+                for (int64_t candidate : candidates) {
+                    uint8_t probe[4] = {};
+                    if (candidate >= 0 && readAt(file_, candidate, probe, 4) &&
+                        readU32(probe) == chunk_id) {
+                        absolute = candidate;
+                        break;
+                    }
+                }
+                ChunkHeader header;
+                if (!seekFile(file_, absolute) || !readChunkHeader(file_, header)) {
+                    continue;
+                }
+                if (header.size == 0 || header.payload + header.size > file_size) {
+                    continue;
+                }
+                found.push_back({header.payload, header.size, (flags & 0x10u) != 0});
             }
-            ChunkHeader header;
-            if (!seekFile(file_, absolute) || !readChunkHeader(file_, header)) {
-                continue;
-            }
-            if (header.size == 0 || header.payload + header.size > file_size) {
-                continue;
-            }
-            chunks.push_back({header.payload, header.size, (flags & 0x10u) != 0});
+            return found;
         }
-    } else {
+
         const int64_t movi_end = movi_data_start + movi_data_size;
         int64_t scan = movi_data_start;
         while (scan + 8 <= movi_end) {
@@ -437,13 +492,21 @@ bool AviDemuxer::open(const std::filesystem::path& path, std::string& error) {
             if (!readChunkHeader(file_, chunk)) {
                 break;
             }
-            if (chunk.id == video_chunk_id && chunk.size > 0 &&
+            const bool same_stream = (chunk.id & 0xFFFF0000u) == stream_prefix;
+            const bool usable = audio_stream ||
+                                (chunk.id & 0xFFFFu) == fourcc(0, 0, 'd', 'c') ||
+                                (chunk.id & 0xFFFFu) == fourcc(0, 0, 'd', 'b');
+            if (same_stream && usable && chunk.size > 0 &&
                 chunk.payload + chunk.size <= file_size) {
-                chunks.push_back({chunk.payload, chunk.size, false});
+                found.push_back({chunk.payload, chunk.size, false});
             }
             scan = chunk.payload + static_cast<int64_t>(chunk.size) + (chunk.size & 1);
         }
-    }
+        return found;
+    };
+
+    const std::vector<ChunkRef> chunks =
+        collect_chunks(static_cast<uint32_t>(video_stream_index), false);
 
     if (chunks.empty()) {
         error = "no video chunks found in AVI movi list";
@@ -484,17 +547,78 @@ bool AviDemuxer::open(const std::filesystem::path& path, std::string& error) {
 
     duration_ = fps_ > 0.0 ? static_cast<double>(samples_.size()) / fps_ : -1.0;
 
-    for (const AviStream& stream : streams) {
-        if (stream.fcc_type == fourcc('a', 'u', 'd', 's')) {
-            audio_.present = true;
-            audio_.codec_fourcc = audioFourcc(stream.audio_format_tag);
-            audio_.channels = stream.audio_channels;
-            audio_.sample_rate = stream.audio_sample_rate;
-            break;
+    // Audio streams: AVI carries no per packet timing, so the presentation
+    // times follow from the stream header scale and rate.
+    for (size_t i = 0; i < streams.size(); ++i) {
+        const AviStream& stream = streams[i];
+        if (stream.fcc_type != fourcc('a', 'u', 'd', 's') || stream.rate == 0 ||
+            stream.scale == 0) {
+            continue;
         }
+        const std::vector<ChunkRef> audio_chunks = collect_chunks(static_cast<uint32_t>(i), true);
+        if (audio_chunks.empty()) {
+            continue;
+        }
+        AudioTrackInfo info;
+        info.index = audio_tracks_.size();
+        info.codec_fourcc = audioFourcc(stream.audio_format_tag);
+        info.codec = fourccText(info.codec_fourcc);
+        info.present = true;
+        info.default_track = audio_tracks_.empty();
+        info.channels = stream.audio_channels;
+        info.sample_rate = stream.audio_sample_rate;
+        if (audioUsesExtradata(stream.audio_format_tag)) {
+            info.extradata = stream.extradata;
+        }
+
+        TrackSamples track;
+        track.samples.reserve(audio_chunks.size());
+        for (size_t c = 0; c < audio_chunks.size(); ++c) {
+            SampleInfo packet;
+            packet.offset = audio_chunks[c].offset;
+            packet.size = audio_chunks[c].size;
+            packet.keyframe = true;
+            packet.pts = static_cast<int64_t>(c) * stream.scale * 1000 / stream.rate;
+            track.samples.push_back(packet);
+        }
+        audio_tracks_.push_back(std::move(info));
+        audio_samples_.push_back(std::move(track));
+    }
+    if (!audio_tracks_.empty()) {
+        audio_ = audio_tracks_.front();
     }
 
     next_sample_ = 0;
+    return true;
+}
+
+bool AviDemuxer::readAudioSample(Sample& sample) {
+    if (!file_ || selected_audio_ >= audio_samples_.size()) {
+        return false;
+    }
+    TrackSamples& track = audio_samples_[selected_audio_];
+    if (track.next >= track.samples.size()) {
+        return false;
+    }
+    const SampleInfo& info = track.samples[track.next];
+    sample.data.resize(info.size);
+    if (info.size > 0 &&
+        !readAt(file_, info.offset, sample.data.data(), info.size)) {
+        return false;
+    }
+    sample.pts = info.pts;
+    sample.dts = info.pts;
+    sample.keyframe = true;
+    sample.track = TrackType::Audio;
+    ++track.next;
+    return true;
+}
+
+bool AviDemuxer::selectAudioTrack(size_t index) {
+    if (index >= audio_tracks_.size() || index >= audio_samples_.size()) {
+        return false;
+    }
+    selected_audio_ = index;
     return true;
 }
 
@@ -540,6 +664,19 @@ bool AviDemuxer::seek(double seconds) {
         index = keyframes_.front().second;
     }
     next_sample_ = index;
+
+    // The audio cursors are independent of the video one, so they have to move
+    // as well. Left ahead of the new playhead they hand the player packets from
+    // the future, which the sink then refuses to play.
+    for (TrackSamples& track : audio_samples_) {
+        // Step back to the packet that covers the target for a short lead.
+        const auto after = std::upper_bound(
+            track.samples.begin(), track.samples.end(), target,
+            [](int64_t value, const SampleInfo& info) { return value < info.pts; });
+        track.next = after == track.samples.begin()
+                         ? 0
+                         : static_cast<size_t>(std::prev(after) - track.samples.begin());
+    }
     return true;
 }
 

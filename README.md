@@ -144,8 +144,7 @@ Implemented:
 Not supported: SBR/PS (HE-AAC), AAC Main/LTP/SSR, 960-sample frames,
 coupling elements (CCE) and program config elements (PCE). Such tracks are
 reported once in the log and skipped. Audio access units are read from
-Matroska and MP4; AVI audio tracks are listed but their samples are not read
-yet.
+Matroska, MP4 and AVI; PCM audio is listed but has no decoder yet.
 
 The decoder was verified sample-exact against a reference decoder for mono,
 stereo, 5.1, short-window transients, PNS/intensity and all 12 sampling
@@ -295,6 +294,25 @@ audio tracks and with `mov_text` subtitles): the audio decodes without errors
 and the cues match the source, next to unit tests built from minimal in-test
 MP4 files.
 
+### AVI audio
+
+AVI audio streams are read from the same chunk tables as the video, using
+`idx1` when the file has one and scanning the `movi` list otherwise:
+
+- Codec, channel count and sample rate come from the WAVEFORMATEX in `strf`.
+  MPEG audio and AAC map to the decoders that already exist; Opus is recognised
+  by its format tag and takes the WAVEFORMATEX trailing bytes as its
+  OpusHead. PCM is listed with its raw tag and reported as having no decoder.
+- AVI stores no timestamp per chunk, so presentation times accumulate from the
+  `strh` scale and rate, which describe one chunk.
+- Each audio track keeps its own cursor and `seek()` moves them along with the
+  video one, so audio follows a seek in either direction.
+
+Verified against ffmpeg-produced AVI files with MP3 and with AAC audio: the
+audio decodes without errors, and PCM is reported as unsupported rather than
+mistaken for silence. Unit tests cover the track description, packet reading
+with and without `idx1`, and the seek behaviour.
+
 The player runs without a console window; messages are collected in a
 thread-safe log buffer and can be viewed in the in-app log console
 (`View -> Log` or `L`). CLI modes (`--info`, `--dump-yuv`, `--help`) keep
@@ -311,6 +329,7 @@ whole file for this purpose.
 
 The player sources are provided as-is. Third-party components keep their own
 licenses: kvzdec (3-clause BSD), SDL3 (zlib), Dear ImGui and ImPlot (MIT).
+
 
 
 

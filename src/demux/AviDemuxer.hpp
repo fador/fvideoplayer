@@ -13,6 +13,8 @@ namespace player::demux {
 // HEVC in AVI is not standardized: the stream format (length-prefixed NALs or
 // Annex B) is detected from the codec extradata and the first sample. The
 // idx1 index is used when present, otherwise the movi list is scanned.
+// Audio streams are read as well: each one keeps its own cursor, which seek()
+// moves along with the video one.
 class AviDemuxer final : public IDemuxer {
 public:
     AviDemuxer();
@@ -27,12 +29,20 @@ public:
     double duration() const override { return duration_; }
     bool readSample(Sample& sample) override;
     bool seek(double seconds) override;
+    bool readAudioSample(Sample& sample) override;
+    std::vector<AudioTrackInfo> audioTracks() const override { return audio_tracks_; }
+    bool selectAudioTrack(size_t index) override;
 
     struct SampleInfo {
         int64_t offset = 0;
         uint32_t size = 0;
         int64_t pts = 0;
         bool keyframe = false;
+    };
+
+    struct TrackSamples {
+        std::vector<SampleInfo> samples;
+        size_t next = 0;
     };
 
 private:
@@ -45,6 +55,9 @@ private:
     std::vector<SampleInfo> samples_;
     std::vector<std::pair<int64_t, size_t>> keyframes_;  // pts -> sample index
     size_t next_sample_ = 0;
+    std::vector<AudioTrackInfo> audio_tracks_;
+    std::vector<TrackSamples> audio_samples_;
+    size_t selected_audio_ = 0;
 };
 
 }  // namespace player::demux
