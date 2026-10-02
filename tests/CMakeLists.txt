@@ -42,4 +42,3 @@ endif()
 
 include(GoogleTest)
 gtest_discover_tests(player_tests)
-

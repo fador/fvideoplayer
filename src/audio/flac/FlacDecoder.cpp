@@ -545,15 +545,19 @@ bool Decoder::configure(const uint8_t* config, size_t size, std::string& error) 
 }
 
 void Decoder::flush() {
-    sample_rate_ = 0;
-    channels_ = 0;
-    bits_ = 0;
-    block_size_ = 0;
+    // The stream parameters come from STREAMINFO and have to survive a flush:
+    // frames that code their sample rate, bit depth or block size as "same as
+    // the stream" would otherwise resolve to zero after a seek and every frame
+    // would be rejected as an invalid header.
     pts_ = 0;
 }
 
 void Decoder::reset() {
     flush();
+    sample_rate_ = 0;
+    channels_ = 0;
+    bits_ = 0;
+    block_size_ = 0;
     configured_ = false;
 }
 

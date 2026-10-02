@@ -202,3 +202,39 @@ TEST(Flac, ReconstructsMidSideSamples) {
     EXPECT_FLOAT_EQ(pcm.samples[1], 36.0f / 32768.0f);
 }
 
+TEST(Flac, KeepsStreamInfoAcrossFlush) {
+    // Frames may code their sample rate, bit depth and block size as "same as
+    // the stream", so the STREAMINFO parameters have to survive a flush.
+    // Clearing them made every frame after a seek fail as an invalid header:
+    // the audio disappeared until the track was selected again, which re-ran
+    // configure().
+    const std::vector<uint8_t> config = {
+        0x66, 0x4C, 0x61, 0x43, 0x00, 0x00, 0x00, 0x22,              // "fLaC", STREAMINFO
+        0x10, 0x00, 0x10, 0x00,                                      // block sizes 4096
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00,                          // frame sizes unknown
+        0x0A, 0xC4, 0x42, 0xF0, 0x00, 0x00, 0x00, 0x00,              // 44.1 kHz, 2ch, 16-bit
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,              // MD5
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+    // Header that takes block size, sample rate and bit depth from STREAMINFO.
+    std::vector<uint8_t> frame = {0xFF, 0xF8, 0x10, 0x10, 0x00, 0x00};
+    frame.insert(frame.end(), {0x00, 0x12, 0x34});
+    frame.insert(frame.end(), {0x00, 0xFE, 0xDC});
+
+    player::audio::flac::Decoder decoder;
+    std::string error;
+    ASSERT_TRUE(decoder.configure(config.data(), config.size(), error)) << error;
+    player::audio::PcmBuffer pcm;
+    ASSERT_EQ(decoder.decode(frame.data(), frame.size(), pcm, error),
+              player::audio::flac::Status::Ok)
+        << error;
+
+    decoder.flush();
+    ASSERT_EQ(decoder.decode(frame.data(), frame.size(), pcm, error),
+              player::audio::flac::Status::Ok)
+        << error;
+    ASSERT_EQ(pcm.samples.size(), 192u * 2);
+    EXPECT_FLOAT_EQ(pcm.samples[0], 4660.0f / 32768.0f);
+    EXPECT_FLOAT_EQ(pcm.samples[1], -292.0f / 32768.0f);
+}
+
