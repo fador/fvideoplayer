@@ -5,6 +5,8 @@
 #include "playback/PlaybackEngine.hpp"
 
 #include <chrono>
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <thread>
 #include <filesystem>
@@ -87,11 +89,19 @@ TEST(Flac, MatchesReference) {
                 decoded.insert(decoded.end(), pcm.samples.begin(), pcm.samples.end());
             }
             ASSERT_EQ(decoded.size(), file.pcm.size()) << "case " << f;
-            const float gain = static_cast<float>(static_cast<int32_t>(1u << file.bits));
+            // The reference PCM is in the 32-bit domain, so full scale sits at
+            // 2^31 whatever the file declares. Comparing floats keeps the test
+            // honest about the normalisation the sink relies on: dividing by
+            // the declared depth a second time leaves raw integers behind and
+            // every file plays clipped.
+            constexpr float kPcmScale = 1.0f / 2147483648.0f;
+            float peak = 0.0f;
             for (size_t i = 0; i < file.pcm.size(); ++i) {
-                EXPECT_EQ(static_cast<int32_t>(decoded[i] * gain), file.pcm[i])
-                    << "case " << f << " sample " << i;
+                const float expected = static_cast<float>(file.pcm[i]) * kPcmScale;
+                EXPECT_NEAR(decoded[i], expected, 1e-7f) << "case " << f << " sample " << i;
+                peak = std::max(peak, std::fabs(decoded[i]));
             }
+            EXPECT_LE(peak, 1.0f) << "case " << f << " exceeds full scale";
         }
         std::filesystem::remove(path);
     }
@@ -140,3 +150,4 @@ TEST(Flac, EnginePlaysAudioOnly) {
     }
     std::filesystem::remove(path);
 }
+

@@ -605,16 +605,20 @@ Status Decoder::decode(const uint8_t* data, size_t size, PcmBuffer& pcm, std::st
     }
     const std::vector<int32_t> interleaved = interleave(header, frame);
 
-    sample_rate_ = header.sample_rate;
+sample_rate_ = header.sample_rate;
     channels_ = header.channels;
     bits_ = header.bits;
-    const float scale = 1.0f / static_cast<float>(static_cast<int32_t>(1) << header.bits);
+    // interleave() already moved every sample into the 32-bit PCM domain, using
+    // the shift that undoes both the declared bit depth and the wasted bits. A
+    // full scale sample therefore sits at 2^31, whatever the file declares, and
+    // the conversion to float is the same for every stream.
+    constexpr float kPcmScale = 1.0f / 2147483648.0f;  // 2^-31
     pcm.channels = header.channels;
     pcm.sample_rate = header.sample_rate;
     pcm.pts = pts_;
     pcm.samples.resize(interleaved.size());
     for (size_t i = 0; i < interleaved.size(); ++i) {
-        pcm.samples[i] = static_cast<float>(interleaved[i]) * scale;
+        pcm.samples[i] = static_cast<float>(interleaved[i]) * kPcmScale;
     }
     pts_ += header.block_size;
     return Status::Ok;
