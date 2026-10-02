@@ -67,13 +67,16 @@ private:
     bool activateSubtitle(int option);
     void addExternalSubtitle(const std::string& path);
     void drawSubtitles(const ImVec2& video_pos, const ImVec2& video_size);
+    // Font for a subtitle style, falling back to the CJK face.
+    ImFont* subtitleFont(const std::string& family);
 
     SDL_Window* window_ = nullptr;
     SDL_GLContext gl_context_ = nullptr;
     bool imgui_ready_ = false;
     int frame_count_ = 0;
-    // Font with CJK coverage for subtitles; null falls back to the UI font.
+    // CJK fallback font and the per style fonts loaded on demand.
     ImFont* subtitle_font_ = nullptr;
+    std::vector<std::pair<std::string, ImFont*>> subtitle_fonts_;
 
     playback::PlaybackEngine engine_;
     audio::SdlAudioSink audio_sink_;

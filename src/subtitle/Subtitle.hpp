@@ -26,6 +26,7 @@ struct Cue {
     float pos_y = 0.0f;
     int alignment = 2;                    // ASS \an numpad alignment
     float font_size = 0.0f;               // script units, 0 when unknown
+    std::string font_name;                // style font family, empty when unknown
     float margin_l = 0.0f;                // script units, for unpositioned lines
     float margin_r = 0.0f;
     float margin_v = 0.0f;

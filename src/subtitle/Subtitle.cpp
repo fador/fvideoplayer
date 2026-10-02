@@ -189,6 +189,7 @@ std::vector<std::string> splitLimited(const std::string& text, char separator, s
 int findField(const std::vector<std::string>& names, const char* wanted);
 
 struct AssStyle {
+    std::string font_name;
     float font_size = 0.0f;
     float margin_l = 0.0f;
     float margin_r = 0.0f;
@@ -265,6 +266,7 @@ void parseAssHeader(const std::string& data, AssStyles& styles, int& play_res_x,
             continue;
         }
         AssStyle style;
+        style.font_name = field("Fontname", 1);
         style.font_size = static_cast<float>(std::atof(field("Fontsize", 2).c_str()));
         style.margin_l = static_cast<float>(std::atof(field("MarginL", 19).c_str()));
         style.margin_r = static_cast<float>(std::atof(field("MarginR", 20).c_str()));
@@ -343,6 +345,7 @@ void applyAssLine(const std::string& style_name, const std::string& raw, const A
                   Cue& cue) {
     const auto style = styles.find(style_name);
     if (style != styles.end()) {
+        cue.font_name = style->second.font_name;
         cue.font_size = style->second.font_size;
         cue.margin_l = style->second.margin_l;
         cue.margin_r = style->second.margin_r;

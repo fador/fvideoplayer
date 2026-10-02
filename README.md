@@ -333,10 +333,14 @@ carry meaning:
 - A CJK font is loaded from the system (Yu Gothic, MS Gothic, Meiryo or
   YaHei) because the built-in font has no Japanese glyphs. It is used for
   subtitles only, so the interface keeps its normal size.
+- The font a style names is used when the system has it (Monotype Corsiva,
+  Arial, Times New Roman and friends). This matters for typeset karaoke: the
+  syllables are positioned for the metrics of that font, and a wider
+  substitute makes them collide. Anything missing falls back to the CJK face.
 
 Not implemented: the `\t`, `\fade`, `\blur` and `\move` animations are ignored,
 so lines pop in and out instead of fading and the beat flash does not scale.
-Style font names are not honoured either; one CJK font covers the whole track.
+
 
 
 The player runs without a console window; messages are collected in a

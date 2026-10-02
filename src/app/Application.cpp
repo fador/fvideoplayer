@@ -11,6 +11,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <cctype>
 #include <cstring>
 #include <sstream>
 
@@ -47,6 +48,27 @@ const char* stateName(playback::State state) {
     }
     return "?";
 }
+
+// ASS styles name a font family and typeset the line assuming its metrics, so
+// substituting a wider font makes the syllables collide. Map the families that
+// matter onto the files Windows ships them in.
+struct SubtitleFontFile {
+    const char* family;
+    const char* file;
+};
+
+constexpr SubtitleFontFile kSubtitleFontFiles[] = {
+    {"monotype corsiva", "MTCORSVA.TTF"}, {"arial", "arial.ttf"},
+    {"arial black", "ariblk.ttf"},        {"calibri", "calibri.ttf"},
+    {"cambria", "cambria.ttc"},           {"comic sans ms", "comic.ttf"},
+    {"consolas", "consola.ttf"},          {"courier new", "cour.ttf"},
+    {"gabriola", "gabriola.ttf"},         {"georgia", "georgia.ttf"},
+    {"impact", "impact.ttf"},             {"segoe ui", "segoeui.ttf"},
+    {"tahoma", "tahoma.ttf"},             {"times new roman", "times.ttf"},
+    {"trebuchet ms", "trebuc.ttf"},       {"verdana", "verdana.ttf"},
+    {"dfkai-sb", "kaiu.ttf"},             {"ms gothic", "msgothic.ttc"},
+    {"yu gothic", "YuGothM.ttc"},
+};
 
 const char* chromaName(int chroma_format) {
     switch (chroma_format) {
@@ -152,7 +174,6 @@ bool Application::init(const std::string& title) {
     if (!subtitle_font_) {
         log::add(log::Level::Warning, "No CJK subtitle font found, Japanese text will not draw");
     }
-
     if (!ImGui_ImplSDL3_InitForOpenGL(window_, gl_context_)) {
         std::fprintf(stderr, "ImGui SDL3 backend init failed\n");
         return false;
@@ -922,6 +943,51 @@ void Application::addExternalSubtitle(const std::string& path) {
     activateSubtitle(static_cast<int>(subtitle_options_.size()) - 1);
 }
 
+ImFont* Application::subtitleFont(const std::string& family) {
+    // Lowercase and collapse whitespace: "Monotype  Corsiva" is the same family
+    // as "Monotype Corsiva".
+    std::string key;
+    bool pending_space = false;
+    for (char c : family) {
+        const unsigned char byte = static_cast<unsigned char>(c);
+        if (std::isspace(byte)) {
+            pending_space = !key.empty();
+            continue;
+        }
+        if (pending_space) {
+            key += ' ';
+            pending_space = false;
+        }
+        key += static_cast<char>(std::tolower(byte));
+    }
+    if (key.empty()) {
+        return subtitle_font_;
+    }
+    for (const auto& entry : subtitle_fonts_) {
+        if (entry.first == key) {
+            return entry.second;
+        }
+    }
+
+    ImFont* font = nullptr;
+    for (const SubtitleFontFile& candidate : kSubtitleFontFiles) {
+        if (key != candidate.family) {
+            continue;
+        }
+        const std::filesystem::path path =
+            std::filesystem::path("C:/Windows/Fonts") / candidate.file;
+        if (std::filesystem::exists(path)) {
+            font = ImGui::GetIO().Fonts->AddFontFromFileTTF(path.string().c_str(), 32.0f);
+        }
+        break;
+    }
+    if (!font) {
+        font = subtitle_font_;  // the CJK face covers what the styles ask for
+    }
+    subtitle_fonts_.emplace_back(key, font);
+    return font;
+}
+
 void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_size) {
     if (active_subtitle_ < 0 || active_subtitle_ >= static_cast<int>(subtitle_options_.size())) {
         return;
@@ -954,6 +1020,10 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
     draw_list->PushClipRect(video_pos, ImVec2(video_pos.x + video_size.x,
                                               video_pos.y + video_size.y), true);
     for (const subtitle::Cue* cue : active) {
+        ImFont* cue_font = subtitleFont(cue->font_name);
+        if (!cue_font) {
+            cue_font = font;
+        }
         const float font_size =
             std::clamp((cue->font_size > 0.0f ? cue->font_size : 42.0f) * scale, 10.0f, 96.0f);
         const float line_height = font_size * 1.2f;
@@ -996,7 +1066,7 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
                 bool first_word = true;
                 while (words >> word) {
                     const float word_width =
-                        font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, word.c_str()).x;
+                        cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, word.c_str()).x;
                     const float space = first_word ? 0.0f : font_size * 0.3f;
                     if (width + space + word_width > max_width && !current.empty()) {
                         wrapped.push_back(current);
@@ -1029,7 +1099,7 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
         for (const std::vector<Run>& line : wrapped) {
             float width = 0.0f;
             for (const Run& run : line) {
-                width += font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str()).x;
+                width += cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str()).x;
             }
             block_width = std::max(block_width, width);
         }
@@ -1070,7 +1140,7 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
         for (const std::vector<Run>& line : wrapped) {
             float width = 0.0f;
             for (const Run& run : line) {
-                width += font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str()).x;
+                width += cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str()).x;
             }
             float x = anchor_x;
             if (horizontal == 1) {
@@ -1085,23 +1155,23 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
                                                  cue->outline_color & 0xFF, 220);
             float pen = x;
             for (const Run& run : line) {
-                const ImVec2 size = font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str());
+                const ImVec2 size = cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str());
                 for (float dx = -outline; dx <= outline; dx += outline) {
                     for (float dy = -outline; dy <= outline; dy += outline) {
                         if (dx == 0.0f && dy == 0.0f) {
                             continue;
                         }
-                        draw_list->AddText(font, font_size, ImVec2(pen + dx, y + dy),
+                        draw_list->AddText(cue_font, font_size, ImVec2(pen + dx, y + dy),
                                            outline_color, run.text.c_str());
                     }
                 }
                 pen += size.x;
             }
             for (const Run& run : line) {
-                const ImVec2 size = font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str());
+                const ImVec2 size = cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str());
                 const ImU32 color = IM_COL32((run.color >> 16) & 0xFF, (run.color >> 8) & 0xFF,
                                              run.color & 0xFF, 255);
-                draw_list->AddText(font, font_size, ImVec2(x, y), color, run.text.c_str());
+                draw_list->AddText(cue_font, font_size, ImVec2(x, y), color, run.text.c_str());
                 x += size.x;
             }
             y += line_height;
