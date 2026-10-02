@@ -5,7 +5,8 @@ A focused HEVC/H.265 video player built around the custom
 
 - **Decoder**: kvzdec (git submodule), wrapped through its public C API
 - **Containers**: native demuxers for MP4, Matroska (MKV) and AVI — no
-  libavformat; raw Annex B `.hevc` streams are supported as well
+  libavformat; raw Annex B `.hevc` streams and raw `.mp3` files (audio-only
+  playback) are supported as well
 - **GUI**: Dear ImGui + SDL3 with a custom OpenGL YUV -> RGB render path
 - **Playback**: correct-FPS pacing with a ~2 second decode-ahead buffer and
   keyframe seeking
@@ -16,10 +17,10 @@ A focused HEVC/H.265 video player built around the custom
   switchable on the fly; external files next to the video are discovered
   automatically
 - **Audio**: container audio tracks are listed and selectable from the Audio
-  menu. AAC-LC is decoded by a from-scratch decoder (no external codec
-  libraries) and played through an SDL3 float sink with software volume and
-  mute; Opus framing and the range decoder are in place, with the SILK/CELT
-  layers still to come. See [Audio decoding](#audio-decoding) for details
+  menu. AAC-LC, Opus (SILK/CELT/hybrid) and MP3 are decoded by from-scratch
+  decoders (no external codec libraries) and played through an SDL3 float
+  sink with software volume and mute; audio-only MP3 files play directly.
+  See [Audio decoding](#audio-decoding) for details
 
 ## Building
 
@@ -86,7 +87,8 @@ hevc_player [options] [file]
 ```
 src/
   app/        SDL3 + ImGui application shell and UI
-  demux/      container demuxers (MP4, MKV, AVI, raw HEVC) + hvcC parser
+  demux/      container demuxers (MP4, MKV, AVI, raw HEVC, raw MP3) + hvcC
+              parser
   subtitle/   SRT/ASS/SSA/WebVTT/MicroDVD parsers and cue lookup
   decode/     kvzdec wrapper, NAL handling, decode-to-YUV verification mode
   playback/   pipeline thread, frame queue, media clock
@@ -96,7 +98,9 @@ src/
               timestamped audio buffer, SDL3 sink and the from-scratch audio
               decoders (aac/: bit reader, ADTS + AudioSpecificConfig parsers,
               Huffman codebooks, ICS/TNS tools, MDCT/filterbank; opus/:
-              OpusHead, packet framing, range decoder, CELT tables and PVQ)
+              OpusHead, packet framing, range decoder, CELT/SILK modules,
+              packet loss concealment; mp3/: frame parsing, bit reservoir,
+              Huffman, IMDCT and the synthesis filterbank)
 ```
 
 The demux + decode pipeline runs on a dedicated thread and fills a bounded
@@ -104,8 +108,9 @@ frame queue (about two seconds, capped by a memory budget). The UI thread
 advances a monotonic clock and displays frames as their presentation
 timestamps become due, dropping frames that are already late.
 
-Audio follows the same pattern with its own buffer: the pipeline decodes AAC
-up to 2 seconds ahead of the media clock into a timestamped PCM buffer, and a
+Audio follows the same pattern with its own buffer: the pipeline decodes the
+selected track (AAC, Opus or MP3) up to 2 seconds ahead of the media clock
+into a timestamped PCM buffer, and a
 feeder (called by both the pipeline and the UI thread, so a busy video decode
 cannot starve it) moves chunks into the sink to keep the device queue around
 400 ms ahead of the video position. Chunks that fall behind the clock are
@@ -226,6 +231,24 @@ The Opus decoder is also written from scratch. Implemented:
 
 CELT-only, SILK-only and hybrid Opus tracks play, with packet loss
 concealed in all three modes.
+
+### MP3
+
+The MP3 (MPEG-1/2/2.5 Layer III) decoder is a port of the public-domain
+minimp3 scalar path. Implemented:
+
+- Frame headers, the bit reservoir, side info and scalefactor decoding
+  (MPEG-1 and MPEG-2/2.5 forms)
+- Huffman decoding with linbits, requantization, M/S and intensity stereo,
+  alias reduction
+- Long/short/mixed block IMDCT and the polyphase synthesis filterbank
+- MPEG-1, MPEG-2 and MPEG-2.5 at all sample rates, mono and stereo
+
+Raw `.mp3` files play directly (ID3v2/v1 tags skipped, Xing/Info and VBRI
+headers for the duration, frame-accurate seeking). Test vectors decoded by
+the reference match bit-exactly across eight configurations, and an
+end-to-end test opens a tagged file, demuxes every frame and plays it
+through the engine.
 
 The player runs without a console window; messages are collected in a
 thread-safe log buffer and can be viewed in the in-app log console

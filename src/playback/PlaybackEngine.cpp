@@ -83,7 +83,7 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
     stats_.reset();
     stats::StreamInfo info;
     info.container = containerName(path);
-    info.codec = "HEVC";
+    info.codec = video_info_.codec == demux::Codec::Hevc ? "HEVC" : "audio only";
     info.width = video_info_.width;
     info.height = video_info_.height;
     info.fps = video_info_.fps;
