@@ -15,6 +15,7 @@ namespace {
 constexpr uint32_t kMp4aFourcc = 0x6D703461;
 constexpr uint32_t kOpusFourcc = 0x4F707573;
 constexpr uint32_t kMp3Fourcc = 0x6D703320;
+constexpr uint32_t kFlacFourcc = 0x664C6143;
 
 std::string containerName(const std::filesystem::path& path) {
     std::string ext = path.extension().string();
@@ -469,6 +470,18 @@ void PlaybackEngine::configureAudioDecoder(const demux::AudioTrackInfo& track) {
         rate = track.sample_rate;
         channels = track.channels;
         audio_frame_ms_ = rate > 0 ? static_cast<int>(1152ull * 1000 / rate) : 26;
+    } else if (track.codec_fourcc == kFlacFourcc) {
+        // Native FLAC carries its own STREAMINFO, so the demuxer hands the
+        // first metadata block over as extradata.
+        if (!flac_decoder_.configure(track.extradata.data(), track.extradata.size(), error)) {
+            log::addf(log::Level::Warning, "FLAC decoder rejected the track config: %s",
+                      error.c_str());
+            return;
+        }
+        audio_codec_ = AudioCodec::Flac;
+        rate = flac_decoder_.sampleRate();
+        channels = flac_decoder_.channels();
+        audio_frame_ms_ = rate > 0 ? static_cast<int>(4096ull * 1000 / rate) : 93;
     } else {
         log::addf(log::Level::Warning, "No audio decoder for codec '%s'", track.codec.c_str());
         return;
@@ -490,6 +503,8 @@ const char* PlaybackEngine::audioCodecName() const {
             return "Opus";
         case AudioCodec::Mp3:
             return "MP3";
+        case AudioCodec::Flac:
+            return "FLAC";
         case AudioCodec::None:
             break;
     }
@@ -523,6 +538,13 @@ void PlaybackEngine::decodeAudioSample(const demux::Sample& sample) {
             unsupported = status == audio::mp3::Status::Unsupported;
             break;
         }
+        case AudioCodec::Flac: {
+            const audio::flac::Status status =
+                flac_decoder_.decode(sample.data.data(), sample.data.size(), audio_pcm_, error);
+            ok = status == audio::flac::Status::Ok;
+            unsupported = status == audio::flac::Status::Unsupported;
+            break;
+        }
         case AudioCodec::None:
             return;
     }
@@ -537,12 +559,14 @@ void PlaybackEngine::flushAudioDecoder() {
     aac_decoder_.flush();
     opus_decoder_.flush();
     mp3_decoder_.flush();
+    flac_decoder_.flush();
 }
 
 void PlaybackEngine::resetAudioDecoder() {
     aac_decoder_.reset();
     opus_decoder_.reset();
     mp3_decoder_.reset();
+    flac_decoder_.reset();
     audio_codec_ = AudioCodec::None;
 }
 

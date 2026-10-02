@@ -1,6 +1,7 @@
 #include "demux/Demuxer.hpp"
 
 #include "demux/AviDemuxer.hpp"
+#include "demux/FlacDemuxer.hpp"
 #include "demux/MkvDemuxer.hpp"
 #include "demux/Mp3Demuxer.hpp"
 #include "demux/Mp4Demuxer.hpp"
@@ -21,6 +22,7 @@ enum class Container {
     Avi,
     RawHevc,
     Mp3,
+    Flac,
 };
 
 std::string toLower(std::string value) {
@@ -54,6 +56,9 @@ Container detectContainer(const std::filesystem::path& path) {
     if (count >= 3 && magic[0] == 'I' && magic[1] == 'D' && magic[2] == '3') {
         return Container::Mp3;
     }
+if (count >= 4 && std::memcmp(magic, "fLaC", 4) == 0) {
+        return Container::Flac;
+    }
     if (count >= 2 && magic[0] == 0xFF && (magic[1] & 0xE0) == 0xE0) {
         return Container::Mp3;
     }
@@ -64,6 +69,9 @@ Container detectContainer(const std::filesystem::path& path) {
     }
     if (ext == ".mp3") {
         return Container::Mp3;
+    }
+    if (ext == ".flac") {
+        return Container::Flac;
     }
     return Container::Unknown;
 }
@@ -102,6 +110,13 @@ std::unique_ptr<IDemuxer> createDemuxer(const std::filesystem::path& path, std::
         }
         case Container::Mp3: {
             auto demuxer = std::make_unique<Mp3Demuxer>();
+            if (!demuxer->open(path, error)) {
+                return nullptr;
+            }
+            return demuxer;
+        }
+        case Container::Flac: {
+            auto demuxer = std::make_unique<FlacDemuxer>();
             if (!demuxer->open(path, error)) {
                 return nullptr;
             }

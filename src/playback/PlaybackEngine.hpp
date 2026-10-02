@@ -6,6 +6,7 @@
 #include "audio/Pcm.hpp"
 #include "audio/PcmGain.hpp"
 #include "audio/aac/AacDecoder.hpp"
+#include "audio/flac/FlacDecoder.hpp"
 #include "audio/mp3/Mp3Decoder.hpp"
 #include "audio/opus/OpusDecoder.hpp"
 #include "decode/KvzdecDecoder.hpp"
@@ -106,8 +107,9 @@ private:
     enum class AudioCodec {
         None,
         Aac,
-        Opus,
+Opus,
         Mp3,
+        Flac,
     };
 
     //    Audio scheduling: decoded PCM goes into audio_buffer_ up to
@@ -155,6 +157,7 @@ private:
     audio::aac::Decoder aac_decoder_;
     audio::opus::Decoder opus_decoder_;
     audio::mp3::Decoder mp3_decoder_;
+    audio::flac::Decoder flac_decoder_;
     audio::AudioBuffer audio_buffer_{kAudioBufferMs};
     audio::PcmBuffer audio_pcm_;
     std::atomic<float> volume_{1.0f};

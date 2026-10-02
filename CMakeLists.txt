@@ -70,6 +70,7 @@ target_compile_definitions(player_subtitle PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_library(player_demux STATIC
     src/demux/AviDemuxer.cpp
     src/demux/Demuxer.cpp
+    src/demux/FlacDemuxer.cpp
     src/demux/HvcC.cpp
     src/demux/MkvDemuxer.cpp
     src/demux/Mp3Demuxer.cpp
@@ -101,6 +102,7 @@ add_library(player_audio STATIC
     src/audio/aac/Huffman.cpp
     src/audio/aac/Mdct.cpp
     src/audio/aac/Window.cpp
+    src/audio/flac/FlacDecoder.cpp
     src/audio/mp3/Mp3Decoder.cpp
     src/audio/mp3/Mp3Tables.cpp
     src/audio/opus/CeltAlloc.cpp

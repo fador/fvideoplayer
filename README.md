@@ -5,8 +5,8 @@ A focused HEVC/H.265 video player built around the custom
 
 - **Decoder**: kvzdec (git submodule), wrapped through its public C API
 - **Containers**: native demuxers for MP4, Matroska (MKV) and AVI — no
-  libavformat; raw Annex B `.hevc` streams and raw `.mp3` files (audio-only
-  playback) are supported as well
+libavformat; raw Annex B `.hevc` streams and raw `.mp3` / `.flac` files
+  (audio-only playback) are supported as well
 - **GUI**: Dear ImGui + SDL3 with a custom OpenGL YUV -> RGB render path
 - **Playback**: correct-FPS pacing with a ~2 second decode-ahead buffer and
   keyframe seeking
@@ -17,9 +17,10 @@ A focused HEVC/H.265 video player built around the custom
   switchable on the fly; external files next to the video are discovered
   automatically
 - **Audio**: container audio tracks are listed and selectable from the Audio
-  menu. AAC-LC, Opus (SILK/CELT/hybrid) and MP3 are decoded by from-scratch
-  decoders (no external codec libraries) and played through an SDL3 float
-  sink with software volume and mute; audio-only MP3 files play directly.
+menu. AAC-LC, Opus (SILK/CELT/hybrid), MP3 and FLAC are decoded by
+  from-scratch decoders (no external codec libraries) and played through an
+  SDL3 float sink with software volume and mute; audio-only MP3 and FLAC files
+  play directly.
   See [Audio decoding](#audio-decoding) for details
 
 ## Building
@@ -87,7 +88,8 @@ hevc_player [options] [file]
 ```
 src/
   app/        SDL3 + ImGui application shell and UI
-  demux/      container demuxers (MP4, MKV, AVI, raw HEVC, raw MP3) + hvcC
+  demux/      container demuxers (MP4, MKV, AVI, raw HEVC, raw MP3, raw FLAC)
+            + hvcC parser
               parser
   subtitle/   SRT/ASS/SSA/WebVTT/MicroDVD parsers and cue lookup
   decode/     kvzdec wrapper, NAL handling, decode-to-YUV verification mode
@@ -99,8 +101,10 @@ src/
               decoders (aac/: bit reader, ADTS + AudioSpecificConfig parsers,
               Huffman codebooks, ICS/TNS tools, MDCT/filterbank; opus/:
               OpusHead, packet framing, range decoder, CELT/SILK modules,
-              packet loss concealment; mp3/: frame parsing, bit reservoir,
-              Huffman, IMDCT and the synthesis filterbank)
+packet loss concealment; mp3/: frame parsing, bit reservoir,
+            Huffman, IMDCT and the synthesis filterbank; flac/: STREAMINFO,
+            frame headers, constant/verbatim/fixed/LPC subframes, Rice
+            residuals)
 ```
 
 The demux + decode pipeline runs on a dedicated thread and fills a bounded
@@ -109,7 +113,7 @@ advances a monotonic clock and displays frames as their presentation
 timestamps become due, dropping frames that are already late.
 
 Audio follows the same pattern with its own buffer: the pipeline decodes the
-selected track (AAC, Opus or MP3) up to 2 seconds ahead of the media clock
+selected track (AAC, Opus, MP3 or FLAC) up to 2 seconds ahead of the media clock
 into a timestamped PCM buffer, and a
 feeder (called by both the pipeline and the UI thread, so a busy video decode
 cannot starve it) moves chunks into the sink to keep the device queue around
@@ -250,6 +254,24 @@ the reference match bit-exactly across eight configurations, and an
 end-to-end test opens a tagged file, demuxes every frame and plays it
 through the engine.
 
+### FLAC
+
+The FLAC decoder follows RFC 9639 and is written from scratch. Implemented:
+
+- STREAMINFO parsing and frame indexing with byte-exact frame lengths taken
+  from the frame footer CRC-16
+- Frame headers: fixed block sizes, coded frame numbers, all sample rate and
+  bit depth codes, uncommon block sizes and rates
+- Constant, verbatim, fixed predictor (orders 0-4) and LPC subframes
+  (orders 1-32), wasted bits per sample
+- Residual coding: Rice partitions with 4-bit and 5-bit parameters, escape
+  partitions, mid/side, left/side and right/side decorrelation
+
+Raw `.flac` files play directly; the demuxer indexes every frame for
+sample-accurate seeking. Seven reference-encoded streams (16/24-bit, mono to
+6 channels, 32-96 kHz, noise and stereo decorrelation) decode bit-exactly,
+and an end-to-end test plays a file through the engine.
+
 The player runs without a console window; messages are collected in a
 thread-safe log buffer and can be viewed in the in-app log console
 (`View -> Log` or `L`). CLI modes (`--info`, `--dump-yuv`, `--help`) keep
@@ -266,3 +288,5 @@ whole file for this purpose.
 
 The player sources are provided as-is. Third-party components keep their own
 licenses: kvzdec (3-clause BSD), SDL3 (zlib), Dear ImGui and ImPlot (MIT).
+
+
