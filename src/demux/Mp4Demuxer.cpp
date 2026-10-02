@@ -24,6 +24,15 @@ uint64_t readU64(const uint8_t* data) {
     return (static_cast<uint64_t>(readU32(data)) << 32) | readU32(data + 4);
 }
 
+std::string fourccText(uint32_t value) {
+    std::string text;
+    for (int i = 3; i >= 0; --i) {
+        const char letter = static_cast<char>((value >> (i * 8)) & 0xFF);
+        text.push_back(letter >= 0x20 && letter < 0x7F ? letter : '?');
+    }
+    return text;
+}
+
 bool seekFile(FILE* file, int64_t offset) {
 #ifdef _WIN32
     return _fseeki64(file, offset, SEEK_SET) == 0;
@@ -222,7 +231,19 @@ bool parseTkhd(const BoxView& box, uint32_t& track_id, uint32_t& width, uint32_t
     return true;
 }
 
-bool parseMdhd(const BoxView& box, uint32_t& timescale, uint64_t& duration) {
+// mdhd packs a three letter code into 15 bits, each letter biased by 0x60.
+std::string isoLanguage(uint16_t packed) {
+    std::string text;
+    for (int i = 2; i >= 0; --i) {
+        const uint16_t letter = (packed >> (i * 5)) & 0x1F;
+        text.push_back(letter >= 0x01 && letter <= 0x1A ? static_cast<char>(letter + 0x60)
+                                                        : '?');
+    }
+    return text == "???" ? std::string() : text;
+}
+
+bool parseMdhd(const BoxView& box, uint32_t& timescale, uint64_t& duration,
+               std::string& language) {
     Reader reader(box.payload, box.size);
     uint8_t version = 0;
     uint32_t flags = 0;
@@ -239,6 +260,10 @@ bool parseMdhd(const BoxView& box, uint32_t& timescale, uint64_t& duration) {
             return false;
         }
         duration = duration32;
+    }
+    uint16_t packed_language = 0;
+    if (reader.u16(packed_language)) {
+        language = isoLanguage(packed_language);
     }
     return true;
 }
@@ -258,6 +283,7 @@ struct StblTables {
     uint32_t constant_size = 0;
     std::vector<uint32_t> sizes;
     std::vector<int64_t> dts;
+    std::vector<int64_t> durations;
     std::vector<int64_t> ctts;
     std::vector<bool> sync;
     std::vector<uint32_t> sync_samples;  // 1-based sample numbers from stss
@@ -313,6 +339,7 @@ bool parseStts(const BoxView& box, StblTables& tables) {
         }
         for (uint32_t i = 0; i < count; ++i) {
             tables.dts.push_back(dts);
+            tables.durations.push_back(delta);
             dts += delta;
         }
     }
@@ -406,14 +433,99 @@ bool parseStco(const BoxView& box, bool is64, StblTables& tables) {
     return true;
 }
 
-struct VideoSampleEntry {
+// The single sample entry that matters for a track: one of the video, audio or
+// timed text kinds the player can act on.
+struct SampleEntry {
     bool found = false;
+    uint32_t format = 0;
     uint32_t width = 0;
     uint32_t height = 0;
+    uint32_t channels = 0;
+    uint32_t sample_rate = 0;
     std::vector<uint8_t> hvcc;
+    std::vector<uint8_t> codec_private;
 };
 
-bool parseStsd(const BoxView& box, VideoSampleEntry& video_entry, AudioTrackInfo& audio_info) {
+// Walks the esds descriptor chain for the decoder specific info, which is the
+// AudioSpecificConfig the AAC decoder expects as its configuration.
+bool findDecoderSpecificInfo(const uint8_t* data, size_t size, std::vector<uint8_t>& out) {
+    size_t pos = 0;
+    while (pos < size) {
+        const uint8_t tag = data[pos++];
+        uint64_t length = 0;
+        for (int byte = 0; byte < 4; ++byte) {
+            if (pos >= size) {
+                return false;
+            }
+            const uint8_t value = data[pos++];
+            length = (length << 7) | (value & 0x7F);
+            if ((value & 0x80) == 0) {
+                break;
+            }
+        }
+        if (pos + length > size) {
+            return false;
+        }
+        if (tag == 0x05) {  // DecoderSpecificInfo
+            out.assign(data + pos, data + pos + length);
+            return true;
+        }
+        if (tag == 0x03 || tag == 0x04) {
+            // ES_Descriptor and DecoderConfigDescriptor have a fixed header
+            // before their children.
+            const size_t header = tag == 0x03 ? 3 : 13;
+            if (length < header) {
+                return false;
+            }
+            if (findDecoderSpecificInfo(data + pos + header, length - header, out)) {
+                return true;
+            }
+        }
+        pos += length;
+    }
+    return false;
+}
+
+// dOps carries the OpusHead fields big endian while OpusHead itself is little
+// endian, so every multi byte field has to be swapped while rebuilding it.
+std::vector<uint8_t> opusHeadFromDops(const uint8_t* data, size_t size) {
+    std::vector<uint8_t> head = {'O', 'p', 'u', 's', 'H', 'e', 'a', 'd'};
+    constexpr size_t kFixedFields = 11;  // version, channels, pre-skip, rate, gain, family
+    if (size < kFixedFields) {
+        return head;
+    }
+    head.push_back(data[0]);  // version
+    head.push_back(data[1]);  // channel count
+    head.push_back(data[3]);
+    head.push_back(data[2]);  // pre-skip
+    for (size_t i = 7; i >= 4; --i) {
+        head.push_back(data[i]);  // input sample rate
+    }
+    head.push_back(data[9]);
+    head.push_back(data[8]);  // output gain
+    head.push_back(data[10]);  // mapping family
+    // The channel mapping table is a byte list, so it keeps its order.
+    head.insert(head.end(), data + kFixedFields, data + size);
+    return head;
+}
+
+// AudioSampleEntry grew two extra fields per revision; children start after
+// them.
+size_t audioEntryChildOffset(const uint8_t* payload, size_t payload_size) {
+    if (payload_size < 28) {
+        return 0;
+    }
+    const uint16_t version = static_cast<uint16_t>((payload[8] << 8) | payload[9]);
+    size_t offset = 28;
+    if (version == 1) {
+        offset += 16;
+    } else if (version == 2) {
+        offset += 36;
+    }
+    return offset <= payload_size ? offset : 0;
+}
+
+bool parseStsd(const BoxView& box, SampleEntry& entry) {
     Reader reader(box.payload, box.size);
     uint8_t version = 0;
     uint32_t flags = 0;
@@ -421,52 +533,88 @@ bool parseStsd(const BoxView& box, VideoSampleEntry& video_entry, AudioTrackInfo
     if (!reader.u8(version) || !reader.u24(flags) || !reader.u32(entry_count)) {
         return false;
     }
-    for (uint32_t entry = 0; entry < entry_count; ++entry) {
+    for (uint32_t i = 0; i < entry_count; ++i) {
         if (reader.remaining() < 8) {
             return false;
         }
         const uint8_t* entry_start = reader.current();
-        uint32_t entry_size = readU32(entry_start);
+        const uint32_t entry_size = readU32(entry_start);
         const uint32_t format = readU32(entry_start + 4);
         if (entry_size < 8 || entry_size > reader.remaining()) {
             return false;
         }
         const uint8_t* payload = entry_start + 8;
         const size_t payload_size = entry_size - 8;
+        if (entry.found) {
+            reader.skip(entry_size);
+            continue;
+        }
 
-        if ((format == fourcc('h', 'v', 'c', '1') || format == fourcc('h', 'e', 'v', '1')) &&
-            !video_entry.found && payload_size >= 78) {
-            video_entry.found = true;
-            video_entry.width = static_cast<uint32_t>((payload[24] << 8) | payload[25]);
-            video_entry.height = static_cast<uint32_t>((payload[26] << 8) | payload[27]);
+        const bool is_video =
+            format == fourcc('h', 'v', 'c', '1') || format == fourcc('h', 'e', 'v', '1');
+        const bool is_text = format == fourcc('t', 'x', '3', 'g') ||
+                             format == fourcc('w', 'v', 't', 't') ||
+                             format == fourcc('s', 'b', 't', 'l') ||
+                             format == fourcc('t', 'e', 'x', 't');
+        const bool is_audio = format == fourcc('m', 'p', '4', 'a') ||
+                              format == fourcc('O', 'p', 'u', 's') ||
+                              format == fourcc('a', 'c', '-', '3') ||
+                              format == fourcc('e', 'c', '-', '3') ||
+                              format == fourcc('a', 'l', 'a', 'c') ||
+                              format == fourcc('s', 'a', 'm', 'r') ||
+                              format == fourcc('s', 'a', 'w', 'b') ||
+                              format == fourcc('t', 'w', 'o', 's') ||
+                              format == fourcc('d', 't', 's', 'c') ||
+                              format == fourcc('d', 't', 's', 'h');
+
+        if (is_video && payload_size >= 78) {
+            entry.found = true;
+            entry.format = format;
+            entry.width = static_cast<uint32_t>((payload[24] << 8) | payload[25]);
+            entry.height = static_cast<uint32_t>((payload[26] << 8) | payload[27]);
             // VisualSampleEntry fixed fields are 78 bytes; children follow.
             size_t child_pos = 78;
             BoxView child;
             while (iterateBoxes(payload, payload_size, child_pos, child)) {
                 if (child.type == fourcc('h', 'v', 'c', 'C')) {
-                    video_entry.hvcc.assign(child.payload, child.payload + child.size);
+                    entry.hvcc.assign(child.payload, child.payload + child.size);
                 }
             }
-        } else if (payload_size >= 28) {
-            // AudioSampleEntry: only track info is needed for now.
-            const uint16_t sample_entry_version = static_cast<uint16_t>((payload[8] << 8) | payload[9]);
-            const uint16_t channels = static_cast<uint16_t>((payload[16] << 8) | payload[17]);
-            const uint32_t sample_rate = readU32(payload + 24) >> 16;
-            if (!audio_info.present) {
-                audio_info.present = true;
-                audio_info.codec_fourcc = format;
-                audio_info.channels = channels;
-                audio_info.sample_rate = sample_rate;
-                (void)sample_entry_version;
+        } else if (is_audio) {
+            const size_t child_offset = audioEntryChildOffset(payload, payload_size);
+            if (child_offset == 0) {
+                reader.skip(entry_size);
+                continue;
             }
+            entry.found = true;
+            entry.format = format;
+            entry.channels = static_cast<uint16_t>((payload[16] << 8) | payload[17]);
+            entry.sample_rate = readU32(payload + 24) >> 16;
+            size_t child_pos = child_offset;
+            BoxView child;
+while (iterateBoxes(payload, payload_size, child_pos, child)) {
+                if (child.type == fourcc('e', 's', 'd', 's')) {
+                    findDecoderSpecificInfo(child.payload, child.size, entry.codec_private);
+                } else if (child.type == fourcc('d', 'O', 'p', 's')) {
+                    // dOps is big endian while OpusHead is little endian, so
+                    // every multi byte field has to be swapped. A verbatim copy
+                    // turns a pre-skip of 312 into 14337 and drops the first
+                    // quarter second of audio.
+                    entry.codec_private = opusHeadFromDops(child.payload, child.size);
+                } else if (child.type == fourcc('a', 'l', 'a', 'c')) {
+                    entry.codec_private.assign(child.payload, child.payload + child.size);
+                }
+            }
+        } else if (is_text) {
+            entry.found = true;
+            entry.format = format;
         }
         reader.skip(entry_size);
     }
     return true;
 }
 
-bool parseStbl(const BoxView& box, VideoSampleEntry& video_entry, AudioTrackInfo& audio_info,
-               StblTables& tables) {
+bool parseStbl(const BoxView& box, SampleEntry& entry, StblTables& tables) {
     size_t pos = 0;
     BoxView child;
     bool have_stsz = false;
@@ -474,7 +622,7 @@ bool parseStbl(const BoxView& box, VideoSampleEntry& video_entry, AudioTrackInfo
     bool have_stco = false;
     while (iterateBoxes(box.payload, box.size, pos, child)) {
         if (child.type == fourcc('s', 't', 's', 'd')) {
-            if (!parseStsd(child, video_entry, audio_info)) {
+            if (!parseStsd(child, entry)) {
                 return false;
             }
         } else if (child.type == fourcc('s', 't', 's', 'z')) {
@@ -524,16 +672,17 @@ bool parseStbl(const BoxView& box, VideoSampleEntry& video_entry, AudioTrackInfo
     return have_stsz && have_stts && have_stco;
 }
 
+enum class TrackKind { Unknown, Video, Audio, Text };
+
 struct TrackResult {
-    bool is_video = false;
-    bool is_audio = false;
+    TrackKind kind = TrackKind::Unknown;
     bool stbl_ok = false;
     uint32_t timescale = 0;
     uint64_t duration = 0;
+    std::string language;
     uint32_t tkhd_width = 0;
     uint32_t tkhd_height = 0;
-    VideoSampleEntry video_entry;
-    AudioTrackInfo audio_info;
+    SampleEntry entry;
     StblTables tables;
 };
 
@@ -551,7 +700,8 @@ bool parseTrack(const BoxView& trak, TrackResult& result) {
             BoxView media_child;
             while (iterateBoxes(child.payload, child.size, media_pos, media_child)) {
                 if (media_child.type == fourcc('m', 'd', 'h', 'd')) {
-                    if (!parseMdhd(media_child, result.timescale, result.duration)) {
+                    if (!parseMdhd(media_child, result.timescale, result.duration,
+                                   result.language)) {
                         return false;
                     }
                 } else if (media_child.type == fourcc('h', 'd', 'l', 'r')) {
@@ -559,12 +709,20 @@ bool parseTrack(const BoxView& trak, TrackResult& result) {
                     if (!parseHdlr(media_child, handler)) {
                         return false;
                     }
-                    result.is_video = handler == fourcc('v', 'i', 'd', 'e');
-                    result.is_audio = handler == fourcc('s', 'o', 'u', 'n');
+                    if (handler == fourcc('v', 'i', 'd', 'e')) {
+                        result.kind = TrackKind::Video;
+                    } else if (handler == fourcc('s', 'o', 'u', 'n')) {
+                        result.kind = TrackKind::Audio;
+                    } else if (handler == fourcc('s', 'b', 't', 'l') ||
+                               handler == fourcc('t', 'e', 'x', 't') ||
+                               handler == fourcc('s', 'u', 'b', 'p')) {
+                        result.kind = TrackKind::Text;
+                    }
                 } else if (media_child.type == fourcc('m', 'i', 'n', 'f')) {
                     BoxView stbl;
-                    if (findChild(media_child.payload, media_child.size, fourcc('s', 't', 'b', 'l'), stbl)) {
-                        result.stbl_ok = parseStbl(stbl, result.video_entry, result.audio_info, result.tables);
+                    if (findChild(media_child.payload, media_child.size, fourcc('s', 't', 'b', 'l'),
+                                  stbl)) {
+                        result.stbl_ok = parseStbl(stbl, result.entry, result.tables);
                     }
                 }
             }
@@ -574,7 +732,7 @@ bool parseTrack(const BoxView& trak, TrackResult& result) {
 }
 
 bool buildSamples(const StblTables& tables, std::vector<Mp4Demuxer::SampleInfo>& samples,
-                  std::vector<std::pair<int64_t, size_t>>& keyframes, std::string& error) {
+                  std::string& error) {
     const uint32_t count = tables.sample_count;
     if (count == 0) {
         error = "video track has no samples";
@@ -626,17 +784,9 @@ bool buildSamples(const StblTables& tables, std::vector<Mp4Demuxer::SampleInfo>&
         samples[i].dts = tables.dts[i];
         const int64_t ctts = (i < tables.ctts.size()) ? tables.ctts[i] : 0;
         samples[i].pts = samples[i].dts + ctts;
+        samples[i].duration = (i < tables.durations.size()) ? tables.durations[i] : 0;
         samples[i].keyframe = tables.has_stss ? tables.sync[i] : true;
     }
-
-    keyframes.clear();
-    for (size_t i = 0; i < samples.size(); ++i) {
-        if (samples[i].keyframe) {
-            keyframes.emplace_back(samples[i].pts, i);
-        }
-    }
-    std::sort(keyframes.begin(), keyframes.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
     return true;
 }
 
@@ -689,6 +839,7 @@ Mp4Demuxer::~Mp4Demuxer() {
 }
 
 bool Mp4Demuxer::open(const std::filesystem::path& path, std::string& error) {
+    path_ = path;
     file_ = std::fopen(path.string().c_str(), "rb");
     if (!file_) {
         error = "failed to open " + path.string();
@@ -724,9 +875,7 @@ bool Mp4Demuxer::open(const std::filesystem::path& path, std::string& error) {
     (void)movie_timescale;
 
     TrackResult video_track;
-    TrackResult audio_track;
     bool have_video = false;
-    bool have_audio = false;
 
     size_t pos = 0;
     BoxView box;
@@ -739,12 +888,45 @@ bool Mp4Demuxer::open(const std::filesystem::path& path, std::string& error) {
             error = "failed to parse MP4 track";
             return false;
         }
-        if (track.is_video && track.video_entry.found && track.stbl_ok && !have_video) {
+        if (track.kind == TrackKind::Video && track.entry.found && track.stbl_ok && !have_video) {
             video_track = std::move(track);
             have_video = true;
-        } else if (track.is_audio && !have_audio) {
-            audio_track = std::move(track);
-            have_audio = true;
+            continue;
+        }
+        if (track.kind == TrackKind::Audio && track.entry.found && track.stbl_ok) {
+            TrackSamples packets;
+            packets.timescale = track.timescale != 0 ? track.timescale : 1000;
+            std::string track_error;
+            if (!buildSamples(track.tables, packets.samples, track_error)) {
+                continue;  // a track without usable tables is simply not listed
+            }
+            AudioTrackInfo info;
+            info.index = audio_tracks_.size();
+            info.language = track.language;
+            info.codec = fourccText(track.entry.format);
+            info.present = true;
+            info.default_track = audio_tracks_.empty();
+            info.codec_fourcc = track.entry.format;
+            info.channels = track.entry.channels;
+            info.sample_rate = track.entry.sample_rate;
+            info.extradata = track.entry.codec_private;
+            audio_tracks_.push_back(std::move(info));
+            audio_samples_.push_back(std::move(packets));
+            continue;
+        }
+        if (track.kind == TrackKind::Text && track.entry.found && track.stbl_ok) {
+            TrackSamples packets;
+            packets.timescale = track.timescale != 0 ? track.timescale : 1000;
+            std::string track_error;
+            if (!buildSamples(track.tables, packets.samples, track_error)) {
+                continue;
+            }
+            SubtitleTrackInfo info;
+            info.index = subtitle_tracks_.size();
+            info.language = track.language;
+            info.codec = track.entry.format == fourcc('t', 'x', '3', 'g') ? "tx3g" : "wvtt";
+            subtitle_tracks_.push_back(std::move(info));
+            subtitle_samples_.push_back(std::move(packets));
         }
     }
 
@@ -758,11 +940,11 @@ bool Mp4Demuxer::open(const std::filesystem::path& path, std::string& error) {
     video_.timescale = video_track.timescale != 0 ? video_track.timescale : 1000;
     video_.format.annexb = false;
     video_.format.nal_length_size = 4;
-    video_.width = video_track.video_entry.width != 0 ? video_track.video_entry.width
-                                                     : video_track.tkhd_width;
-    video_.height = video_track.video_entry.height != 0 ? video_track.video_entry.height
-                                                        : video_track.tkhd_height;
-    video_.hvcc = video_track.video_entry.hvcc;
+    video_.width = video_track.entry.width != 0 ? video_track.entry.width
+                                                : video_track.tkhd_width;
+    video_.height = video_track.entry.height != 0 ? video_track.entry.height
+                                                 : video_track.tkhd_height;
+    video_.hvcc = video_track.entry.hvcc;
 
     if (!video_.hvcc.empty()) {
         HvccInfo hvcc;
@@ -772,9 +954,17 @@ bool Mp4Demuxer::open(const std::filesystem::path& path, std::string& error) {
         }
     }
 
-    if (!buildSamples(video_track.tables, samples_, keyframes_, error)) {
+    if (!buildSamples(video_track.tables, samples_, error)) {
         return false;
     }
+    keyframes_.clear();
+    for (size_t i = 0; i < samples_.size(); ++i) {
+        if (samples_[i].keyframe) {
+            keyframes_.emplace_back(samples_[i].pts, i);
+        }
+    }
+    std::sort(keyframes_.begin(), keyframes_.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
 
     if (video_track.duration != 0 && video_.timescale != 0) {
         duration_ = static_cast<double>(video_track.duration) / video_.timescale;
@@ -787,8 +977,9 @@ bool Mp4Demuxer::open(const std::filesystem::path& path, std::string& error) {
         video_.fps = duration_ > 0.0 ? samples_.size() / duration_ : 0.0;
     }
 
-    if (have_audio) {
-        audio_ = audio_track.audio_info;
+    // audio() stays the default track so single track callers keep working.
+    if (!audio_tracks_.empty()) {
+        audio_ = audio_tracks_.front();
     }
 
     next_sample_ = 0;
@@ -812,6 +1003,77 @@ bool Mp4Demuxer::readSample(Sample& sample) {
     return true;
 }
 
+bool Mp4Demuxer::selectAudioTrack(size_t index) {
+    if (index >= audio_tracks_.size() || index >= audio_samples_.size()) {
+        return false;
+    }
+    selected_audio_ = index;
+    return true;
+}
+
+bool Mp4Demuxer::readAudioSample(Sample& sample) {
+    if (selected_audio_ >= audio_samples_.size()) {
+        return false;
+    }
+    TrackSamples& track = audio_samples_[selected_audio_];
+    if (track.next >= track.samples.size()) {
+        return false;
+    }
+    const SampleInfo& info = track.samples[track.next];
+    sample.data.resize(info.size);
+    if (info.size > 0 &&
+        !readAt(file_, static_cast<int64_t>(info.offset), sample.data.data(), info.size)) {
+        return false;
+    }
+    // The engine schedules audio in milliseconds.
+    sample.pts = info.pts * 1000 / static_cast<int64_t>(track.timescale);
+    sample.dts = info.dts * 1000 / static_cast<int64_t>(track.timescale);
+    sample.keyframe = true;
+    sample.track = TrackType::Audio;
+    ++track.next;
+    return true;
+}
+
+bool Mp4Demuxer::readSubtitleTrack(size_t index, std::vector<subtitle::SubtitleBlock>& blocks,
+                                   std::string& error) {
+    blocks.clear();
+    if (index >= subtitle_samples_.size()) {
+        error = "subtitle track index out of range";
+        return false;
+    }
+    const TrackSamples& track = subtitle_samples_[index];
+    if (track.samples.empty()) {
+        error = "subtitle track has no samples";
+        return false;
+    }
+    // A private handle: this runs on the UI thread while the pipeline reads
+    // video samples through file_.
+    FILE* file = std::fopen(path_.string().c_str(), "rb");
+    if (!file) {
+        error = "failed to reopen " + path_.string();
+        return false;
+    }
+    bool ok = true;
+    for (const SampleInfo& info : track.samples) {
+        subtitle::SubtitleBlock block;
+        block.data.resize(info.size);
+        if (info.size > 0 &&
+            (!readAt(file, static_cast<int64_t>(info.offset), block.data.data(), info.size))) {
+            ok = false;
+            break;
+        }
+        block.pts_ms = info.pts * 1000 / static_cast<int64_t>(track.timescale);
+        block.duration_ms = info.duration * 1000 / static_cast<int64_t>(track.timescale);
+        blocks.push_back(std::move(block));
+    }
+    std::fclose(file);
+    if (!ok) {
+        error = "failed to read subtitle sample data";
+        return false;
+    }
+    return true;
+}
+
 bool Mp4Demuxer::seek(double seconds) {
     if (samples_.empty()) {
         return false;
@@ -831,6 +1093,21 @@ bool Mp4Demuxer::seek(double seconds) {
         index = keyframes_.front().second;
     }
     next_sample_ = index;
+
+    // The audio cursors are independent of the video one, so they have to move
+    // as well. Left ahead of the new playhead they hand the player packets from
+    // the future, which the sink then refuses to play and playback goes silent
+    // until the track is selected again.
+    for (TrackSamples& track : audio_samples_) {
+        const int64_t audio_target = static_cast<int64_t>(seconds * track.timescale);
+        const auto first_after =
+            std::lower_bound(track.samples.begin(), track.samples.end(), audio_target,
+                             [](const SampleInfo& info, int64_t value) { return info.pts < value; });
+        // Step back to the packet that covers the target for a short lead.
+        track.next = first_after == track.samples.begin()
+                         ? 0
+                         : static_cast<size_t>(std::prev(first_after) - track.samples.begin());
+    }
     return true;
 }
 

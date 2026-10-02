@@ -12,8 +12,9 @@ libavformat; raw Annex B `.hevc` streams and raw `.mp3` / `.flac` files
   keyframe seeking
 - **Statistics**: live decode performance, buffer level, bitrate and
   per-frame decoder information
-- **Subtitles**: embedded Matroska text tracks (SRT, ASS/SSA) and external
-  SRT/ASS/SSA/WebVTT/MicroDVD files, selectable from the Subtitles menu and
+- **Subtitles**: embedded Matroska text tracks (SRT, ASS/SSA) and MP4 timed
+    text (tx3g), plus external
+    SRT/ASS/SSA/WebVTT/MicroDVD files, selectable from the Subtitles menu and
   switchable on the fly; external files next to the video are discovered
   automatically
 - **Audio**: container audio tracks are listed and selectable from the Audio
@@ -143,7 +144,7 @@ Implemented:
 Not supported: SBR/PS (HE-AAC), AAC Main/LTP/SSR, 960-sample frames,
 coupling elements (CCE) and program config elements (PCE). Such tracks are
 reported once in the log and skipped. Audio access units are read from
-Matroska; MP4 and AVI audio tracks are listed but their samples are not read
+Matroska and MP4; AVI audio tracks are listed but their samples are not read
 yet.
 
 The decoder was verified sample-exact against a reference decoder for mono,
@@ -272,6 +273,28 @@ sample-accurate seeking. Seven reference-encoded streams (16/24-bit, mono to
 6 channels, 32-96 kHz, noise and stereo decorrelation) decode bit-exactly,
 and an end-to-end test plays a file through the engine.
 
+### MP4 audio and subtitles
+
+The MP4 demuxer reads every track the player can act on, not just the video:
+
+- One audio track per `soun` handler, with the codec fourcc, channel count,
+  sample rate and language from `mdhd`. Access units come from the same sample
+  tables as the video, and seeking moves each audio cursor to the packet that
+  covers the playhead so playback follows a seek in either direction.
+- Decoder configuration is taken from the sample entry: the
+  AudioSpecificConfig out of the `esds` descriptor chain for `mp4a`, and for
+  Opus the `dOps` box, which stores the OpusHead fields big endian, so they are
+  swapped while the header is rebuilt. Reading them verbatim turned a pre-skip
+  of 312 into 14337 and dropped the first quarter second of audio.
+- Text tracks with a `tx3g` sample entry are reported as subtitles and their
+  samples are read as timed text blocks, which the subtitle layer turns into
+  cues.
+
+Verified against ffmpeg-produced files (HEVC with AAC, with Opus, with two
+audio tracks and with `mov_text` subtitles): the audio decodes without errors
+and the cues match the source, next to unit tests built from minimal in-test
+MP4 files.
+
 The player runs without a console window; messages are collected in a
 thread-safe log buffer and can be viewed in the in-app log console
 (`View -> Log` or `L`). CLI modes (`--info`, `--dump-yuv`, `--help`) keep
@@ -288,5 +311,6 @@ whole file for this purpose.
 
 The player sources are provided as-is. Third-party components keep their own
 licenses: kvzdec (3-clause BSD), SDL3 (zlib), Dear ImGui and ImPlot (MIT).
+
 
 
