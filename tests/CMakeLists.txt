@@ -30,6 +30,7 @@ target_link_libraries(player_tests PRIVATE
     player_audio_sdl
     player_demux
     player_decode
+    player_playback
     player_subtitle
     player_util
     GTest::gtest_main)

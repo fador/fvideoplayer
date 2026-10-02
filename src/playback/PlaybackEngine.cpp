@@ -14,6 +14,7 @@ namespace {
 // 'mp4a': AAC audio in MP4/Matroska/AVI containers. 'Opus': Opus audio.
 constexpr uint32_t kMp4aFourcc = 0x6D703461;
 constexpr uint32_t kOpusFourcc = 0x4F707573;
+constexpr uint32_t kMp3Fourcc = 0x6D703320;
 
 std::string containerName(const std::filesystem::path& path) {
     std::string ext = path.extension().string();
@@ -458,6 +459,16 @@ void PlaybackEngine::configureAudioDecoder(const demux::AudioTrackInfo& track) {
         rate = opus_decoder_.sampleRate();
         channels = opus_decoder_.channels();
         audio_frame_ms_ = 20;
+    } else if (track.codec_fourcc == kMp3Fourcc) {
+        if (!mp3_decoder_.configure(track.extradata.data(), track.extradata.size(), error)) {
+            log::addf(log::Level::Warning, "MP3 decoder rejected the track config: %s",
+                      error.c_str());
+            return;
+        }
+        audio_codec_ = AudioCodec::Mp3;
+        rate = track.sample_rate;
+        channels = track.channels;
+        audio_frame_ms_ = rate > 0 ? static_cast<int>(1152ull * 1000 / rate) : 26;
     } else {
         log::addf(log::Level::Warning, "No audio decoder for codec '%s'", track.codec.c_str());
         return;
@@ -477,6 +488,8 @@ const char* PlaybackEngine::audioCodecName() const {
             return "AAC";
         case AudioCodec::Opus:
             return "Opus";
+        case AudioCodec::Mp3:
+            return "MP3";
         case AudioCodec::None:
             break;
     }
@@ -503,6 +516,13 @@ void PlaybackEngine::decodeAudioSample(const demux::Sample& sample) {
             unsupported = status == audio::opus::Status::Unsupported;
             break;
         }
+        case AudioCodec::Mp3: {
+            const audio::mp3::Status status =
+                mp3_decoder_.decode(sample.data.data(), sample.data.size(), audio_pcm_, error);
+            ok = status == audio::mp3::Status::Ok;
+            unsupported = status == audio::mp3::Status::Unsupported;
+            break;
+        }
         case AudioCodec::None:
             return;
     }
@@ -516,11 +536,13 @@ void PlaybackEngine::decodeAudioSample(const demux::Sample& sample) {
 void PlaybackEngine::flushAudioDecoder() {
     aac_decoder_.flush();
     opus_decoder_.flush();
+    mp3_decoder_.flush();
 }
 
 void PlaybackEngine::resetAudioDecoder() {
     aac_decoder_.reset();
     opus_decoder_.reset();
+    mp3_decoder_.reset();
     audio_codec_ = AudioCodec::None;
 }
 

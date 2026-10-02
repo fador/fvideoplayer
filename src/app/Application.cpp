@@ -416,7 +416,11 @@ void Application::drawVideoArea() {
     } else {
         const char* message = "No file open";
         if (engine_.hasFile()) {
-            message = engine_.buffering() ? "Buffering..." : "No frame";
+            if (engine_.videoInfo().codec == player::demux::Codec::Unknown) {
+                message = "Audio only";
+            } else {
+                message = engine_.buffering() ? "Buffering..." : "No frame";
+            }
         }
         const ImVec2 text_size = ImGui::CalcTextSize(message);
         ImGui::SetCursorScreenPos(ImVec2(cursor.x + (video_size.x - text_size.x) * 0.5f,
