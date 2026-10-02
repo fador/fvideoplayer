@@ -321,7 +321,8 @@ carry meaning:
 - The style table and the script resolution are read from the file or from the
   Matroska CodecPrivate, so each line gets its font size, its three colours and
   its alignment. The `\an` and `\pos` overrides place a line in script
-  coordinates, which is what typeset karaoke relies on.
+  coordinates, which is what typeset karaoke relies on. A line without `\pos`
+  sits inside its margins at the edge its alignment names.
 - Karaoke runs (`\k`, `\K`, `\kf`, `\ko`) become timed syllables. A run is
   drawn in the style's secondary colour until it is sung and in the primary
   colour after, so the highlight follows the music.
@@ -330,7 +331,8 @@ carry meaning:
   same spot.
 - Comment lines are skipped, since Aegisub keeps its karaoke templates there.
 - A CJK font is loaded from the system (Yu Gothic, MS Gothic, Meiryo or
-  YaHei) because the built-in font has no Japanese glyphs.
+  YaHei) because the built-in font has no Japanese glyphs. It is used for
+  subtitles only, so the interface keeps its normal size.
 
 Not implemented: the `\t`, `\fade`, `\blur` and `\move` animations are ignored,
 so lines pop in and out instead of fading and the beat flash does not scale.

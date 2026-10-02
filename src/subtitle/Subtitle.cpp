@@ -190,6 +190,9 @@ int findField(const std::vector<std::string>& names, const char* wanted);
 
 struct AssStyle {
     float font_size = 0.0f;
+    float margin_l = 0.0f;
+    float margin_r = 0.0f;
+    float margin_v = 0.0f;
     uint32_t primary = 0xFFFFFF;
     uint32_t secondary = 0x999999;
     uint32_t outline = 0x000000;
@@ -263,6 +266,9 @@ void parseAssHeader(const std::string& data, AssStyles& styles, int& play_res_x,
         }
         AssStyle style;
         style.font_size = static_cast<float>(std::atof(field("Fontsize", 2).c_str()));
+        style.margin_l = static_cast<float>(std::atof(field("MarginL", 19).c_str()));
+        style.margin_r = static_cast<float>(std::atof(field("MarginR", 20).c_str()));
+        style.margin_v = static_cast<float>(std::atof(field("MarginV", 21).c_str()));
         style.primary = assColor(field("PrimaryColour", 3), style.primary);
         style.secondary = assColor(field("SecondaryColour", 4), style.secondary);
         style.outline = assColor(field("OutlineColour", 5), style.outline);
@@ -338,6 +344,9 @@ void applyAssLine(const std::string& style_name, const std::string& raw, const A
     const auto style = styles.find(style_name);
     if (style != styles.end()) {
         cue.font_size = style->second.font_size;
+        cue.margin_l = style->second.margin_l;
+        cue.margin_r = style->second.margin_r;
+        cue.margin_v = style->second.margin_v;
         cue.primary_color = style->second.primary;
         cue.secondary_color = style->second.secondary;
         cue.outline_color = style->second.outline;
@@ -399,6 +408,9 @@ struct AssFormat {
     int end = -1;
     int text = -1;
     int style = -1;
+    int margin_l = -1;
+    int margin_r = -1;
+    int margin_v = -1;
 };
 
 AssFormat parseAssFormat(const std::string& line) {
@@ -408,7 +420,34 @@ AssFormat parseAssFormat(const std::string& line) {
     format.end = findField(names, "End");
     format.text = findField(names, "Text");
     format.style = findField(names, "Style");
+    format.margin_l = findField(names, "MarginL");
+    format.margin_r = findField(names, "MarginR");
+    format.margin_v = findField(names, "MarginV");
     return format;
+}
+
+// Per event margins override the style's, but only when they are set: zero
+// means "use the style".
+float assFieldValue(const std::vector<std::string>& fields, int index) {
+    return index >= 0 && static_cast<size_t>(index) < fields.size()
+               ? static_cast<float>(std::atof(trim(fields[static_cast<size_t>(index)]).c_str()))
+               : 0.0f;
+}
+
+void applyAssEventMargins(const std::vector<std::string>& fields, int margin_l, int margin_r,
+                          int margin_v, Cue& cue) {
+    const float left = assFieldValue(fields, margin_l);
+    const float right = assFieldValue(fields, margin_r);
+    const float vertical = assFieldValue(fields, margin_v);
+    if (left > 0.0f) {
+        cue.margin_l = left;
+    }
+    if (right > 0.0f) {
+        cue.margin_r = right;
+    }
+    if (vertical > 0.0f) {
+        cue.margin_v = vertical;
+    }
 }
 
 bool decodeUtf16(const std::string& data, bool little_endian, std::string& out) {
@@ -639,6 +678,8 @@ bool parseAss(const std::string& data, std::vector<Cue>& out, std::string* error
                         ? trim(fields[static_cast<size_t>(events_format.style)])
                         : std::string();
                 applyAssLine(style_name, fields[static_cast<size_t>(text_index)], styles, cue);
+                applyAssEventMargins(fields, events_format.margin_l, events_format.margin_r,
+                                     events_format.margin_v, cue);
                 if (!cue.text.empty()) {
                     out.push_back(std::move(cue));
                 }
@@ -820,6 +861,7 @@ bool parseEmbeddedTrack(const std::string& codec, const std::string& codec_priva
             cue.start = block.pts_ms / 1000.0;
             cue.end = block.duration_ms > 0 ? (block.pts_ms + block.duration_ms) / 1000.0 : 0.0;
             applyAssLine(trim(fields[2]), fields[8], styles, cue);
+            applyAssEventMargins(fields, 4, 5, 6, cue);
             if (!cue.text.empty()) {
                 out.push_back(std::move(cue));
             }

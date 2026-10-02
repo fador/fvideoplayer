@@ -131,6 +131,9 @@ bool Application::init(const std::string& title) {
     io.IniFilename = nullptr;
     ImGui::StyleColorsDark();
 
+    // The first font added becomes the UI font, so add the built-in one first
+    // and keep the CJK font for subtitles only.
+    io.FontDefault = io.Fonts->AddFontDefault();
     // Subtitles are often CJK, which the built-in font cannot draw. ImGui
     // loads glyphs on demand, so any font with the coverage works; take the
     // first one the system has.
@@ -1020,7 +1023,8 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
         }
 
         // Anchor the block. Positioned lines use their own coordinates with the
-        // alignment from \an; the rest sit at the bottom of the frame.
+        // alignment from \an; the rest sit inside their margins at the edge the
+        // alignment names, which is how ASS places a line without \pos.
         float block_width = 0.0f;
         for (const std::vector<Run>& line : wrapped) {
             float width = 0.0f;
@@ -1030,12 +1034,21 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
             block_width = std::max(block_width, width);
         }
         const int alignment = cue->alignment >= 1 && cue->alignment <= 9 ? cue->alignment : 2;
-        const float anchor_x =
-            cue->has_position ? video_pos.x + cue->pos_x * scale : video_pos.x + video_size.x * 0.5f;
+        const int horizontal = (alignment - 1) % 3;  // 0 left, 1 center, 2 right
+        const int vertical = (alignment - 1) / 3;    // 0 bottom, 1 middle, 2 top
+        const float height = line_height * static_cast<float>(wrapped.size());
+        float anchor_x = 0.0f;
+        if (cue->has_position) {
+            anchor_x = video_pos.x + cue->pos_x * scale;
+        } else if (horizontal == 0) {
+            anchor_x = video_pos.x + cue->margin_l * scale;
+        } else if (horizontal == 2) {
+            anchor_x = video_pos.x + video_size.x - cue->margin_r * scale;
+        } else {
+            anchor_x = video_pos.x + video_size.x * 0.5f;
+        }
         float y = 0.0f;
         if (cue->has_position) {
-            const float height = line_height * static_cast<float>(wrapped.size());
-            const int vertical = (alignment - 1) / 3;  // 0 bottom, 1 middle, 2 top
             if (vertical == 2) {
                 y = video_pos.y + cue->pos_y * scale;
             } else if (vertical == 1) {
@@ -1044,9 +1057,14 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
                 y = video_pos.y + cue->pos_y * scale - height;
             }
         } else {
-            const float bottom_margin = video_size.y * 0.04f;
-            y = video_pos.y + video_size.y - bottom_margin -
-                line_height * static_cast<float>(wrapped.size());
+            const float margin = (cue->margin_v > 0.0f ? cue->margin_v : 30.0f) * scale;
+            if (vertical == 2) {
+                y = video_pos.y + margin;
+            } else if (vertical == 1) {
+                y = video_pos.y + video_size.y * 0.5f - height * 0.5f;
+            } else {
+                y = video_pos.y + video_size.y - margin - height;
+            }
         }
 
         for (const std::vector<Run>& line : wrapped) {
@@ -1054,27 +1072,33 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
             for (const Run& run : line) {
                 width += font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str()).x;
             }
-            const int horizontal = (alignment - 1) % 3;  // 0 left, 1 center, 2 right
             float x = anchor_x;
             if (horizontal == 1) {
                 x -= width * 0.5f;
             } else if (horizontal == 2) {
                 x -= width;
             }
+            // Outline the whole line first: outlining run by run lets a run's
+            // outline eat into the glyphs of the one before it.
+            const ImU32 outline_color = IM_COL32((cue->outline_color >> 16) & 0xFF,
+                                                 (cue->outline_color >> 8) & 0xFF,
+                                                 cue->outline_color & 0xFF, 220);
+            float pen = x;
             for (const Run& run : line) {
                 const ImVec2 size = font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str());
-                const ImU32 outline_color = IM_COL32((cue->outline_color >> 16) & 0xFF,
-                                                     (cue->outline_color >> 8) & 0xFF,
-                                                     cue->outline_color & 0xFF, 220);
                 for (float dx = -outline; dx <= outline; dx += outline) {
                     for (float dy = -outline; dy <= outline; dy += outline) {
                         if (dx == 0.0f && dy == 0.0f) {
                             continue;
                         }
-                        draw_list->AddText(font, font_size, ImVec2(x + dx, y + dy),
+                        draw_list->AddText(font, font_size, ImVec2(pen + dx, y + dy),
                                            outline_color, run.text.c_str());
                     }
                 }
+                pen += size.x;
+            }
+            for (const Run& run : line) {
+                const ImVec2 size = font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str());
                 const ImU32 color = IM_COL32((run.color >> 16) & 0xFF, (run.color >> 8) & 0xFF,
                                              run.color & 0xFF, 255);
                 draw_list->AddText(font, font_size, ImVec2(x, y), color, run.text.c_str());

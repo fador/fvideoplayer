@@ -267,3 +267,36 @@ TEST(SubtitleLookup, FindsEveryOverlappingCue) {
     EXPECT_TRUE(player::subtitle::findCues(cues, 10.0).empty());
 }
 
+TEST(SubtitleAss, KeepsStyleMarginsAndAlignment) {
+    // A line without \pos is placed by its alignment and margins, so the
+    // renderer needs both.
+    const std::string data =
+        "[Script Info]\n"
+        "PlayResX: 1920\n"
+        "PlayResY: 1080\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+        "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
+        "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: Eng,SomeFont,45,&H00FFFFFF,&H40999999,&H00863C32,&H00863C32,-1,0,0,0,100,100,"
+        "0,0,1,2.5,0,1,64,48,24,1\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:01.00,0:00:02.00,Eng,,0,0,0,,Bottom left\n"
+        "Dialogue: 0,0:00:03.00,0:00:04.00,Eng,,10,0,0,,Margin override\n";
+
+    std::vector<Cue> cues;
+    std::string error;
+    ASSERT_TRUE(player::subtitle::parseAss(data, cues, &error)) << error;
+    ASSERT_EQ(cues.size(), 2u);
+    EXPECT_EQ(cues[0].alignment, 1);
+    EXPECT_FLOAT_EQ(cues[0].margin_l, 64.0f);
+    EXPECT_FLOAT_EQ(cues[0].margin_r, 48.0f);
+    EXPECT_FLOAT_EQ(cues[0].margin_v, 24.0f);
+    EXPECT_FALSE(cues[0].has_position);
+
+    // A non-zero event margin wins over the style's; zero keeps the style's.
+    EXPECT_FLOAT_EQ(cues[1].margin_l, 10.0f);
+    EXPECT_FLOAT_EQ(cues[1].margin_r, 48.0f);
+}
+

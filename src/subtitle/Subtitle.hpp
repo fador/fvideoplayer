@@ -26,6 +26,9 @@ struct Cue {
     float pos_y = 0.0f;
     int alignment = 2;                    // ASS \an numpad alignment
     float font_size = 0.0f;               // script units, 0 when unknown
+    float margin_l = 0.0f;                // script units, for unpositioned lines
+    float margin_r = 0.0f;
+    float margin_v = 0.0f;
     uint32_t primary_color = 0xFFFFFF;    // sung text
     uint32_t secondary_color = 0x999999;  // unsung text
     uint32_t outline_color = 0x000000;
