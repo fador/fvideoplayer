@@ -100,6 +100,8 @@ add_library(player_audio STATIC
     src/audio/aac/Huffman.cpp
     src/audio/aac/Mdct.cpp
     src/audio/aac/Window.cpp
+    src/audio/mp3/Mp3Decoder.cpp
+    src/audio/mp3/Mp3Tables.cpp
     src/audio/opus/CeltAlloc.cpp
     src/audio/opus/CeltEnergy.cpp
     src/audio/opus/CeltPvq.cpp
