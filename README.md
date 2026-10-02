@@ -313,6 +313,30 @@ audio decodes without errors, and PCM is reported as unsupported rather than
 mistaken for silence. Unit tests cover the track description, packet reading
 with and without `idx1`, and the seek behaviour.
 
+### Subtitle rendering
+
+ASS/SSA files are more than timed text, and the renderer follows the parts that
+carry meaning:
+
+- The style table and the script resolution are read from the file or from the
+  Matroska CodecPrivate, so each line gets its font size, its three colours and
+  its alignment. The `\an` and `\pos` overrides place a line in script
+  coordinates, which is what typeset karaoke relies on.
+- Karaoke runs (`\k`, `\K`, `\kf`, `\ko`) become timed syllables. A run is
+  drawn in the style's secondary colour until it is sung and in the primary
+  colour after, so the highlight follows the music.
+- Every line that is active is drawn, not just the newest one: karaoke
+  typesetting stacks a fade-in line, a beat flash and a fade-out line on the
+  same spot.
+- Comment lines are skipped, since Aegisub keeps its karaoke templates there.
+- A CJK font is loaded from the system (Yu Gothic, MS Gothic, Meiryo or
+  YaHei) because the built-in font has no Japanese glyphs.
+
+Not implemented: the `\t`, `\fade`, `\blur` and `\move` animations are ignored,
+so lines pop in and out instead of fading and the beat flash does not scale.
+Style font names are not honoured either; one CJK font covers the whole track.
+
+
 The player runs without a console window; messages are collected in a
 thread-safe log buffer and can be viewed in the in-app log console
 (`View -> Log` or `L`). CLI modes (`--info`, `--dump-yuv`, `--help`) keep
@@ -329,6 +353,7 @@ whole file for this purpose.
 
 The player sources are provided as-is. Third-party components keep their own
 licenses: kvzdec (3-clause BSD), SDL3 (zlib), Dear ImGui and ImPlot (MIT).
+
 
 
 

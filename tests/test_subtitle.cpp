@@ -171,3 +171,99 @@ TEST(SubtitleLookup, FillsMissingEndTimes) {
 }
 
 }  // namespace
+
+TEST(SubtitleAss, ParsesKaraokeStylesAndPosition) {
+    const std::string data =
+        "[Script Info]\n"
+        "PlayResX: 1280\n"
+        "PlayResY: 720\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+        "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
+        "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: Kara,SomeFont,48,&H00FFFFFF,&H0000FFFF,&H00123456,&H00000000,0,0,0,0,100,100,"
+        "0,0,1,2,0,2,10,10,10,1\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:01.00,0:00:05.00,Kara,,0,0,0,,"
+        "{\\pos(640,600)\\an5}{\\k50}ka{\\k30}ra{\\k20}o{\\k40}ke\n";
+
+    player::subtitle::Track track;
+    std::vector<Cue> cues;
+    std::string error;
+    ASSERT_TRUE(player::subtitle::parseAss(data, cues, &error, &track)) << error;
+    EXPECT_EQ(track.play_res_x, 1280);
+    EXPECT_EQ(track.play_res_y, 720);
+    ASSERT_EQ(cues.size(), 1u);
+
+    const Cue& cue = cues[0];
+    EXPECT_EQ(cue.text, "karaoke");
+    EXPECT_TRUE(cue.has_position);
+    EXPECT_FLOAT_EQ(cue.pos_x, 640.0f);
+    EXPECT_FLOAT_EQ(cue.pos_y, 600.0f);
+    EXPECT_EQ(cue.alignment, 5);  // \an5 overrides the style's 2
+    EXPECT_FLOAT_EQ(cue.font_size, 48.0f);
+    EXPECT_EQ(cue.primary_color, 0xFFFFFFu);
+    EXPECT_EQ(cue.secondary_color, 0xFFFF00u);  // &H0000FFFF is BGR
+    EXPECT_EQ(cue.outline_color, 0x563412u);
+
+    // The karaoke runs carry the timing of each syllable.
+    ASSERT_EQ(cue.karaoke.size(), 4u);
+    EXPECT_EQ(cue.karaoke[0].text, "ka");
+    EXPECT_DOUBLE_EQ(cue.karaoke[0].start, 0.0);
+    EXPECT_DOUBLE_EQ(cue.karaoke[0].end, 0.5);
+    EXPECT_EQ(cue.karaoke[1].text, "ra");
+    EXPECT_DOUBLE_EQ(cue.karaoke[1].start, 0.5);
+    EXPECT_DOUBLE_EQ(cue.karaoke[1].end, 0.8);
+    EXPECT_EQ(cue.karaoke[2].text, "o");
+    EXPECT_DOUBLE_EQ(cue.karaoke[3].start, 1.0);
+    EXPECT_DOUBLE_EQ(cue.karaoke[3].end, 1.4);
+}
+
+TEST(SubtitleAss, SkipsCommentLines) {
+    // Aegisub keeps its karaoke templates in Comment lines; they are disabled
+    // and must not show up as subtitles.
+    const std::string data =
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Comment: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\k50}hidden\n"
+        "Dialogue: 0,0:00:03.00,0:00:04.00,Default,,0,0,0,,shown\n";
+    std::vector<Cue> cues;
+    std::string error;
+    ASSERT_TRUE(player::subtitle::parseAss(data, cues, &error)) << error;
+    ASSERT_EQ(cues.size(), 1u);
+    EXPECT_EQ(cues[0].text, "shown");
+}
+
+TEST(SubtitleLookup, FindsEveryOverlappingCue) {
+    // Karaoke typesetting stacks several lines on top of each other, so the
+    // lookup has to return all of them, not just the newest.
+    std::vector<Cue> cues(3);
+    cues[0].start = 0.0;
+    cues[0].end = 10.0;
+    cues[0].text = "long";
+    cues[1].start = 1.0;
+    cues[1].end = 2.0;
+    cues[1].text = "short";
+    cues[2].start = 1.5;
+    cues[2].end = 3.0;
+    cues[2].text = "overlap";
+
+    std::vector<const Cue*> active = player::subtitle::findCues(cues, 1.6);
+    ASSERT_EQ(active.size(), 3u);
+    EXPECT_EQ(active[0]->text, "long");
+    EXPECT_EQ(active[1]->text, "short");
+    EXPECT_EQ(active[2]->text, "overlap");
+
+    active = player::subtitle::findCues(cues, 2.5);
+    ASSERT_EQ(active.size(), 2u);
+    EXPECT_EQ(active[0]->text, "long");
+    EXPECT_EQ(active[1]->text, "overlap");
+
+    active = player::subtitle::findCues(cues, 0.5);
+    ASSERT_EQ(active.size(), 1u);
+    EXPECT_EQ(active[0]->text, "long");
+
+    EXPECT_TRUE(player::subtitle::findCues(cues, 10.0).empty());
+}
+

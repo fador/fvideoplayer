@@ -72,6 +72,8 @@ private:
     SDL_GLContext gl_context_ = nullptr;
     bool imgui_ready_ = false;
     int frame_count_ = 0;
+    // Font with CJK coverage for subtitles; null falls back to the UI font.
+    ImFont* subtitle_font_ = nullptr;
 
     playback::PlaybackEngine engine_;
     audio::SdlAudioSink audio_sink_;

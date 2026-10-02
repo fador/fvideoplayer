@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <fstream>
 #include <sstream>
 
@@ -97,6 +98,30 @@ std::string stripAssText(const std::string& text) {
     return out;
 }
 
+// Converts the escapes that survive into plain text: \N and \n are line
+// breaks, \h is a hard space.
+std::string decodeAssEscapes(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '\\' && i + 1 < text.size()) {
+            const char next = text[i + 1];
+            if (next == 'N' || next == 'n') {
+                out += '\n';
+                ++i;
+                continue;
+            }
+            if (next == 'h') {
+                out += ' ';
+                ++i;
+                continue;
+            }
+        }
+        out += text[i];
+    }
+    return out;
+}
+
 std::string normalizeNewlines(std::string text) {
     replaceAll(text, "\r\n", "\n");
     replaceAll(text, "\r", "\n");
@@ -161,13 +186,204 @@ std::vector<std::string> splitLimited(const std::string& text, char separator, s
     return fields;
 }
 
-struct AssFormat {
-    int start = -1;
-    int end = -1;
-    int text = -1;
-    int name = -1;
-    int font_size = -1;
+int findField(const std::vector<std::string>& names, const char* wanted);
+
+struct AssStyle {
+    float font_size = 0.0f;
+    uint32_t primary = 0xFFFFFF;
+    uint32_t secondary = 0x999999;
+    uint32_t outline = 0x000000;
+    int alignment = 2;
 };
+
+using AssStyles = std::map<std::string, AssStyle>;
+
+// ASS colours are written as &HAABBGGRR; the renderer wants RGB.
+uint32_t assColor(const std::string& value, uint32_t fallback) {
+    const size_t start = value.find("&H");
+    if (start == std::string::npos) {
+        return fallback;
+    }
+    std::string digits;
+    for (size_t i = start + 2; i < value.size(); ++i) {
+        if (!std::isxdigit(static_cast<unsigned char>(value[i]))) {
+            break;
+        }
+        digits += value[i];
+    }
+    if (digits.empty()) {
+        return fallback;
+    }
+    const uint32_t bgr = static_cast<uint32_t>(std::strtoul(digits.c_str(), nullptr, 16)) & 0xFFFFFFu;
+    return ((bgr & 0xFFu) << 16) | (bgr & 0xFF00u) | ((bgr >> 16) & 0xFFu);
+}
+
+// Reads [Script Info] and the style table from an ASS header. Matroska keeps
+// this part in the track's CodecPrivate, so it is parsed on its own.
+void parseAssHeader(const std::string& data, AssStyles& styles, int& play_res_x, int& play_res_y) {
+    std::istringstream stream(normalizeNewlines(data));
+    std::string line;
+    bool in_styles = false;
+    std::vector<std::string> style_format;
+    while (std::getline(stream, line)) {
+        const std::string stripped = trim(line);
+        if (stripped.empty() || stripped[0] == ';') {
+            continue;
+        }
+        if (stripped[0] == '[') {
+            in_styles = startsWith(stripped, "[V4+ Styles]") || startsWith(stripped, "[V4 Styles]");
+            continue;
+        }
+        if (!in_styles) {
+            if (startsWith(stripped, "PlayResX:")) {
+                play_res_x = std::atoi(stripped.c_str() + 9);
+            } else if (startsWith(stripped, "PlayResY:")) {
+                play_res_y = std::atoi(stripped.c_str() + 9);
+            }
+            continue;
+        }
+        if (startsWith(stripped, "Format:")) {
+            style_format = splitLimited(stripped.substr(7), ',', 32);
+            continue;
+        }
+        if (!startsWith(stripped, "Style:")) {
+            continue;
+        }
+        const std::vector<std::string> fields = splitLimited(stripped.substr(6), ',', 32);
+        // The V4+ field order is the fallback when the file has no Format line.
+        const auto field = [&](const char* name, int fallback) {
+            const int index = style_format.empty() ? fallback : findField(style_format, name);
+            return index >= 0 && static_cast<size_t>(index) < fields.size()
+                       ? trim(fields[static_cast<size_t>(index)])
+                       : std::string();
+        };
+        const std::string name = field("Name", 0);
+        if (name.empty()) {
+            continue;
+        }
+        AssStyle style;
+        style.font_size = static_cast<float>(std::atof(field("Fontsize", 2).c_str()));
+        style.primary = assColor(field("PrimaryColour", 3), style.primary);
+        style.secondary = assColor(field("SecondaryColour", 4), style.secondary);
+        style.outline = assColor(field("OutlineColour", 5), style.outline);
+        const int alignment = std::atoi(field("Alignment", 18).c_str());
+        if (alignment >= 1 && alignment <= 9) {
+            style.alignment = alignment;
+        }
+        styles[name] = style;
+    }
+}
+
+// Applies the layout overrides of one override block: position, alignment,
+// font size and the three colours the renderer uses.
+void parseAssOverrides(const std::string& block, Cue& cue) {
+    const size_t pos = block.find("\\pos(");
+    if (pos != std::string::npos) {
+        float x = 0.0f;
+        float y = 0.0f;
+        if (std::sscanf(block.c_str() + pos + 5, "%f,%f", &x, &y) == 2) {
+            cue.has_position = true;
+            cue.pos_x = x;
+            cue.pos_y = y;
+        }
+    }
+    const size_t an = block.find("\\an");
+    if (an != std::string::npos) {
+        const int value = std::atoi(block.c_str() + an + 3);
+        if (value >= 1 && value <= 9) {
+            cue.alignment = value;
+        }
+    }
+    const size_t fs = block.find("\\fs");
+    if (fs != std::string::npos) {
+        const float value = static_cast<float>(std::atof(block.c_str() + fs + 3));
+        if (value > 0.0f) {
+            cue.font_size = value;
+        }
+    }
+    const auto color_override = [&block](const char* tag, uint32_t& target) {
+        const size_t at = block.find(tag);
+        if (at == std::string::npos) {
+            return;
+        }
+        const std::string value = block.substr(at + std::strlen(tag));
+        target = assColor(value, target);
+    };
+    color_override("\\1c", cue.primary_color);
+    color_override("\\2c", cue.secondary_color);
+    color_override("\\3c", cue.outline_color);
+}
+
+// The duration of a karaoke tag in centiseconds, or -1 when the block has none.
+// \k, \K, \kf and \ko all carry the timing of the run that follows.
+double parseAssKaraokeTag(const std::string& block) {
+    for (size_t i = 0; i + 1 < block.size(); ++i) {
+        if (block[i] != '\\' || (block[i + 1] != 'k' && block[i + 1] != 'K')) {
+            continue;
+        }
+        size_t length = 2;  // "\k" or "\K", the digits follow the tag
+        if (block[i + 1] == 'k' && i + 2 < block.size() &&
+            (block[i + 2] == 'f' || block[i + 2] == 'o')) {
+            length = 3;  // "\kf" and "\ko"
+        }
+        return std::atof(block.c_str() + i + length) / 100.0;
+    }
+    return -1.0;
+}
+
+// Turns one ASS event into a cue: the style provides the defaults, the override
+// blocks refine them and the karaoke tags split the text into timed runs.
+void applyAssLine(const std::string& style_name, const std::string& raw, const AssStyles& styles,
+                  Cue& cue) {
+    const auto style = styles.find(style_name);
+    if (style != styles.end()) {
+        cue.font_size = style->second.font_size;
+        cue.primary_color = style->second.primary;
+        cue.secondary_color = style->second.secondary;
+        cue.outline_color = style->second.outline;
+        cue.alignment = style->second.alignment;
+    }
+
+    std::string text;
+    double elapsed = 0.0;
+    double pending = -1.0;
+    size_t i = 0;
+    while (i < raw.size()) {
+        if (raw[i] == '{') {
+            const size_t close = raw.find('}', i);
+            if (close == std::string::npos) {
+                break;
+            }
+            const std::string block = raw.substr(i + 1, close - i - 1);
+            parseAssOverrides(block, cue);
+            const double duration = parseAssKaraokeTag(block);
+            if (duration >= 0.0) {
+                pending = duration;
+            }
+            i = close + 1;
+            continue;
+        }
+        size_t end = raw.find('{', i);
+        if (end == std::string::npos) {
+            end = raw.size();
+        }
+        const std::string run = decodeAssEscapes(raw.substr(i, end - i));
+        if (pending >= 0.0) {
+            KaraokeSyllable syllable;
+            syllable.text = run;
+            syllable.start = elapsed;
+            syllable.end = elapsed + pending;
+            elapsed += pending;
+            pending = -1.0;
+            cue.karaoke.push_back(std::move(syllable));
+        }
+        text += run;
+        i = end;
+    }
+    cue.text = trim(text);
+}
+
+
 
 int findField(const std::vector<std::string>& names, const char* wanted) {
     for (size_t i = 0; i < names.size(); ++i) {
@@ -178,14 +394,20 @@ int findField(const std::vector<std::string>& names, const char* wanted) {
     return -1;
 }
 
+struct AssFormat {
+    int start = -1;
+    int end = -1;
+    int text = -1;
+    int style = -1;
+};
+
 AssFormat parseAssFormat(const std::string& line) {
     AssFormat format;
     const std::vector<std::string> names = splitLimited(line, ',', 64);
     format.start = findField(names, "Start");
     format.end = findField(names, "End");
     format.text = findField(names, "Text");
-    format.name = findField(names, "Name");
-    format.font_size = findField(names, "Fontsize");
+    format.style = findField(names, "Style");
     return format;
 }
 
@@ -275,6 +497,29 @@ const Cue* findCue(const std::vector<Cue>& cues, double time) {
     return nullptr;
 }
 
+std::vector<const Cue*> findCues(const std::vector<Cue>& cues, double time) {
+    std::vector<const Cue*> active;
+    if (cues.empty()) {
+        return active;
+    }
+    // Cues are sorted by start time, so every candidate lies before the first
+    // one that starts later. Karaoke typesetting overlaps many short lines with
+    // long ones, so an ended cue does not mean the lines before it ended too:
+    // scan a generous window instead of stopping at the first gap.
+    const auto it = std::upper_bound(cues.begin(), cues.end(), time,
+                                     [](double value, const Cue& cue) { return value < cue.start; });
+    constexpr size_t kMaxLookback = 1024;
+    size_t looked = 0;
+    for (auto back = it; back != cues.begin() && looked < kMaxLookback; ++looked) {
+        --back;
+        if (back->start <= time && time < back->end) {
+            active.push_back(&*back);
+        }
+    }
+    std::reverse(active.begin(), active.end());
+    return active;
+}
+
 bool parseSrt(const std::string& data, std::vector<Cue>& out, std::string* error) {
     out.clear();
     std::istringstream stream(normalizeNewlines(data));
@@ -332,8 +577,17 @@ bool parseSrt(const std::string& data, std::vector<Cue>& out, std::string* error
     return true;
 }
 
-bool parseAss(const std::string& data, std::vector<Cue>& out, std::string* error) {
+bool parseAss(const std::string& data, std::vector<Cue>& out, std::string* error, Track* track) {
     out.clear();
+    AssStyles styles;
+    int play_res_x = 0;
+    int play_res_y = 0;
+    parseAssHeader(data, styles, play_res_x, play_res_y);
+    if (track) {
+        track->play_res_x = play_res_x;
+        track->play_res_y = play_res_y;
+    }
+
     std::istringstream stream(normalizeNewlines(data));
     std::string line;
     enum class Section { None, Info, Styles, Events } section = Section::None;
@@ -379,8 +633,12 @@ bool parseAss(const std::string& data, std::vector<Cue>& out, std::string* error
                     !parseAssTime(trim(fields[static_cast<size_t>(end_index)]), cue.end)) {
                     continue;
                 }
-                cue.text = stripAssText(fields[static_cast<size_t>(text_index)]);
-                cue.text = trim(cue.text);
+                const std::string style_name =
+                    events_format.style >= 0 &&
+                            static_cast<size_t>(events_format.style) < fields.size()
+                        ? trim(fields[static_cast<size_t>(events_format.style)])
+                        : std::string();
+                applyAssLine(style_name, fields[static_cast<size_t>(text_index)], styles, cue);
                 if (!cue.text.empty()) {
                     out.push_back(std::move(cue));
                 }
@@ -526,7 +784,7 @@ bool parseMicroDvd(const std::string& data, std::vector<Cue>& out, std::string* 
 
 bool parseEmbeddedTrack(const std::string& codec, const std::string& codec_private,
                         const std::vector<SubtitleBlock>& blocks, std::vector<Cue>& out,
-                        std::string* error) {
+                        std::string* error, Track* track) {
     out.clear();
     if (codec == "S_TEXT/UTF8") {
         for (const SubtitleBlock& block : blocks) {
@@ -540,7 +798,16 @@ bool parseEmbeddedTrack(const std::string& codec, const std::string& codec_priva
             }
         }
     } else if (codec == "S_TEXT/ASS" || codec == "S_TEXT/SSA") {
-        (void)codec_private;
+        // Matroska keeps the styles and the script resolution in CodecPrivate
+        // and the events in the blocks.
+        AssStyles styles;
+        int play_res_x = 0;
+        int play_res_y = 0;
+        parseAssHeader(codec_private, styles, play_res_x, play_res_y);
+        if (track) {
+            track->play_res_x = play_res_x;
+            track->play_res_y = play_res_y;
+        }
         for (const SubtitleBlock& block : blocks) {
             std::string payload = stripTrailingNulls(std::string(block.data.begin(), block.data.end()));
             // Matroska ASS events: ReadOrder,Layer,Style,Name,MarginL,MarginR,
@@ -552,7 +819,7 @@ bool parseEmbeddedTrack(const std::string& codec, const std::string& codec_priva
             Cue cue;
             cue.start = block.pts_ms / 1000.0;
             cue.end = block.duration_ms > 0 ? (block.pts_ms + block.duration_ms) / 1000.0 : 0.0;
-            cue.text = trim(stripAssText(fields[8]));
+            applyAssLine(trim(fields[2]), fields[8], styles, cue);
             if (!cue.text.empty()) {
                 out.push_back(std::move(cue));
             }
@@ -609,10 +876,10 @@ bool loadSubtitleFile(const std::filesystem::path& path, Track& out, std::string
     bool parsed = false;
     if (extension == ".ass") {
         out.codec = "ass";
-        parsed = parseAss(data, out.cues, error);
+        parsed = parseAss(data, out.cues, error, &out);
     } else if (extension == ".ssa") {
         out.codec = "ssa";
-        parsed = parseAss(data, out.cues, error);
+        parsed = parseAss(data, out.cues, error, &out);
     } else if (extension == ".vtt") {
         out.codec = "vtt";
         parsed = parseWebVtt(data, out.cues, error);
