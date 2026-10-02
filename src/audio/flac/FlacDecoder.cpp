@@ -33,13 +33,18 @@ public:
     // Counts the zero bits up to and including the next set bit.
     unsigned readUnary() {
         unsigned count = 0;
-        while (readBit() == 0) {
+        while (!overrun_ && readBit() == 0) {
             ++count;
         }
         return count;
     }
 
-    void skipBits(uint64_t count) { pos_ += static_cast<size_t>(count); }
+    void skipBits(uint64_t count) {
+        pos_ += static_cast<size_t>(count);
+        if (pos_ > size_ * 8) {
+            overrun_ = true;
+        }
+    }
     unsigned skipUnary() { return readUnary(); }
 
     size_t bytesConsumed() const { return (pos_ + 7) / 8; }
@@ -143,16 +148,24 @@ bool readFrameHeader(BitReader& bits, FrameHeader& header, uint32_t stream_rate,
         default: return false;  // reserved
     }
 
-    // The coded frame number is a variable-length UTF-8-like value.
-    unsigned value_bytes = 0;
-    while (true) {
-        const uint32_t byte = bits.readUint(8);
-        ++value_bytes;
-        if ((byte & 0x80) == 0) {
-            break;
+    // The coded frame or sample number is a variable-length UTF-8-like value
+    // whose length follows from the leading ones of the first byte. Looking for
+    // the first byte without the high bit set walks straight into the CRC byte
+    // as soon as the number needs two bytes, which starts at frame 128.
+    const uint32_t first = bits.readUint(8);
+    unsigned value_bytes = 1;
+    if ((first & 0x80) != 0) {
+        value_bytes = 0;
+        for (uint32_t mask = 0x80; (first & mask) != 0; mask >>= 1) {
+            ++value_bytes;
         }
-        if (value_bytes >= 7) {
-            return false;
+        if (value_bytes < 2 || value_bytes > 7) {
+            return false;  // 10xxxxxx is a continuation byte, 11111111 is invalid
+        }
+    }
+    for (unsigned i = 1; i < value_bytes; ++i) {
+        if ((bits.readUint(8) & 0xC0) != 0x80) {
+            return false;  // every following byte must be a continuation byte
         }
     }
 
@@ -476,11 +489,16 @@ std::vector<int32_t> interleave(const FrameHeader& header, const DecodedFrame& f
                 left = static_cast<int32_t>(static_cast<uint32_t>(right) + toPcm(a[i], shift0));
                 break;
             default: {  // mid / side
-                const uint32_t mid = static_cast<uint32_t>(a[i]) << frame.wasted[0];
-                const uint32_t side = static_cast<uint32_t>(b[i]) << frame.wasted[1];
-                const uint32_t mid_side = (mid << 1) | (side & 1);
-                left = toPcm(static_cast<int32_t>(mid_side + side), unused_bits);
-                right = toPcm(static_cast<int32_t>(mid_side - side), unused_bits);
+                // Rebuild the mid sample with the bit the shift dropped, then
+                // halve the sum with the side channel: mid' + side is twice the
+                // left sample, so the halving is part of the reconstruction and
+                // not of the move into the 32-bit domain. The intermediate is
+                // 33 bits wide for a 32-bit stream.
+                const int64_t mid = static_cast<int64_t>(a[i]) << frame.wasted[0];
+                const int64_t side = static_cast<int64_t>(b[i]) << frame.wasted[1];
+                const int64_t mid_side = (mid << 1) | (side & 1);
+                left = toPcm(static_cast<int32_t>((mid_side + side) >> 1), unused_bits);
+                right = toPcm(static_cast<int32_t>((mid_side - side) >> 1), unused_bits);
                 break;
             }
         }
@@ -625,3 +643,4 @@ sample_rate_ = header.sample_rate;
 }
 
 }  // namespace player::audio::flac
+

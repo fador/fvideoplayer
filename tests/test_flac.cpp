@@ -151,3 +151,54 @@ TEST(Flac, EnginePlaysAudioOnly) {
     std::filesystem::remove(path);
 }
 
+TEST(Flac, DecodesMultiByteCodedNumber) {
+    // The coded frame number is a UTF-8-like value whose length follows from
+    // its first byte. Scanning for the first byte without the high bit set
+    // walked into the CRC byte as soon as the number needed two bytes, which is
+    // every frame from number 128 on: the audio glitched ten seconds in and
+    // stayed broken.
+    const std::vector<std::vector<uint8_t>> numbers = {{0xC2, 0x80},          // 128
+                                                       {0xE0, 0xA0, 0x80}};   // 8192
+    for (const std::vector<uint8_t>& number : numbers) {
+        // Header: block size 192, 44.1 kHz, independent stereo, 16-bit.
+        std::vector<uint8_t> frame = {0xFF, 0xF8, 0x19, 0x18};
+        frame.insert(frame.end(), number.begin(), number.end());
+        frame.push_back(0x00);                          // header CRC, not checked
+        frame.insert(frame.end(), {0x00, 0x12, 0x34});  // constant subframe, ch 0
+        frame.insert(frame.end(), {0x00, 0xFE, 0xDC});  // constant subframe, ch 1
+
+        player::audio::flac::Decoder decoder;
+        std::string error;
+        ASSERT_TRUE(decoder.configure(nullptr, 0, error)) << error;
+        player::audio::PcmBuffer pcm;
+        ASSERT_EQ(decoder.decode(frame.data(), frame.size(), pcm, error),
+                  player::audio::flac::Status::Ok)
+            << error;
+        ASSERT_EQ(pcm.samples.size(), 192u * 2);
+        EXPECT_FLOAT_EQ(pcm.samples[0], 4660.0f / 32768.0f);
+        EXPECT_FLOAT_EQ(pcm.samples[1], -292.0f / 32768.0f);
+    }
+}
+
+TEST(Flac, ReconstructsMidSideSamples) {
+    // mid' + side is twice the left sample, so halving the sum is part of the
+    // mid/side reconstruction and not of the move into the 32-bit domain.
+    // Missing that shift made every mid/side stream play twice as loud.
+    // mid = (100 + 36) / 2 = 68 and side = 100 - 36 = 64 give left 100 and
+    // right 36.
+    std::vector<uint8_t> frame = {0xFF, 0xF8, 0x19, 0xA8, 0x00, 0x00};
+    frame.insert(frame.end(), {0x00, 0x00, 0x44});        // mid subframe: 68
+    frame.insert(frame.end(), {0x00, 0x00, 0x20, 0x00});  // side subframe: 64, 17-bit
+
+    player::audio::flac::Decoder decoder;
+    std::string error;
+    ASSERT_TRUE(decoder.configure(nullptr, 0, error)) << error;
+    player::audio::PcmBuffer pcm;
+    ASSERT_EQ(decoder.decode(frame.data(), frame.size(), pcm, error),
+              player::audio::flac::Status::Ok)
+        << error;
+    ASSERT_EQ(pcm.samples.size(), 192u * 2);
+    EXPECT_FLOAT_EQ(pcm.samples[0], 100.0f / 32768.0f);
+    EXPECT_FLOAT_EQ(pcm.samples[1], 36.0f / 32768.0f);
+}
+
