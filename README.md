@@ -326,6 +326,11 @@ carry meaning:
 - Karaoke runs (`\k`, `\K`, `\kf`, `\ko`) become timed syllables. A run is
   drawn in the style's secondary colour until it is sung and in the primary
   colour after, so the highlight follows the music.
+- The animation tags are evaluated per frame: `\t` transitions interpolate
+  size, scale, colours and alphas between two times, `\fad` and `\fade` ramp
+  the opacity, `\move` slides the line, and `\alpha`/`\1a`-`\4a` set
+  transparency. `\bord` and `\shad` size the outline and the drop shadow, and
+  `\blur` is drawn as a soft halo, since a text draw list cannot blur.
 - Every line that is active is drawn, not just the newest one: karaoke
   typesetting stacks a fade-in line, a beat flash and a fade-out line on the
   same spot.
@@ -338,8 +343,10 @@ carry meaning:
   syllables are positioned for the metrics of that font, and a wider
   substitute makes them collide. Anything missing falls back to the CJK face.
 
-Not implemented: the `\t`, `\fade`, `\blur` and `\move` animations are ignored,
-so lines pop in and out instead of fading and the beat flash does not scale.
+Not implemented: `\clip`, `\iclip`, `\org` and vector drawing (`\p`), and the
+bold, italic, underline and strikeout flags are ignored because the renderer
+draws with plain glyphs. A non-uniform `\fscx`/`\fscy` pair is approximated by
+the vertical factor, since the text draw list can only scale uniformly.
 
 
 

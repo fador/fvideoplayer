@@ -15,26 +15,116 @@ struct KaraokeSyllable {
     double end = 0.0;
 };
 
+// Animatable ASS override state. Sizes are in script units and alphas run from
+// 0 (opaque) to 255 (transparent), the way the format stores them.
+struct AssState {
+    float font_size = 0.0f;  // 0 keeps the style's size
+    float scale_x = 100.0f;
+    float scale_y = 100.0f;
+    float border = 0.0f;  // outline width
+    float shadow = 0.0f;
+    float blur = 0.0f;
+    int alpha1 = 0;  // text
+    int alpha2 = 0;  // karaoke
+    int alpha3 = 0;  // outline
+    int alpha4 = 0;  // shadow
+    uint32_t primary = 0xFFFFFF;
+    uint32_t secondary = 0x999999;
+    uint32_t outline = 0x000000;
+    uint32_t back = 0x000000;
+};
+
+// Which fields a transition changes.
+enum AssField : uint32_t {
+    kAssFontSize = 1u << 0,
+    kAssScaleX = 1u << 1,
+    kAssScaleY = 1u << 2,
+    kAssBorder = 1u << 3,
+    kAssShadow = 1u << 4,
+    kAssBlur = 1u << 5,
+    kAssAlpha1 = 1u << 6,
+    kAssAlpha2 = 1u << 7,
+    kAssAlpha3 = 1u << 8,
+    kAssAlpha4 = 1u << 9,
+    kAssPrimary = 1u << 10,
+    kAssSecondary = 1u << 11,
+    kAssOutline = 1u << 12,
+    kAssBack = 1u << 13,
+};
+
+// One \t block: the masked fields move from their current value to the target
+// over [t1, t2], both in seconds from the cue start.
+struct AssTransition {
+    double t1 = 0.0;
+    double t2 = 0.0;
+    uint32_t mask = 0;
+    AssState target;
+};
+
+// \fad(a,b) and \fade(...) resolved to four alpha stops. Alphas are 0
+// (opaque) to 255 (transparent), times are seconds from the cue start.
+struct AssFade {
+    bool present = false;
+    int a1 = 0;
+    int a2 = 0;
+    int a3 = 0;
+    int a4 = 0;
+    double t1 = 0.0;
+    double t2 = 0.0;
+    double t3 = 0.0;
+    double t4 = 0.0;
+};
+
+// The evaluated state of a cue at one instant, which is all the renderer needs.
+struct AssRenderState {
+    float font_size = 0.0f;
+    float scale_x = 100.0f;
+    float scale_y = 100.0f;
+    float border = 0.0f;
+    float shadow = 0.0f;
+    float blur = 0.0f;
+    float text_opacity = 1.0f;     // 0..1, fades included
+    float outline_opacity = 1.0f;
+    float shadow_opacity = 1.0f;
+    uint32_t primary = 0xFFFFFF;
+    uint32_t secondary = 0x999999;
+    uint32_t outline = 0x000000;
+    uint32_t back = 0x000000;
+    float pos_x = 0.0f;
+    float pos_y = 0.0f;
+    bool has_position = false;
+    int alignment = 2;
+};
+
 struct Cue {
     double start = 0.0;  // seconds
     double end = 0.0;    // seconds
     std::string text;    // plain text, '\n' between lines
-    // ASS layout and karaoke data. Positions and sizes are in script
+    // ASS layout and animation data. Positions and sizes are in script
     // coordinates and are scaled with Track::play_res_x/play_res_y.
     bool has_position = false;
     float pos_x = 0.0f;
     float pos_y = 0.0f;
-    int alignment = 2;                    // ASS \an numpad alignment
-    float font_size = 0.0f;               // script units, 0 when unknown
-    std::string font_name;                // style font family, empty when unknown
-    float margin_l = 0.0f;                // script units, for unpositioned lines
+    int alignment = 2;      // ASS \an numpad alignment
+    std::string font_name;  // style font family, empty when unknown
+    float margin_l = 0.0f;  // script units, for unpositioned lines
     float margin_r = 0.0f;
     float margin_v = 0.0f;
-    uint32_t primary_color = 0xFFFFFF;    // sung text
-    uint32_t secondary_color = 0x999999;  // unsung text
-    uint32_t outline_color = 0x000000;
     std::vector<KaraokeSyllable> karaoke;
+    AssState state;                    // style plus the static overrides
+    std::vector<AssTransition> transitions;
+    AssFade fade;
+    bool has_move = false;
+    float move_x1 = 0.0f;
+    float move_y1 = 0.0f;
+    float move_x2 = 0.0f;
+    float move_y2 = 0.0f;
+    double move_t1 = 0.0;
+    double move_t2 = 0.0;
 };
+
+// Applies the transitions and fades of a cue at the given time.
+AssRenderState evaluateAssCue(const Cue& cue, double time);
 
 // A raw subtitle payload as stored in a container.
 struct SubtitleBlock {

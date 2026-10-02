@@ -202,10 +202,10 @@ TEST(SubtitleAss, ParsesKaraokeStylesAndPosition) {
     EXPECT_FLOAT_EQ(cue.pos_x, 640.0f);
     EXPECT_FLOAT_EQ(cue.pos_y, 600.0f);
     EXPECT_EQ(cue.alignment, 5);  // \an5 overrides the style's 2
-    EXPECT_FLOAT_EQ(cue.font_size, 48.0f);
-    EXPECT_EQ(cue.primary_color, 0xFFFFFFu);
-    EXPECT_EQ(cue.secondary_color, 0xFFFF00u);  // &H0000FFFF is BGR
-    EXPECT_EQ(cue.outline_color, 0x563412u);
+    EXPECT_FLOAT_EQ(cue.state.font_size, 48.0f);
+    EXPECT_EQ(cue.state.primary, 0xFFFFFFu);
+    EXPECT_EQ(cue.state.secondary, 0xFFFF00u);  // &H0000FFFF is BGR
+    EXPECT_EQ(cue.state.outline, 0x563412u);
 
     // The karaoke runs carry the timing of each syllable.
     ASSERT_EQ(cue.karaoke.size(), 4u);
@@ -298,5 +298,83 @@ TEST(SubtitleAss, KeepsStyleMarginsAndAlignment) {
     // A non-zero event margin wins over the style's; zero keeps the style's.
     EXPECT_FLOAT_EQ(cues[1].margin_l, 10.0f);
     EXPECT_FLOAT_EQ(cues[1].margin_r, 48.0f);
+}
+
+TEST(SubtitleAss, EvaluatesTransitionsAndFades) {
+    // The pattern the karaoke track uses: the outline flashes white for 100 ms
+    // and settles back, while the glyphs pop to 120% and shrink again. The line
+    // also fades in over 500 ms.
+    const std::string data =
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+        "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
+        "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: Kara,SomeFont,45,&H00FFFFFF,&H40999999,&H00863C32,&H00000000,0,0,0,0,100,100,"
+        "0,0,1,2.5,0,5,64,64,32,1\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:10.00,0:00:12.00,Kara,,0,0,0,,"
+        "{\\fad(500,0)\\blur3\\t(0,100,\\fscx120\\fscy120\\3c&HFFFFFF&)"
+        "\\t(100,300,\\fscx100\\fscy100\\3c&H00863C32&)}ka\n";
+
+    std::vector<Cue> cues;
+    std::string error;
+    ASSERT_TRUE(player::subtitle::parseAss(data, cues, &error)) << error;
+    ASSERT_EQ(cues.size(), 1u);
+    const Cue& cue = cues[0];
+    EXPECT_TRUE(cue.fade.present);
+    ASSERT_EQ(cue.transitions.size(), 2u);
+    EXPECT_FLOAT_EQ(cue.state.border, 2.5f);
+    EXPECT_FLOAT_EQ(cue.state.blur, 3.0f);
+
+    // 100 ms in: the first transition just finished, so the outline is white
+    // and the glyphs are at 120%; the fade is a fifth of the way through.
+    const player::subtitle::AssRenderState peak = player::subtitle::evaluateAssCue(cue, 10.1);
+    EXPECT_NEAR(peak.scale_x, 120.0f, 0.01f);
+    EXPECT_EQ(peak.outline, 0xFFFFFFu);
+    EXPECT_NEAR(peak.text_opacity, 0.2f, 0.01f);
+
+    // 250 ms in: the second transition is three quarters of the way back.
+    const player::subtitle::AssRenderState middle =
+        player::subtitle::evaluateAssCue(cue, 10.25);
+    EXPECT_NEAR(middle.scale_x, 105.0f, 0.01f);
+    EXPECT_NEAR(middle.text_opacity, 0.5f, 0.01f);
+    EXPECT_GT(middle.outline, 0x323C86u);
+    EXPECT_LT(middle.outline, 0xFFFFFFu);
+
+    // 600 ms in: transitions are done and the fade has finished.
+    const player::subtitle::AssRenderState late = player::subtitle::evaluateAssCue(cue, 10.6);
+    EXPECT_FLOAT_EQ(late.text_opacity, 1.0f);
+    EXPECT_FLOAT_EQ(late.scale_x, 100.0f);
+    EXPECT_EQ(late.outline, 0x323C86u);
+    EXPECT_FLOAT_EQ(late.outline_opacity, 1.0f);
+}
+
+TEST(SubtitleAss, MovesPositionAndFadesOut) {
+    const std::string data =
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,"
+        "{\\move(100,200,300,400,0,1000)\\fad(0,500)}text\n";
+
+    std::vector<Cue> cues;
+    ASSERT_TRUE(player::subtitle::parseAss(data, cues, nullptr));
+    ASSERT_EQ(cues.size(), 1u);
+    const Cue& cue = cues[0];
+    EXPECT_TRUE(cue.has_move);
+
+    const player::subtitle::AssRenderState start = player::subtitle::evaluateAssCue(cue, 1.0);
+    EXPECT_FLOAT_EQ(start.pos_x, 100.0f);
+    EXPECT_FLOAT_EQ(start.pos_y, 200.0f);
+
+    const player::subtitle::AssRenderState middle = player::subtitle::evaluateAssCue(cue, 1.5);
+    EXPECT_FLOAT_EQ(middle.pos_x, 200.0f);
+    EXPECT_FLOAT_EQ(middle.pos_y, 300.0f);
+
+    const player::subtitle::AssRenderState end = player::subtitle::evaluateAssCue(cue, 2.9);
+    EXPECT_FLOAT_EQ(end.pos_x, 300.0f);
+    EXPECT_FLOAT_EQ(end.pos_y, 400.0f);
+    // \fad(0,500) fades out over the last half second.
+    EXPECT_NEAR(end.text_opacity, 0.2f, 0.01f);
 }
 

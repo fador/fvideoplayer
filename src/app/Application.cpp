@@ -1009,7 +1009,6 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
     const float scale = track.play_res_y > 0 ? video_size.y / static_cast<float>(track.play_res_y)
                                              : video_size.y / 1080.0f;
     const float max_width = video_size.x * 0.94f;
-    const float outline = 2.0f;
 
     // One run of text with the colour it is drawn in.
     struct Run {
@@ -1020,13 +1019,20 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
     draw_list->PushClipRect(video_pos, ImVec2(video_pos.x + video_size.x,
                                               video_pos.y + video_size.y), true);
     for (const subtitle::Cue* cue : active) {
+        const subtitle::AssRenderState rs = subtitle::evaluateAssCue(*cue, now);
         ImFont* cue_font = subtitleFont(cue->font_name);
         if (!cue_font) {
             cue_font = font;
         }
-        const float font_size =
-            std::clamp((cue->font_size > 0.0f ? cue->font_size : 42.0f) * scale, 10.0f, 96.0f);
+        // \fscx and \fscy stretch the glyphs; the draw list can only scale the
+        // text uniformly, so the vertical factor picks the size.
+        const float font_size = std::clamp(
+            (rs.font_size > 0.0f ? rs.font_size : 42.0f) * scale * rs.scale_y / 100.0f, 8.0f,
+            128.0f);
         const float line_height = font_size * 1.2f;
+        const float outline = std::max(rs.border * scale, 0.0f);
+        const float blur = std::max(rs.blur * scale, 0.0f);
+        const float shadow = rs.shadow * scale;
 
         // Build the lines, colouring karaoke runs by whether they are sung yet.
         std::vector<std::vector<Run>> lines(1);
@@ -1049,10 +1055,10 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
         if (!cue->karaoke.empty()) {
             for (const subtitle::KaraokeSyllable& syllable : cue->karaoke) {
                 const bool sung = now >= cue->start + syllable.start;
-                append(syllable.text, sung ? cue->primary_color : cue->secondary_color);
+                append(syllable.text, sung ? rs.primary : rs.secondary);
             }
         } else {
-            append(cue->text, cue->primary_color);
+            append(cue->text, rs.primary);
         }
 
         // Wrap each line on spaces, keeping the run colours.
@@ -1103,13 +1109,13 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
             }
             block_width = std::max(block_width, width);
         }
-        const int alignment = cue->alignment >= 1 && cue->alignment <= 9 ? cue->alignment : 2;
+        const int alignment = rs.alignment >= 1 && rs.alignment <= 9 ? rs.alignment : 2;
         const int horizontal = (alignment - 1) % 3;  // 0 left, 1 center, 2 right
         const int vertical = (alignment - 1) / 3;    // 0 bottom, 1 middle, 2 top
         const float height = line_height * static_cast<float>(wrapped.size());
         float anchor_x = 0.0f;
-        if (cue->has_position) {
-            anchor_x = video_pos.x + cue->pos_x * scale;
+        if (rs.has_position) {
+            anchor_x = video_pos.x + rs.pos_x * scale;
         } else if (horizontal == 0) {
             anchor_x = video_pos.x + cue->margin_l * scale;
         } else if (horizontal == 2) {
@@ -1118,13 +1124,13 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
             anchor_x = video_pos.x + video_size.x * 0.5f;
         }
         float y = 0.0f;
-        if (cue->has_position) {
+        if (rs.has_position) {
             if (vertical == 2) {
-                y = video_pos.y + cue->pos_y * scale;
+                y = video_pos.y + rs.pos_y * scale;
             } else if (vertical == 1) {
-                y = video_pos.y + cue->pos_y * scale - height * 0.5f;
+                y = video_pos.y + rs.pos_y * scale - height * 0.5f;
             } else {
-                y = video_pos.y + cue->pos_y * scale - height;
+                y = video_pos.y + rs.pos_y * scale - height;
             }
         } else {
             const float margin = (cue->margin_v > 0.0f ? cue->margin_v : 30.0f) * scale;
@@ -1136,6 +1142,22 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
                 y = video_pos.y + video_size.y - margin - height;
             }
         }
+
+        const auto channel = [](uint32_t color, int shift) {
+            return static_cast<int>((color >> shift) & 0xFF);
+        };
+        const ImU32 outline_color =
+            IM_COL32(channel(rs.outline, 16), channel(rs.outline, 8), channel(rs.outline, 0),
+                     static_cast<int>(std::clamp(rs.outline_opacity, 0.0f, 1.0f) * 255.0f));
+        // A blur cannot be drawn with a text draw list; spread a few faint
+        // outline passes instead so the glow softens rather than hardens.
+        const float soft_radius = outline + blur;
+        const ImU32 soft_color =
+            IM_COL32(channel(rs.outline, 16), channel(rs.outline, 8), channel(rs.outline, 0),
+                     static_cast<int>(std::clamp(rs.outline_opacity, 0.0f, 1.0f) * 90.0f));
+        const ImU32 shadow_color =
+            IM_COL32(channel(rs.back, 16), channel(rs.back, 8), channel(rs.back, 0),
+                     static_cast<int>(std::clamp(rs.shadow_opacity, 0.0f, 1.0f) * 160.0f));
 
         for (const std::vector<Run>& line : wrapped) {
             float width = 0.0f;
@@ -1150,27 +1172,57 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
             }
             // Outline the whole line first: outlining run by run lets a run's
             // outline eat into the glyphs of the one before it.
-            const ImU32 outline_color = IM_COL32((cue->outline_color >> 16) & 0xFF,
-                                                 (cue->outline_color >> 8) & 0xFF,
-                                                 cue->outline_color & 0xFF, 220);
-            float pen = x;
-            for (const Run& run : line) {
-                const ImVec2 size = cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str());
-                for (float dx = -outline; dx <= outline; dx += outline) {
-                    for (float dy = -outline; dy <= outline; dy += outline) {
-                        if (dx == 0.0f && dy == 0.0f) {
-                            continue;
-                        }
-                        draw_list->AddText(cue_font, font_size, ImVec2(pen + dx, y + dy),
-                                           outline_color, run.text.c_str());
-                    }
+            if (shadow > 0.0f) {
+                float pen = x;
+                for (const Run& run : line) {
+                    const ImVec2 size =
+                        cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str());
+                    draw_list->AddText(cue_font, font_size, ImVec2(pen + shadow, y + shadow),
+                                       shadow_color, run.text.c_str());
+                    pen += size.x;
                 }
-                pen += size.x;
+            }
+            if (soft_radius > 0.0f) {
+                const float step = std::max(soft_radius / 2.0f, 1.0f);
+                float pen = x;
+                for (const Run& run : line) {
+                    const ImVec2 size =
+                        cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str());
+                    for (float dx = -soft_radius; dx <= soft_radius; dx += step) {
+                        for (float dy = -soft_radius; dy <= soft_radius; dy += step) {
+                            if (dx * dx + dy * dy > soft_radius * soft_radius) {
+                                continue;
+                            }
+                            draw_list->AddText(cue_font, font_size, ImVec2(pen + dx, y + dy),
+                                               soft_color, run.text.c_str());
+                        }
+                    }
+                    pen += size.x;
+                }
+            }
+            if (outline > 0.0f) {
+                float pen = x;
+                for (const Run& run : line) {
+                    const ImVec2 size =
+                        cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str());
+                    for (float dx = -outline; dx <= outline; dx += outline) {
+                        for (float dy = -outline; dy <= outline; dy += outline) {
+                            if (dx == 0.0f && dy == 0.0f) {
+                                continue;
+                            }
+                            draw_list->AddText(cue_font, font_size, ImVec2(pen + dx, y + dy),
+                                               outline_color, run.text.c_str());
+                        }
+                    }
+                    pen += size.x;
+                }
             }
             for (const Run& run : line) {
                 const ImVec2 size = cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str());
-                const ImU32 color = IM_COL32((run.color >> 16) & 0xFF, (run.color >> 8) & 0xFF,
-                                             run.color & 0xFF, 255);
+                const ImU32 color = IM_COL32(channel(run.color, 16), channel(run.color, 8),
+                                             channel(run.color, 0),
+                                             static_cast<int>(std::clamp(rs.text_opacity, 0.0f, 1.0f) *
+                                                              255.0f));
                 draw_list->AddText(cue_font, font_size, ImVec2(x, y), color, run.text.c_str());
                 x += size.x;
             }

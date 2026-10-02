@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
 #include <fstream>
+#include <functional>
 #include <sstream>
 
 namespace player::subtitle {
@@ -191,12 +193,15 @@ int findField(const std::vector<std::string>& names, const char* wanted);
 struct AssStyle {
     std::string font_name;
     float font_size = 0.0f;
+    float border = 0.0f;
+    float shadow = 0.0f;
     float margin_l = 0.0f;
     float margin_r = 0.0f;
     float margin_v = 0.0f;
     uint32_t primary = 0xFFFFFF;
     uint32_t secondary = 0x999999;
     uint32_t outline = 0x000000;
+    uint32_t back = 0x000000;
     int alignment = 2;
 };
 
@@ -268,12 +273,15 @@ void parseAssHeader(const std::string& data, AssStyles& styles, int& play_res_x,
         AssStyle style;
         style.font_name = field("Fontname", 1);
         style.font_size = static_cast<float>(std::atof(field("Fontsize", 2).c_str()));
-        style.margin_l = static_cast<float>(std::atof(field("MarginL", 19).c_str()));
-        style.margin_r = static_cast<float>(std::atof(field("MarginR", 20).c_str()));
-        style.margin_v = static_cast<float>(std::atof(field("MarginV", 21).c_str()));
         style.primary = assColor(field("PrimaryColour", 3), style.primary);
         style.secondary = assColor(field("SecondaryColour", 4), style.secondary);
         style.outline = assColor(field("OutlineColour", 5), style.outline);
+        style.back = assColor(field("BackColour", 6), style.back);
+        style.border = static_cast<float>(std::atof(field("Outline", 16).c_str()));
+        style.shadow = static_cast<float>(std::atof(field("Shadow", 17).c_str()));
+        style.margin_l = static_cast<float>(std::atof(field("MarginL", 19).c_str()));
+        style.margin_r = static_cast<float>(std::atof(field("MarginR", 20).c_str()));
+        style.margin_v = static_cast<float>(std::atof(field("MarginV", 21).c_str()));
         const int alignment = std::atoi(field("Alignment", 18).c_str());
         if (alignment >= 1 && alignment <= 9) {
             style.alignment = alignment;
@@ -282,79 +290,323 @@ void parseAssHeader(const std::string& data, AssStyles& styles, int& play_res_x,
     }
 }
 
-// Applies the layout overrides of one override block: position, alignment,
-// font size and the three colours the renderer uses.
-void parseAssOverrides(const std::string& block, Cue& cue) {
-    const size_t pos = block.find("\\pos(");
-    if (pos != std::string::npos) {
-        float x = 0.0f;
-        float y = 0.0f;
-        if (std::sscanf(block.c_str() + pos + 5, "%f,%f", &x, &y) == 2) {
-            cue.has_position = true;
-            cue.pos_x = x;
-            cue.pos_y = y;
+// Splits an override block into tags, keeping nested \t(...) arguments with
+// their tag. Names include the digits of \1c and friends.
+void forEachAssTag(const std::string& block,
+                   const std::function<void(const std::string&, const std::string&)>& visit) {
+    size_t i = 0;
+    while (i < block.size()) {
+        if (block[i] != '\\') {
+            ++i;
+            continue;
+        }
+        size_t name_end = i + 1;
+        // \1c, \3a and friends are the only names that start with a digit.
+        if (name_end + 1 < block.size() && block[name_end] >= '1' && block[name_end] <= '4' &&
+            std::isalpha(static_cast<unsigned char>(block[name_end + 1]))) {
+            name_end += 2;
+        } else {
+            while (name_end < block.size() &&
+                   std::isalpha(static_cast<unsigned char>(block[name_end]))) {
+                ++name_end;
+            }
+        }
+        size_t arg_end = name_end;
+        int depth = 0;
+        while (arg_end < block.size()) {
+            const char c = block[arg_end];
+            if (c == '(') {
+                ++depth;
+            } else if (c == ')') {
+                if (depth == 0) {
+                    break;
+                }
+                --depth;
+            } else if (c == '\\' && depth == 0) {
+                break;
+            }
+            ++arg_end;
+        }
+        visit(block.substr(i + 1, name_end - i - 1), block.substr(name_end, arg_end - name_end));
+        i = arg_end;
+    }
+}
+
+// The three fields an override changes, or 0 when the name is not one of them.
+// Used both for plain tags and for the targets inside \t.
+struct AssFieldTarget {
+    uint32_t field = 0;
+    uint32_t color = 0;
+    float number = 0.0f;
+    int alpha = 0;
+};
+
+// Applies one tag to a state, reporting which field it changed.
+uint32_t applyAssStateTag(const std::string& name, const std::string& args, AssState& state) {
+    if (name == "fs") {
+        const float value = static_cast<float>(std::atof(args.c_str()));
+        if (value <= 0.0f) {
+            return 0;
+        }
+        state.font_size = value;
+        return kAssFontSize;
+    }
+    if (name == "fscx" || name == "fscy") {
+        const float value = static_cast<float>(std::atof(args.c_str()));
+        if (value <= 0.0f) {
+            return 0;
+        }
+        if (name == "fscx") {
+            state.scale_x = value;
+            return kAssScaleX;
+        }
+        state.scale_y = value;
+        return kAssScaleY;
+    }
+    if (name == "bord") {
+        state.border = static_cast<float>(std::atof(args.c_str()));
+        return kAssBorder;
+    }
+    if (name == "shad") {
+        state.shadow = static_cast<float>(std::atof(args.c_str()));
+        return kAssShadow;
+    }
+    if (name == "blur") {
+        state.blur = static_cast<float>(std::atof(args.c_str()));
+        return kAssBlur;
+    }
+    if (name == "alpha") {
+        // \alpha<aa>: one value for all four elements.
+        const size_t start = args.find("&H");
+        const int value = static_cast<int>(
+            std::strtol(args.c_str() + (start == std::string::npos ? 0 : start + 2), nullptr, 16)) &
+            0xFF;
+        state.alpha1 = state.alpha2 = state.alpha3 = state.alpha4 = value;
+        return kAssAlpha1 | kAssAlpha2 | kAssAlpha3 | kAssAlpha4;
+    }
+    if (name.size() == 2 && name[1] == 'a' && name[0] >= '1' && name[0] <= '4') {
+        const size_t start = args.find("&H");
+        const int value = static_cast<int>(
+            std::strtol(args.c_str() + (start == std::string::npos ? 0 : start + 2), nullptr, 16)) &
+            0xFF;
+        switch (name[0]) {
+            case '1': state.alpha1 = value; return kAssAlpha1;
+            case '2': state.alpha2 = value; return kAssAlpha2;
+            case '3': state.alpha3 = value; return kAssAlpha3;
+            default: state.alpha4 = value; return kAssAlpha4;
         }
     }
-    const size_t an = block.find("\\an");
-    if (an != std::string::npos) {
-        const int value = std::atoi(block.c_str() + an + 3);
-        if (value >= 1 && value <= 9) {
-            cue.alignment = value;
+    const auto color_tag = [&](uint32_t& target, uint32_t field) {
+        if (args.find("&H") == std::string::npos) {
+            return 0u;
         }
+        target = assColor(args, target);
+        return field;
+    };
+    if (name == "c" || name == "1c") {
+        return color_tag(state.primary, kAssPrimary);
     }
-    const size_t fs = block.find("\\fs");
-    if (fs != std::string::npos) {
-        const float value = static_cast<float>(std::atof(block.c_str() + fs + 3));
-        if (value > 0.0f) {
-            cue.font_size = value;
+    if (name == "2c") {
+        return color_tag(state.secondary, kAssSecondary);
+    }
+    if (name == "3c") {
+        return color_tag(state.outline, kAssOutline);
+    }
+    if (name == "4c") {
+        return color_tag(state.back, kAssBack);
+    }
+    return 0;
+}
+
+// \move(x1,y1,x2,y2[,t1,t2]): times are milliseconds from the cue start.
+void applyAssMove(const std::string& args, Cue& cue) {
+    float x1 = 0.0f;
+    float y1 = 0.0f;
+    float x2 = 0.0f;
+    float y2 = 0.0f;
+    int t1 = 0;
+    int t2 = 0;
+    const int fields = std::sscanf(args.c_str(), "(%f,%f,%f,%f,%d,%d)", &x1, &y1, &x2, &y2, &t1, &t2);
+    if (fields < 4) {
+        return;
+    }
+    cue.has_move = true;
+    cue.has_position = true;
+    cue.move_x1 = x1;
+    cue.move_y1 = y1;
+    cue.move_x2 = x2;
+    cue.move_y2 = y2;
+    cue.move_t1 = t1 / 1000.0;
+    cue.move_t2 = t2 > 0 ? t2 / 1000.0 : (cue.end - cue.start);
+}
+
+// \fad(a,b) fades in over a milliseconds and out over b; \fade takes four
+// alphas and four times.
+void applyAssFade(const std::string& name, const std::string& args, Cue& cue) {
+    double values[7] = {};
+    int count = 0;
+    size_t start = args.find('(');
+    if (start == std::string::npos) {
+        return;
+    }
+    std::string numbers = args.substr(start + 1);
+    size_t pos = 0;
+    while (count < 7) {
+        const size_t comma = numbers.find_first_of(",)", pos);
+        if (comma == std::string::npos) {
+            break;
         }
+        values[count++] = std::atof(numbers.substr(pos, comma - pos).c_str());
+        if (numbers[comma] == ')') {
+            break;
+        }
+        pos = comma + 1;
     }
-    const auto color_override = [&block](const char* tag, uint32_t& target) {
-        const size_t at = block.find(tag);
-        if (at == std::string::npos) {
+    if (count < 2) {
+        return;
+    }
+    cue.fade = AssFade{};
+    cue.fade.present = true;
+    const double duration = cue.end - cue.start;
+    if (name == "fad" || count == 2) {
+        // \fad(a,b): transparent at the start, opaque after a, opaque until
+        // the end minus b, transparent again at the end.
+        cue.fade.a1 = 255;
+        cue.fade.a2 = 0;
+        cue.fade.a3 = 0;
+        cue.fade.a4 = 255;
+        cue.fade.t1 = 0.0;
+        cue.fade.t2 = values[0] / 1000.0;
+        cue.fade.t3 = duration - values[1] / 1000.0;
+        cue.fade.t4 = duration;
+        return;
+    }
+    // \fade(a1,a2,a3,t1,t2,t3,t4) ends opaque.
+    cue.fade.a1 = static_cast<int>(values[0]);
+    cue.fade.a2 = static_cast<int>(values[1]);
+    cue.fade.a3 = static_cast<int>(values[2]);
+    cue.fade.a4 = 0;
+    cue.fade.t1 = values[3] / 1000.0;
+    cue.fade.t2 = values[4] / 1000.0;
+    cue.fade.t3 = values[5] / 1000.0;
+    cue.fade.t4 = values[6] / 1000.0;
+}
+
+// One override block: plain tags change the state, \t records a transition and
+// \fad, \fade and \move set their own fields.
+void parseAssOverrides(const std::string& block, Cue& cue, const AssState& reset_state) {
+    forEachAssTag(block, [&](const std::string& name, const std::string& args) {
+        if (name == "pos") {
+            float x = 0.0f;
+            float y = 0.0f;
+            if (std::sscanf(args.c_str(), "(%f,%f)", &x, &y) == 2) {
+                cue.has_position = true;
+                cue.pos_x = x;
+                cue.pos_y = y;
+            }
             return;
         }
-        const std::string value = block.substr(at + std::strlen(tag));
-        target = assColor(value, target);
-    };
-    color_override("\\1c", cue.primary_color);
-    color_override("\\2c", cue.secondary_color);
-    color_override("\\3c", cue.outline_color);
+        if (name == "an") {
+            const int value = std::atoi(args.c_str());
+            if (value >= 1 && value <= 9) {
+                cue.alignment = value;
+            }
+            return;
+        }
+        if (name == "move") {
+            applyAssMove(args, cue);
+            return;
+        }
+        if (name == "fad" || name == "fade") {
+            applyAssFade(name, args, cue);
+            return;
+        }
+        if (name == "r") {
+            cue.state = reset_state;
+            return;
+        }
+        if (name == "t") {
+            // \t([t1,][t2,]tags): the leading numbers are milliseconds.
+            size_t open = args.find('(');
+            if (open == std::string::npos) {
+                return;
+            }
+            const std::string body = args.substr(open + 1);
+            std::vector<double> times;
+            size_t pos = 0;
+            while (times.size() < 2) {
+                const size_t comma = body.find(',', pos);
+                if (comma == std::string::npos) {
+                    break;
+                }
+                const std::string piece = trim(body.substr(pos, comma - pos));
+                if (!piece.empty() && std::isdigit(static_cast<unsigned char>(piece[0]))) {
+                    times.push_back(std::atof(piece.c_str()));
+                    pos = comma + 1;
+                    continue;
+                }
+                break;
+            }
+            if (pos >= body.size()) {
+                return;
+            }
+            AssTransition transition;
+            transition.t1 = times.size() == 2 ? times[0] / 1000.0 : 0.0;
+            transition.t2 = times.size() >= 1 ? times.back() / 1000.0
+                                              : (cue.end - cue.start);
+            transition.target = cue.state;
+            forEachAssTag(body.substr(pos), [&](const std::string& nested,
+                                                const std::string& nested_args) {
+                transition.mask |= applyAssStateTag(nested, nested_args, transition.target);
+            });
+            if (transition.mask != 0) {
+                cue.transitions.push_back(std::move(transition));
+            }
+            return;
+        }
+        if (name == "k" || name == "K" || name == "kf" || name == "ko") {
+            return;  // handled while splitting the text into syllables
+        }
+        applyAssStateTag(name, args, cue.state);
+    });
 }
 
 // The duration of a karaoke tag in centiseconds, or -1 when the block has none.
 // \k, \K, \kf and \ko all carry the timing of the run that follows.
 double parseAssKaraokeTag(const std::string& block) {
-    for (size_t i = 0; i + 1 < block.size(); ++i) {
-        if (block[i] != '\\' || (block[i + 1] != 'k' && block[i + 1] != 'K')) {
-            continue;
+    double duration = -1.0;
+    forEachAssTag(block, [&](const std::string& name, const std::string& args) {
+        if (duration >= 0.0) {
+            return;
         }
-        size_t length = 2;  // "\k" or "\K", the digits follow the tag
-        if (block[i + 1] == 'k' && i + 2 < block.size() &&
-            (block[i + 2] == 'f' || block[i + 2] == 'o')) {
-            length = 3;  // "\kf" and "\ko"
+        if (name == "k" || name == "K" || name == "kf" || name == "ko") {
+            duration = std::atof(args.c_str()) / 100.0;
         }
-        return std::atof(block.c_str() + i + length) / 100.0;
-    }
-    return -1.0;
+    });
+    return duration;
 }
 
 // Turns one ASS event into a cue: the style provides the defaults, the override
 // blocks refine them and the karaoke tags split the text into timed runs.
 void applyAssLine(const std::string& style_name, const std::string& raw, const AssStyles& styles,
                   Cue& cue) {
+    AssState style_state;
     const auto style = styles.find(style_name);
     if (style != styles.end()) {
         cue.font_name = style->second.font_name;
-        cue.font_size = style->second.font_size;
         cue.margin_l = style->second.margin_l;
         cue.margin_r = style->second.margin_r;
         cue.margin_v = style->second.margin_v;
-        cue.primary_color = style->second.primary;
-        cue.secondary_color = style->second.secondary;
-        cue.outline_color = style->second.outline;
         cue.alignment = style->second.alignment;
+        style_state.font_size = style->second.font_size;
+        style_state.border = style->second.border;
+        style_state.shadow = style->second.shadow;
+        style_state.primary = style->second.primary;
+        style_state.secondary = style->second.secondary;
+        style_state.outline = style->second.outline;
+        style_state.back = style->second.back;
     }
+    cue.state = style_state;
 
     std::string text;
     double elapsed = 0.0;
@@ -367,7 +619,7 @@ void applyAssLine(const std::string& style_name, const std::string& raw, const A
                 break;
             }
             const std::string block = raw.substr(i + 1, close - i - 1);
-            parseAssOverrides(block, cue);
+            parseAssOverrides(block, cue, style_state);
             const double duration = parseAssKaraokeTag(block);
             if (duration >= 0.0) {
                 pending = duration;
@@ -394,6 +646,76 @@ void applyAssLine(const std::string& style_name, const std::string& raw, const A
     }
     cue.text = trim(text);
 }
+
+// Linear blend of two colours, channel by channel.
+uint32_t lerpColor(uint32_t from, uint32_t to, float factor) {
+    const auto channel = [&](int shift) {
+        const int a = static_cast<int>((from >> shift) & 0xFF);
+        const int b = static_cast<int>((to >> shift) & 0xFF);
+        return static_cast<uint32_t>(a + (b - a) * factor) & 0xFF;
+    };
+    return (channel(16) << 16) | (channel(8) << 8) | channel(0);
+}
+
+// Applies the masked fields of one transition at the given factor.
+void blendAssState(AssState& state, const AssTransition& transition, float factor) {
+    const AssState& target = transition.target;
+    const auto number = [&](uint32_t field, float current, float wanted) {
+        return (transition.mask & field) != 0 ? current + (wanted - current) * factor : current;
+    };
+    state.font_size = number(kAssFontSize, state.font_size, target.font_size);
+    state.scale_x = number(kAssScaleX, state.scale_x, target.scale_x);
+    state.scale_y = number(kAssScaleY, state.scale_y, target.scale_y);
+    state.border = number(kAssBorder, state.border, target.border);
+    state.shadow = number(kAssShadow, state.shadow, target.shadow);
+    state.blur = number(kAssBlur, state.blur, target.blur);
+    const auto alpha = [&](uint32_t field, int current, int wanted) {
+        return (transition.mask & field) != 0
+                   ? static_cast<int>(current + (wanted - current) * factor)
+                   : current;
+    };
+    state.alpha1 = alpha(kAssAlpha1, state.alpha1, target.alpha1);
+    state.alpha2 = alpha(kAssAlpha2, state.alpha2, target.alpha2);
+    state.alpha3 = alpha(kAssAlpha3, state.alpha3, target.alpha3);
+    state.alpha4 = alpha(kAssAlpha4, state.alpha4, target.alpha4);
+    if ((transition.mask & kAssPrimary) != 0) {
+        state.primary = lerpColor(state.primary, target.primary, factor);
+    }
+    if ((transition.mask & kAssSecondary) != 0) {
+        state.secondary = lerpColor(state.secondary, target.secondary, factor);
+    }
+    if ((transition.mask & kAssOutline) != 0) {
+        state.outline = lerpColor(state.outline, target.outline, factor);
+    }
+    if ((transition.mask & kAssBack) != 0) {
+        state.back = lerpColor(state.back, target.back, factor);
+    }
+}
+
+// Opacity from \fad and \fade: a1 at t1, a2 at t2, a3 at t3 and opaque at t4,
+// with the time before t1 and after t4 held at the end values.
+float assFadeOpacity(const AssFade& fade, double time) {
+    if (!fade.present) {
+        return 1.0f;
+    }
+    const auto between = [&](double from_time, double to_time, int from_alpha, int to_alpha) {
+        if (to_time <= from_time) {
+            return static_cast<float>(from_alpha);
+        }
+        const double factor = std::clamp((time - from_time) / (to_time - from_time), 0.0, 1.0);
+        return static_cast<float>(from_alpha + (to_alpha - from_alpha) * factor);
+    };
+    int alpha = 0;
+    if (time < fade.t2) {
+        alpha = static_cast<int>(between(fade.t1, fade.t2, fade.a1, fade.a2));
+    } else if (time < fade.t3) {
+        alpha = static_cast<int>(between(fade.t2, fade.t3, fade.a2, fade.a3));
+    } else {
+        alpha = static_cast<int>(between(fade.t3, fade.t4, fade.a3, fade.a4));
+    }
+    return 1.0f - std::clamp(alpha, 0, 255) / 255.0f;
+}
+
 
 
 
@@ -506,6 +828,51 @@ std::string readTextFile(const std::filesystem::path& path, bool& ok) {
 }
 
 }  // namespace
+
+AssRenderState evaluateAssCue(const Cue& cue, double time) {
+    AssState state = cue.state;
+    for (const AssTransition& transition : cue.transitions) {
+        const float factor = transition.t2 <= transition.t1
+                                 ? 1.0f
+                                 : static_cast<float>(std::clamp(
+                                       (time - cue.start - transition.t1) /
+                                           (transition.t2 - transition.t1),
+                                       0.0, 1.0));
+        blendAssState(state, transition, factor);
+    }
+
+    AssRenderState out;
+    out.font_size = state.font_size;
+    out.scale_x = state.scale_x;
+    out.scale_y = state.scale_y;
+    out.border = state.border;
+    out.shadow = state.shadow;
+    out.blur = state.blur;
+    out.primary = state.primary;
+    out.secondary = state.secondary;
+    out.outline = state.outline;
+    out.back = state.back;
+    out.alignment = cue.alignment;
+
+    const float fade = assFadeOpacity(cue.fade, time - cue.start);
+    out.text_opacity = fade * (1.0f - state.alpha1 / 255.0f);
+    out.outline_opacity = fade * (1.0f - state.alpha3 / 255.0f);
+    out.shadow_opacity = fade * (1.0f - state.alpha4 / 255.0f);
+
+    out.has_position = cue.has_position;
+    out.pos_x = cue.pos_x;
+    out.pos_y = cue.pos_y;
+    if (cue.has_move) {
+        const double span = cue.move_t2 - cue.move_t1;
+        const float factor = span <= 0.0
+                                 ? 1.0f
+                                 : static_cast<float>(std::clamp(
+                                       (time - cue.start - cue.move_t1) / span, 0.0, 1.0));
+        out.pos_x = cue.move_x1 + (cue.move_x2 - cue.move_x1) * factor;
+        out.pos_y = cue.move_y1 + (cue.move_y2 - cue.move_y1) * factor;
+    }
+    return out;
+}
 
 void finalizeCues(std::vector<Cue>& cues) {
     std::stable_sort(cues.begin(), cues.end(),
