@@ -404,7 +404,10 @@ bool Decoder::parsePictureHeader(BitReader& reader, int64_t pts) {
     header_.temporal_reference = static_cast<int>(reader.read(10));
     const uint32_t coding_type = reader.read(3);
     reader.skip(16);  // vbv_delay
-    reader.skip(1);   // extra_bit_picture
+    // The forward and backward vectors come straight after vbv_delay. Reading
+    // extra_bit_picture first shifts both by one bit, and a wrong forward_f_code
+    // then reads the wrong number of motion vector extension bits, which drifts
+    // the whole slice. Only P and B pictures carry them, so only those broke.
     if (coding_type == 2) {
         header_.full_pel_forward = reader.read(1) != 0;
         header_.forward_f_code = static_cast<int>(reader.read(3));
@@ -414,6 +417,8 @@ bool Decoder::parsePictureHeader(BitReader& reader, int64_t pts) {
         header_.full_pel_backward = reader.read(1) != 0;
         header_.backward_f_code = static_cast<int>(reader.read(3));
     }
+    // extra_bit_picture and its loop follow, but they only pad the header out
+    // to the next start code; the slice is parsed from its own reader.
     if (coding_type < 1 || coding_type > 3) {
         return false;
     }
