@@ -343,10 +343,10 @@ carry meaning:
   syllables are positioned for the metrics of that font, and a wider
   substitute makes them collide. Anything missing falls back to the CJK face.
 
-Not implemented: `\clip`, `\iclip`, `\org` and vector drawing (`\p`), and the
-bold, italic, underline and strikeout flags are ignored because the renderer
-draws with plain glyphs. A non-uniform `\fscx`/`\fscy` pair is approximated by
-the vertical factor, since the text draw list can only scale uniformly.
+Not implemented: the 3D rotations `\frx` and `\fry` are ignored, and a vector
+`\clip` uses the box of its points, because the draw list only clips to
+rectangles. `\t` animates the state fields (size, scale, colours, alphas,
+rotation, shear, spacing) but not clips or drawings.
 
 
 

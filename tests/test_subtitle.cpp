@@ -378,3 +378,89 @@ TEST(SubtitleAss, MovesPositionAndFadesOut) {
     EXPECT_NEAR(end.text_opacity, 0.2f, 0.01f);
 }
 
+TEST(SubtitleAss, ParsesStyleFlagsAndTransforms) {
+    const std::string data =
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,"
+        "{\\b1\\i1\\u1\\s1\\frz45\\fax0.2\\fay-0.1\\fsp2\\org(100,200)}styled\n";
+
+    std::vector<Cue> cues;
+    ASSERT_TRUE(player::subtitle::parseAss(data, cues, nullptr));
+    ASSERT_EQ(cues.size(), 1u);
+    const Cue& cue = cues[0];
+    EXPECT_TRUE(cue.state.bold);
+    EXPECT_TRUE(cue.state.italic);
+    EXPECT_TRUE(cue.state.underline);
+    EXPECT_TRUE(cue.state.strikeout);
+    EXPECT_FLOAT_EQ(cue.state.angle, 45.0f);
+    EXPECT_FLOAT_EQ(cue.state.shear_x, 0.2f);
+    EXPECT_FLOAT_EQ(cue.state.shear_y, -0.1f);
+    EXPECT_FLOAT_EQ(cue.state.spacing, 2.0f);
+    EXPECT_TRUE(cue.has_origin);
+    EXPECT_FLOAT_EQ(cue.origin_x, 100.0f);
+    EXPECT_FLOAT_EQ(cue.origin_y, 200.0f);
+
+    // \t animates the angle as well.
+    std::vector<Cue> animated;
+    const std::string spin =
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,"
+        "{\\frz0\\t(0,1000,\\frz90)}spin\n";
+    ASSERT_TRUE(player::subtitle::parseAss(spin, animated, nullptr));
+    ASSERT_EQ(animated.size(), 1u);
+    const player::subtitle::AssRenderState mid =
+        player::subtitle::evaluateAssCue(animated[0], 1.5);
+    EXPECT_NEAR(mid.angle, 45.0f, 0.01f);
+}
+
+TEST(SubtitleAss, ParsesRectAndVectorClips) {
+    const std::string data =
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\clip(10,20,300,200)}rect\n"
+        "Dialogue: 0,0:00:04.00,0:00:06.00,Default,,0,0,0,,"
+        "{\\iclip(m 0 0 l 100 0 100 100 0 100)}vector\n";
+
+    std::vector<Cue> cues;
+    ASSERT_TRUE(player::subtitle::parseAss(data, cues, nullptr));
+    ASSERT_EQ(cues.size(), 2u);
+
+    ASSERT_EQ(cues[0].clips.size(), 1u);
+    EXPECT_TRUE(cues[0].clips[0].rect);
+    EXPECT_FALSE(cues[0].clips[0].inverse);
+    EXPECT_FLOAT_EQ(cues[0].clips[0].x1, 10.0f);
+    EXPECT_FLOAT_EQ(cues[0].clips[0].y1, 20.0f);
+    EXPECT_FLOAT_EQ(cues[0].clips[0].x2, 300.0f);
+    EXPECT_FLOAT_EQ(cues[0].clips[0].y2, 200.0f);
+
+    ASSERT_EQ(cues[1].clips.size(), 1u);
+    EXPECT_FALSE(cues[1].clips[0].rect);
+    EXPECT_TRUE(cues[1].clips[0].inverse);
+    ASSERT_EQ(cues[1].clips[0].points.size(), 4u);
+    EXPECT_FLOAT_EQ(cues[1].clips[0].points[1].first, 100.0f);
+    EXPECT_FLOAT_EQ(cues[1].clips[0].points[3].second, 100.0f);
+}
+
+TEST(SubtitleAss, ParsesVectorDrawings) {
+    // \p1 switches to drawing commands until \p0; the shape is not text.
+    const std::string data =
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,"
+        "{\\p1}m 0 0 l 200 0 200 100 0 100{\\p0}label\n";
+
+    std::vector<Cue> cues;
+    ASSERT_TRUE(player::subtitle::parseAss(data, cues, nullptr));
+    ASSERT_EQ(cues.size(), 1u);
+    const Cue& cue = cues[0];
+    EXPECT_EQ(cue.text, "label");
+    ASSERT_EQ(cue.drawings.size(), 1u);
+    ASSERT_EQ(cue.drawings[0].contours.size(), 1u);
+    EXPECT_EQ(cue.drawings[0].scale, 1);
+    ASSERT_EQ(cue.drawings[0].contours[0].size(), 4u);
+    EXPECT_FLOAT_EQ(cue.drawings[0].contours[0][0].first, 0.0f);
+    EXPECT_FLOAT_EQ(cue.drawings[0].contours[0][2].second, 100.0f);
+}
+

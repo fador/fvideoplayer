@@ -343,6 +343,46 @@ struct AssFieldTarget {
 
 // Applies one tag to a state, reporting which field it changed.
 uint32_t applyAssStateTag(const std::string& name, const std::string& args, AssState& state) {
+    if (name == "b") {
+        state.bold = std::atoi(args.c_str()) != 0;  // a weight counts as bold
+        return 0;
+    }
+    if (name == "i") {
+        state.italic = std::atoi(args.c_str()) != 0;
+        return 0;
+    }
+    if (name == "u") {
+        state.underline = std::atoi(args.c_str()) != 0;
+        return 0;
+    }
+    if (name == "s") {
+        state.strikeout = std::atoi(args.c_str()) != 0;
+        return 0;
+    }
+    if (name == "frz") {
+        state.angle = static_cast<float>(std::atof(args.c_str()));
+        return kAssAngle;
+    }
+    if (name == "frx" || name == "fry") {
+        return 0;  // 3D rotation is not drawn; the line stays flat
+    }
+    if (name == "fax" || name == "fay") {
+        const float value = static_cast<float>(std::atof(args.c_str()));
+        if (name == "fax") {
+            state.shear_x = value;
+            return kAssShearX;
+        }
+        state.shear_y = value;
+        return kAssShearY;
+    }
+    if (name == "fsp") {
+        state.spacing = static_cast<float>(std::atof(args.c_str()));
+        return kAssSpacing;
+    }
+    if (name == "be") {
+        state.blur = static_cast<float>(std::atof(args.c_str()));
+        return kAssBlur;
+    }
     if (name == "fs") {
         const float value = static_cast<float>(std::atof(args.c_str()));
         if (value <= 0.0f) {
@@ -418,9 +458,153 @@ uint32_t applyAssStateTag(const std::string& name, const std::string& args, AssS
     return 0;
 }
 
+// Parses the vector commands of a \p drawing or a vector \clip: m and n start
+// a contour, l, p and s add points, b adds cubic beziers and c closes. The
+// coordinates are in units of 1 / 2^(scale-1) script pixels.
+void parseAssDrawing(const std::string& text, int scale, AssDrawing& out) {
+    out.scale = scale < 1 ? 1 : scale;
+    std::vector<std::pair<float, float>>* contour = nullptr;
+    std::vector<float> numbers;
+    const auto finish = [&](char command) {
+        const auto point = [&](size_t index) {
+            return std::make_pair(numbers[index], numbers[index + 1]);
+        };
+        switch (command) {
+            case 'm':
+                // A move starts a contour; extra pairs continue with lines.
+                for (size_t i = 0; i + 1 < numbers.size(); i += 2) {
+                    if (i == 0) {
+                        out.contours.emplace_back();
+                        contour = &out.contours.back();
+                    }
+                    if (contour != nullptr) {
+                        contour->push_back(point(i));
+                    }
+                }
+                break;
+            case 'l':
+            case 'p':
+            case 's':
+                if (contour == nullptr) {
+                    break;
+                }
+                for (size_t i = 0; i + 1 < numbers.size(); i += 2) {
+                    contour->push_back(point(i));
+                }
+                break;
+            case 'b':
+                if (contour == nullptr || numbers.size() < 6) {
+                    break;
+                }
+                for (size_t i = 0; i + 5 < numbers.size(); i += 6) {
+                    const std::pair<float, float> start = contour->back();
+                    const float x1 = numbers[i];
+                    const float y1 = numbers[i + 1];
+                    const float x2 = numbers[i + 2];
+                    const float y2 = numbers[i + 3];
+                    const float x3 = numbers[i + 4];
+                    const float y3 = numbers[i + 5];
+                    constexpr int kSteps = 8;  // flattening resolution
+                    for (int step = 1; step <= kSteps; ++step) {
+                        const float t = static_cast<float>(step) / kSteps;
+                        const float u = 1.0f - t;
+                        const float x = u * u * u * start.first + 3 * u * u * t * x1 +
+                                        3 * u * t * t * x2 + t * t * t * x3;
+                        const float y = u * u * u * start.second + 3 * u * u * t * y1 +
+                                        3 * u * t * t * y2 + t * t * t * y3;
+                        contour->push_back({x, y});
+                    }
+                }
+                break;
+            case 'c':
+                break;  // contours are closed when they are filled
+            default:
+                break;
+        }
+        numbers.clear();
+    };
+
+    char command = 0;
+    size_t i = 0;
+    while (i < text.size()) {
+        const char c = text[i];
+        if (std::isalpha(static_cast<unsigned char>(c))) {
+            finish(command);
+            command = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            ++i;
+            continue;
+        }
+        if (std::isdigit(static_cast<unsigned char>(c)) || c == '-' || c == '+' || c == '.') {
+            char* end = nullptr;
+            const float value = std::strtof(text.c_str() + i, &end);
+            if (end == text.c_str() + i) {
+                ++i;
+                continue;
+            }
+            numbers.push_back(value);
+            i = static_cast<size_t>(end - text.c_str());
+            continue;
+        }
+        ++i;  // separators
+    }
+    finish(command);
+}
+
+// \clip(x1,y1,x2,y2) or \clip(<commands>); \iclip inverts it.
+void applyAssClip(const std::string& name, const std::string& args, Cue& cue) {
+    size_t open = args.find('(');
+    size_t close = args.rfind(')');
+    if (open == std::string::npos || close == std::string::npos || close <= open) {
+        return;
+    }
+    const std::string body = args.substr(open + 1, close - open - 1);
+    AssClip clip;
+    clip.inverse = name == "iclip";
+    // The rectangle form is four numbers with no command letters.
+    if (body.find_first_of("mnlbspc") == std::string::npos) {
+        float values[4] = {};
+        int count = 0;
+        size_t pos = 0;
+        while (count < 4) {
+            const size_t comma = body.find_first_of(", ", pos);
+            const std::string piece = trim(body.substr(pos, comma - pos));
+            if (!piece.empty()) {
+                values[count++] = static_cast<float>(std::atof(piece.c_str()));
+            }
+            if (comma == std::string::npos) {
+                break;
+            }
+            pos = comma + 1;
+        }
+        if (count == 4) {
+            clip.x1 = std::min(values[0], values[2]);
+            clip.y1 = std::min(values[1], values[3]);
+            clip.x2 = std::max(values[0], values[2]);
+            clip.y2 = std::max(values[1], values[3]);
+            cue.clips.push_back(std::move(clip));
+            return;
+        }
+    }
+    // A vector clip may carry a leading scale number.
+    int scale = 1;
+    std::string commands = body;
+    if (!commands.empty() && std::isdigit(static_cast<unsigned char>(commands[0]))) {
+        scale = std::atoi(commands.c_str());
+        const size_t comma = commands.find(',');
+        commands = comma == std::string::npos ? std::string() : commands.substr(comma + 1);
+    }
+    AssDrawing drawing;
+    parseAssDrawing(commands, scale < 1 ? 1 : scale, drawing);
+    if (drawing.contours.empty()) {
+        return;
+    }
+    clip.rect = false;
+    clip.points = drawing.contours.front();
+    cue.clips.push_back(std::move(clip));
+}
+
 // \move(x1,y1,x2,y2[,t1,t2]): times are milliseconds from the cue start.
-void applyAssMove(const std::string& args, Cue& cue) {
-    float x1 = 0.0f;
+void applyAssMove(const std::string& args, Cue& cue) {    float x1 = 0.0f;
     float y1 = 0.0f;
     float x2 = 0.0f;
     float y2 = 0.0f;
@@ -517,6 +701,24 @@ void parseAssOverrides(const std::string& block, Cue& cue, const AssState& reset
             applyAssMove(args, cue);
             return;
         }
+        if (name == "org") {
+            float x = 0.0f;
+            float y = 0.0f;
+            if (std::sscanf(args.c_str(), "(%f,%f)", &x, &y) == 2) {
+                cue.has_origin = true;
+                cue.origin_x = x;
+                cue.origin_y = y;
+            }
+            return;
+        }
+        if (name == "clip" || name == "iclip") {
+            applyAssClip(name, args, cue);
+            return;
+        }
+        if (name == "q") {
+            cue.wrap_style = std::atoi(args.c_str());
+            return;
+        }
         if (name == "fad" || name == "fade") {
             applyAssFade(name, args, cue);
             return;
@@ -609,6 +811,8 @@ void applyAssLine(const std::string& style_name, const std::string& raw, const A
     cue.state = style_state;
 
     std::string text;
+    std::string drawing_text;
+    int drawing_scale = 0;  // \p: 0 while text is being read
     double elapsed = 0.0;
     double pending = -1.0;
     size_t i = 0;
@@ -620,6 +824,24 @@ void applyAssLine(const std::string& style_name, const std::string& raw, const A
             }
             const std::string block = raw.substr(i + 1, close - i - 1);
             parseAssOverrides(block, cue, style_state);
+            // \p switches between text and drawing commands.
+            int requested = -1;
+            forEachAssTag(block, [&](const std::string& name, const std::string& args) {
+                if (name == "p") {
+                    requested = args.empty() ? 1 : std::atoi(args.c_str());
+                }
+            });
+            if (requested == 0 && drawing_scale > 0) {
+                AssDrawing drawing;
+                parseAssDrawing(drawing_text, drawing_scale, drawing);
+                if (!drawing.contours.empty()) {
+                    cue.drawings.push_back(std::move(drawing));
+                }
+                drawing_text.clear();
+                drawing_scale = 0;
+            } else if (requested > 0) {
+                drawing_scale = requested;
+            }
             const double duration = parseAssKaraokeTag(block);
             if (duration >= 0.0) {
                 pending = duration;
@@ -632,6 +854,11 @@ void applyAssLine(const std::string& style_name, const std::string& raw, const A
             end = raw.size();
         }
         const std::string run = decodeAssEscapes(raw.substr(i, end - i));
+        if (drawing_scale > 0) {
+            drawing_text += run;
+            i = end;
+            continue;
+        }
         if (pending >= 0.0) {
             KaraokeSyllable syllable;
             syllable.text = run;
@@ -643,6 +870,13 @@ void applyAssLine(const std::string& style_name, const std::string& raw, const A
         }
         text += run;
         i = end;
+    }
+    if (drawing_scale > 0) {
+        AssDrawing drawing;
+        parseAssDrawing(drawing_text, drawing_scale, drawing);
+        if (!drawing.contours.empty()) {
+            cue.drawings.push_back(std::move(drawing));
+        }
     }
     cue.text = trim(text);
 }
@@ -669,6 +903,10 @@ void blendAssState(AssState& state, const AssTransition& transition, float facto
     state.border = number(kAssBorder, state.border, target.border);
     state.shadow = number(kAssShadow, state.shadow, target.shadow);
     state.blur = number(kAssBlur, state.blur, target.blur);
+    state.angle = number(kAssAngle, state.angle, target.angle);
+    state.shear_x = number(kAssShearX, state.shear_x, target.shear_x);
+    state.shear_y = number(kAssShearY, state.shear_y, target.shear_y);
+    state.spacing = number(kAssSpacing, state.spacing, target.spacing);
     const auto alpha = [&](uint32_t field, int current, int wanted) {
         return (transition.mask & field) != 0
                    ? static_cast<int>(current + (wanted - current) * factor)
@@ -848,6 +1086,14 @@ AssRenderState evaluateAssCue(const Cue& cue, double time) {
     out.border = state.border;
     out.shadow = state.shadow;
     out.blur = state.blur;
+    out.angle = state.angle;
+    out.shear_x = state.shear_x;
+    out.shear_y = state.shear_y;
+    out.spacing = state.spacing;
+    out.bold = state.bold;
+    out.italic = state.italic;
+    out.underline = state.underline;
+    out.strikeout = state.strikeout;
     out.primary = state.primary;
     out.secondary = state.secondary;
     out.outline = state.outline;
@@ -1050,7 +1296,7 @@ bool parseAss(const std::string& data, std::vector<Cue>& out, std::string* error
                 applyAssLine(style_name, fields[static_cast<size_t>(text_index)], styles, cue);
                 applyAssEventMargins(fields, events_format.margin_l, events_format.margin_r,
                                      events_format.margin_v, cue);
-                if (!cue.text.empty()) {
+                if (!cue.text.empty() || !cue.drawings.empty()) {
                     out.push_back(std::move(cue));
                 }
             }
@@ -1232,7 +1478,7 @@ bool parseEmbeddedTrack(const std::string& codec, const std::string& codec_priva
             cue.end = block.duration_ms > 0 ? (block.pts_ms + block.duration_ms) / 1000.0 : 0.0;
             applyAssLine(trim(fields[2]), fields[8], styles, cue);
             applyAssEventMargins(fields, 4, 5, 6, cue);
-            if (!cue.text.empty()) {
+            if (!cue.text.empty() || !cue.drawings.empty()) {
                 out.push_back(std::move(cue));
             }
         }

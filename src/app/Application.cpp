@@ -51,23 +51,35 @@ const char* stateName(playback::State state) {
 
 // ASS styles name a font family and typeset the line assuming its metrics, so
 // substituting a wider font makes the syllables collide. Map the families that
-// matter onto the files Windows ships them in.
+// matter onto the files Windows ships them in, bold and italic included.
 struct SubtitleFontFile {
     const char* family;
-    const char* file;
+    const char* regular;
+    const char* bold;
+    const char* italic;
+    const char* bold_italic;
 };
 
 constexpr SubtitleFontFile kSubtitleFontFiles[] = {
-    {"monotype corsiva", "MTCORSVA.TTF"}, {"arial", "arial.ttf"},
-    {"arial black", "ariblk.ttf"},        {"calibri", "calibri.ttf"},
-    {"cambria", "cambria.ttc"},           {"comic sans ms", "comic.ttf"},
-    {"consolas", "consola.ttf"},          {"courier new", "cour.ttf"},
-    {"gabriola", "gabriola.ttf"},         {"georgia", "georgia.ttf"},
-    {"impact", "impact.ttf"},             {"segoe ui", "segoeui.ttf"},
-    {"tahoma", "tahoma.ttf"},             {"times new roman", "times.ttf"},
-    {"trebuchet ms", "trebuc.ttf"},       {"verdana", "verdana.ttf"},
-    {"dfkai-sb", "kaiu.ttf"},             {"ms gothic", "msgothic.ttc"},
-    {"yu gothic", "YuGothM.ttc"},
+    {"monotype corsiva", "MTCORSVA.TTF", nullptr, nullptr, nullptr},
+    {"arial", "arial.ttf", "arialbd.ttf", "ariali.ttf", "arialbi.ttf"},
+    {"arial black", "ariblk.ttf", nullptr, nullptr, nullptr},
+    {"calibri", "calibri.ttf", "calibrib.ttf", "calibrii.ttf", "calibriz.ttf"},
+    {"cambria", "cambria.ttc", "cambriab.ttf", "cambriai.ttf", "cambriaz.ttf"},
+    {"comic sans ms", "comic.ttf", "comicbd.ttf", "comici.ttf", "comicz.ttf"},
+    {"consolas", "consola.ttf", "consolab.ttf", "consolai.ttf", "consolaz.ttf"},
+    {"courier new", "cour.ttf", "courbd.ttf", "couri.ttf", "courbi.ttf"},
+    {"gabriola", "gabriola.ttf", nullptr, nullptr, nullptr},
+    {"georgia", "georgia.ttf", "georgiab.ttf", "georgiai.ttf", "georgiaz.ttf"},
+    {"impact", "impact.ttf", nullptr, nullptr, nullptr},
+    {"segoe ui", "segoeui.ttf", "segoeuib.ttf", "segoeuii.ttf", "segoeuiz.ttf"},
+    {"tahoma", "tahoma.ttf", "tahomabd.ttf", nullptr, nullptr},
+    {"times new roman", "times.ttf", "timesbd.ttf", "timesi.ttf", "timesbi.ttf"},
+    {"trebuchet ms", "trebuc.ttf", "trebucbd.ttf", "trebucit.ttf", "trebucbi.ttf"},
+    {"verdana", "verdana.ttf", "verdanab.ttf", "verdanai.ttf", "verdanaz.ttf"},
+    {"dfkai-sb", "kaiu.ttf", nullptr, nullptr, nullptr},
+    {"ms gothic", "msgothic.ttc", nullptr, nullptr, nullptr},
+    {"yu gothic", "YuGothM.ttc", "YuGothB.ttc", nullptr, nullptr},
 };
 
 const char* chromaName(int chroma_format) {
@@ -943,7 +955,7 @@ void Application::addExternalSubtitle(const std::string& path) {
     activateSubtitle(static_cast<int>(subtitle_options_.size()) - 1);
 }
 
-ImFont* Application::subtitleFont(const std::string& family) {
+Application::SubtitleFont Application::subtitleFont(const std::string& family, bool bold, bool italic) {
     // Lowercase and collapse whitespace: "Monotype  Corsiva" is the same family
     // as "Monotype Corsiva".
     std::string key;
@@ -960,8 +972,11 @@ ImFont* Application::subtitleFont(const std::string& family) {
         }
         key += static_cast<char>(std::tolower(byte));
     }
-    if (key.empty()) {
-        return subtitle_font_;
+    if (bold) {
+        key += "|b";
+    }
+    if (italic) {
+        key += "|i";
     }
     for (const auto& entry : subtitle_fonts_) {
         if (entry.first == key) {
@@ -969,23 +984,126 @@ ImFont* Application::subtitleFont(const std::string& family) {
         }
     }
 
-    ImFont* font = nullptr;
+    SubtitleFont result;
+    result.font = subtitle_font_;
+    std::string family_key = key.substr(0, key.find('|'));
     for (const SubtitleFontFile& candidate : kSubtitleFontFiles) {
-        if (key != candidate.family) {
+        if (family_key != candidate.family) {
             continue;
         }
-        const std::filesystem::path path =
-            std::filesystem::path("C:/Windows/Fonts") / candidate.file;
-        if (std::filesystem::exists(path)) {
-            font = ImGui::GetIO().Fonts->AddFontFromFileTTF(path.string().c_str(), 32.0f);
+        const char* file = candidate.regular;
+        if (bold && italic && candidate.bold_italic) {
+            file = candidate.bold_italic;
+        } else if (bold && candidate.bold) {
+            file = candidate.bold;
+        } else if (italic && candidate.italic) {
+            file = candidate.italic;
         }
+        if (file != nullptr) {
+            const std::filesystem::path path = std::filesystem::path("C:/Windows/Fonts") / file;
+            if (std::filesystem::exists(path)) {
+                result.font = ImGui::GetIO().Fonts->AddFontFromFileTTF(path.string().c_str(), 32.0f);
+            }
+        }
+        // The system may not ship the variant, so fake it while drawing.
+        result.synthetic_bold = bold && file != candidate.bold && file != candidate.bold_italic;
+        result.synthetic_italic = italic && file != candidate.italic && file != candidate.bold_italic;
         break;
     }
-    if (!font) {
-        font = subtitle_font_;  // the CJK face covers what the styles ask for
+    subtitle_fonts_.emplace_back(key, result);
+    return result;
+}
+
+// Decodes one UTF-8 codepoint and returns how many bytes it used.
+size_t decodeUtf8(const char* text, size_t size, ImWchar& codepoint) {
+    const unsigned char first = static_cast<unsigned char>(text[0]);
+    size_t length = 1;
+    ImWchar value = first;
+    if ((first & 0xE0) == 0xC0) {
+        length = 2;
+        value = first & 0x1F;
+    } else if ((first & 0xF0) == 0xE0) {
+        length = 3;
+        value = first & 0x0F;
+    } else if ((first & 0xF8) == 0xF0) {
+        length = 4;
+        value = first & 0x07;
     }
-    subtitle_fonts_.emplace_back(key, font);
-    return font;
+    length = std::min(length, size);
+    for (size_t i = 1; i < length; ++i) {
+        value = static_cast<ImWchar>((value << 6) | (static_cast<unsigned char>(text[i]) & 0x3F));
+    }
+    codepoint = value;
+    return length;
+}
+
+// Ear clipping for a simple polygon. ASS drawings can be concave, and the draw
+// list only fills convex shapes.
+void triangulatePolygon(const std::vector<ImVec2>& points, std::vector<int>& indices) {
+    const int count = static_cast<int>(points.size());
+    if (count < 3) {
+        return;
+    }
+    std::vector<int> remaining(static_cast<size_t>(count));
+    for (int i = 0; i < count; ++i) {
+        remaining[static_cast<size_t>(i)] = i;
+    }
+    float area = 0.0f;
+    for (int i = 0; i < count; ++i) {
+        const ImVec2& a = points[static_cast<size_t>(i)];
+        const ImVec2& b = points[static_cast<size_t>((i + 1) % count)];
+        area += a.x * b.y - b.x * a.y;
+    }
+    const float orientation = area < 0.0f ? -1.0f : 1.0f;
+    const auto inside = [](const ImVec2& p, const ImVec2& a, const ImVec2& b, const ImVec2& c) {
+        const float d1 = (p.x - b.x) * (a.y - b.y) - (a.x - b.x) * (p.y - b.y);
+        const float d2 = (p.x - c.x) * (b.y - c.y) - (b.x - c.x) * (p.y - c.y);
+        const float d3 = (p.x - a.x) * (c.y - a.y) - (c.x - a.x) * (p.y - a.y);
+        const bool negative = d1 < 0.0f || d2 < 0.0f || d3 < 0.0f;
+        const bool positive = d1 > 0.0f || d2 > 0.0f || d3 > 0.0f;
+        return !(negative && positive);
+    };
+    int guard = 0;
+    while (remaining.size() > 3 && guard++ < count * count) {
+        bool clipped = false;
+        for (size_t i = 0; i < remaining.size(); ++i) {
+            const int previous = remaining[(i + remaining.size() - 1) % remaining.size()];
+            const int current = remaining[i];
+            const int next = remaining[(i + 1) % remaining.size()];
+            const ImVec2& a = points[static_cast<size_t>(previous)];
+            const ImVec2& b = points[static_cast<size_t>(current)];
+            const ImVec2& c = points[static_cast<size_t>(next)];
+            const float cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+            if (cross * orientation <= 0.0f) {
+                continue;  // reflex corner
+            }
+            bool occupied = false;
+            for (int other : remaining) {
+                if (other != previous && other != current && other != next &&
+                    inside(points[static_cast<size_t>(other)], a, b, c)) {
+                    occupied = true;
+                    break;
+                }
+            }
+            if (occupied) {
+                continue;
+            }
+            indices.push_back(previous);
+            indices.push_back(current);
+            indices.push_back(next);
+            remaining.erase(remaining.begin() + static_cast<ptrdiff_t>(i));
+            clipped = true;
+            break;
+        }
+        if (!clipped) {
+            break;
+        }
+    }
+    if (remaining.size() == 3) {
+        indices.push_back(remaining[0]);
+        indices.push_back(remaining[1]);
+        indices.push_back(remaining[2]);
+    }
 }
 
 void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_size) {
@@ -1016,14 +1134,20 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
         uint32_t color = 0xFFFFFF;
     };
 
+    const auto channel = [](uint32_t color, int shift) {
+        return static_cast<int>((color >> shift) & 0xFF);
+    };
+    const auto withAlpha = [&](uint32_t color, float opacity) {
+        return IM_COL32(channel(color, 16), channel(color, 8), channel(color, 0),
+                        static_cast<int>(std::clamp(opacity, 0.0f, 1.0f) * 255.0f));
+    };
+
     draw_list->PushClipRect(video_pos, ImVec2(video_pos.x + video_size.x,
                                               video_pos.y + video_size.y), true);
     for (const subtitle::Cue* cue : active) {
         const subtitle::AssRenderState rs = subtitle::evaluateAssCue(*cue, now);
-        ImFont* cue_font = subtitleFont(cue->font_name);
-        if (!cue_font) {
-            cue_font = font;
-        }
+        const SubtitleFont face = subtitleFont(cue->font_name, rs.bold, rs.italic);
+        ImFont* cue_font = face.font ? face.font : font;
         // \fscx and \fscy stretch the glyphs; the draw list can only scale the
         // text uniformly, so the vertical factor picks the size.
         const float font_size = std::clamp(
@@ -1033,6 +1157,55 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
         const float outline = std::max(rs.border * scale, 0.0f);
         const float blur = std::max(rs.blur * scale, 0.0f);
         const float shadow = rs.shadow * scale;
+        const float spacing = rs.spacing * scale;
+        const ImU32 text_color = withAlpha(rs.primary, rs.text_opacity);
+        const ImU32 outline_color = withAlpha(rs.outline, rs.outline_opacity);
+        const ImU32 soft_color = withAlpha(rs.outline, rs.outline_opacity * 0.35f);
+        const ImU32 shadow_color = withAlpha(rs.back, rs.shadow_opacity * 0.6f);
+
+        // \frz, \fax, \fay and a faked italic shear are applied to every glyph
+        // corner. The corners are built by hand rather than by AddText, which
+        // also lets \fscx and \fscy stretch the glyphs independently.
+        const bool italic_shear = face.synthetic_italic;
+        const bool transformed =
+            rs.angle != 0.0f || rs.shear_x != 0.0f || rs.shear_y != 0.0f || italic_shear;
+
+        // Glyph metrics come from the face baked at its load size.
+        constexpr float kFontLoadSize = 32.0f;  // size the faces are added at
+        ImFontBaked* baked = cue_font->GetFontBaked(kFontLoadSize);
+        const float glyph_scale = baked->Size > 0.0f ? font_size / baked->Size : 1.0f;
+        const float stretch =
+            rs.scale_y > 0.0f ? rs.scale_x / rs.scale_y : 1.0f;  // \fscx over \fscy
+        const bool fast_text = !transformed && spacing <= 0.0f && stretch == 1.0f;
+        const ImTextureRef font_texture = ImGui::GetIO().Fonts->TexRef;
+
+        // Width of a run, letter spacing and stretching included.
+        const auto run_width = [&](const std::string& text) {
+            if (fast_text) {
+                return cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, text.c_str()).x;
+            }
+            float width = 0.0f;
+            size_t codepoints = 0;
+            for (size_t i = 0; i < text.size();) {
+                const unsigned char byte = static_cast<unsigned char>(text[i]);
+                size_t length = 1;
+                if ((byte & 0xE0) == 0xC0) {
+                    length = 2;
+                } else if ((byte & 0xF0) == 0xE0) {
+                    length = 3;
+                } else if ((byte & 0xF8) == 0xF0) {
+                    length = 4;
+                }
+                ImWchar codepoint = 0;
+                length = decodeUtf8(text.data() + i, text.size() - i, codepoint);
+                const ImFontGlyph* glyph = baked->FindGlyph(codepoint);
+                width += (glyph ? glyph->AdvanceX * glyph_scale * stretch : 0.0f) +
+                         (codepoints > 0 ? spacing : 0.0f);
+                ++codepoints;
+                i += length;
+            }
+            return width;
+        };
 
         // Build the lines, colouring karaoke runs by whether they are sung yet.
         std::vector<std::vector<Run>> lines(1);
@@ -1061,7 +1234,9 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
             append(cue->text, rs.primary);
         }
 
-        // Wrap each line on spaces, keeping the run colours.
+        // Wrap each line on spaces, keeping the run colours. \q 1 and 2 turn
+        // wrapping off.
+        const bool wrap = cue->wrap_style != 1 && cue->wrap_style != 2;
         std::vector<std::vector<Run>> wrapped;
         for (const std::vector<Run>& line : lines) {
             std::vector<Run> current;
@@ -1071,10 +1246,9 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
                 std::string word;
                 bool first_word = true;
                 while (words >> word) {
-                    const float word_width =
-                        cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, word.c_str()).x;
+                    const float word_width = run_width(word);
                     const float space = first_word ? 0.0f : font_size * 0.3f;
-                    if (width + space + word_width > max_width && !current.empty()) {
+                    if (wrap && width + space + word_width > max_width && !current.empty()) {
                         wrapped.push_back(current);
                         current.clear();
                         width = 0.0f;
@@ -1094,8 +1268,44 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
         while (!wrapped.empty() && wrapped.back().empty()) {
             wrapped.pop_back();
         }
-        if (wrapped.empty()) {
-            continue;
+
+        // The \p drawings of this cue as screen offsets, plus the box they
+        // occupy, which is what the alignment positions.
+        struct DrawingShape {
+            std::vector<std::vector<ImVec2>> contours;
+            float min_x = 0.0f;
+            float min_y = 0.0f;
+            float max_x = 0.0f;
+            float max_y = 0.0f;
+        };
+        std::vector<DrawingShape> shapes;
+        for (const subtitle::AssDrawing& drawing : cue->drawings) {
+            DrawingShape shape;
+            const float divisor = static_cast<float>(1 << (drawing.scale - 1));
+            bool first = true;
+            for (const auto& contour : drawing.contours) {
+                std::vector<ImVec2> points;
+                for (const auto& point : contour) {
+                    const float x = point.first / divisor * scale;
+                    const float y = point.second / divisor * scale;
+                    if (first) {
+                        shape.min_x = shape.max_x = x;
+                        shape.min_y = shape.max_y = y;
+                        first = false;
+                    }
+                    shape.min_x = std::min(shape.min_x, x);
+                    shape.min_y = std::min(shape.min_y, y);
+                    shape.max_x = std::max(shape.max_x, x);
+                    shape.max_y = std::max(shape.max_y, y);
+                    points.push_back(ImVec2(x, y));
+                }
+                if (points.size() >= 3) {
+                    shape.contours.push_back(std::move(points));
+                }
+            }
+            if (!shape.contours.empty()) {
+                shapes.push_back(std::move(shape));
+            }
         }
 
         // Anchor the block. Positioned lines use their own coordinates with the
@@ -1105,14 +1315,21 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
         for (const std::vector<Run>& line : wrapped) {
             float width = 0.0f;
             for (const Run& run : line) {
-                width += cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str()).x;
+                width += run_width(run.text);
             }
             block_width = std::max(block_width, width);
+        }
+        float block_height = line_height * static_cast<float>(wrapped.size());
+        for (const DrawingShape& shape : shapes) {
+            block_width = std::max(block_width, shape.max_x - shape.min_x);
+            block_height = std::max(block_height, shape.max_y - shape.min_y);
+        }
+        if (wrapped.empty() && shapes.empty()) {
+            continue;
         }
         const int alignment = rs.alignment >= 1 && rs.alignment <= 9 ? rs.alignment : 2;
         const int horizontal = (alignment - 1) % 3;  // 0 left, 1 center, 2 right
         const int vertical = (alignment - 1) / 3;    // 0 bottom, 1 middle, 2 top
-        const float height = line_height * static_cast<float>(wrapped.size());
         float anchor_x = 0.0f;
         if (rs.has_position) {
             anchor_x = video_pos.x + rs.pos_x * scale;
@@ -1123,110 +1340,259 @@ void Application::drawSubtitles(const ImVec2& video_pos, const ImVec2& video_siz
         } else {
             anchor_x = video_pos.x + video_size.x * 0.5f;
         }
-        float y = 0.0f;
+        float top = 0.0f;
         if (rs.has_position) {
             if (vertical == 2) {
-                y = video_pos.y + rs.pos_y * scale;
+                top = video_pos.y + rs.pos_y * scale;
             } else if (vertical == 1) {
-                y = video_pos.y + rs.pos_y * scale - height * 0.5f;
+                top = video_pos.y + rs.pos_y * scale - block_height * 0.5f;
             } else {
-                y = video_pos.y + rs.pos_y * scale - height;
+                top = video_pos.y + rs.pos_y * scale - block_height;
             }
         } else {
             const float margin = (cue->margin_v > 0.0f ? cue->margin_v : 30.0f) * scale;
             if (vertical == 2) {
-                y = video_pos.y + margin;
+                top = video_pos.y + margin;
             } else if (vertical == 1) {
-                y = video_pos.y + video_size.y * 0.5f - height * 0.5f;
+                top = video_pos.y + video_size.y * 0.5f - block_height * 0.5f;
             } else {
-                y = video_pos.y + video_size.y - margin - height;
+                top = video_pos.y + video_size.y - margin - block_height;
             }
         }
-
-        const auto channel = [](uint32_t color, int shift) {
-            return static_cast<int>((color >> shift) & 0xFF);
-        };
-        const ImU32 outline_color =
-            IM_COL32(channel(rs.outline, 16), channel(rs.outline, 8), channel(rs.outline, 0),
-                     static_cast<int>(std::clamp(rs.outline_opacity, 0.0f, 1.0f) * 255.0f));
-        // A blur cannot be drawn with a text draw list; spread a few faint
-        // outline passes instead so the glow softens rather than hardens.
-        const float soft_radius = outline + blur;
-        const ImU32 soft_color =
-            IM_COL32(channel(rs.outline, 16), channel(rs.outline, 8), channel(rs.outline, 0),
-                     static_cast<int>(std::clamp(rs.outline_opacity, 0.0f, 1.0f) * 90.0f));
-        const ImU32 shadow_color =
-            IM_COL32(channel(rs.back, 16), channel(rs.back, 8), channel(rs.back, 0),
-                     static_cast<int>(std::clamp(rs.shadow_opacity, 0.0f, 1.0f) * 160.0f));
-
-        for (const std::vector<Run>& line : wrapped) {
-            float width = 0.0f;
-            for (const Run& run : line) {
-                width += cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str()).x;
-            }
-            float x = anchor_x;
+        const auto line_left = [&](float width) {
             if (horizontal == 1) {
-                x -= width * 0.5f;
-            } else if (horizontal == 2) {
-                x -= width;
+                return anchor_x - width * 0.5f;
             }
-            // Outline the whole line first: outlining run by run lets a run's
-            // outline eat into the glyphs of the one before it.
-            if (shadow > 0.0f) {
-                float pen = x;
-                for (const Run& run : line) {
-                    const ImVec2 size =
-                        cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str());
-                    draw_list->AddText(cue_font, font_size, ImVec2(pen + shadow, y + shadow),
-                                       shadow_color, run.text.c_str());
-                    pen += size.x;
+            if (horizontal == 2) {
+                return anchor_x - width;
+            }
+            return anchor_x;
+        };
+
+        // \frz, \fax, \fay and a faked italic shear move every glyph corner.
+        // \org sets the origin; without it the alignment anchor is used.
+        const ImVec2 pivot = cue->has_origin
+                                 ? ImVec2(video_pos.x + cue->origin_x * scale,
+                                          video_pos.y + cue->origin_y * scale)
+                                 : ImVec2(anchor_x, top);
+        const float radians = (rs.angle + (italic_shear ? -12.0f : 0.0f)) * 3.14159265f / 180.0f;
+        const float cosine = std::cos(radians);
+        const float sine = std::sin(radians);
+        const auto place = [&](float x, float y) {
+            if (!transformed) {
+                return ImVec2(x, y);
+            }
+            const float rx = x - pivot.x;
+            const float ry = y - pivot.y;
+            const float sheared_x = rx + rs.shear_x * ry;
+            const float sheared_y = ry + rs.shear_y * rx;
+            return ImVec2(pivot.x + sheared_x * cosine - sheared_y * sine,
+                          pivot.y + sheared_x * sine + sheared_y * cosine);
+        };
+        // Draws a run glyph by glyph when the transform or the spacing needs it.
+        const auto draw_text = [&](const std::string& text, float x, float y, ImU32 color) {
+            if (fast_text) {
+                draw_list->AddText(cue_font, font_size, ImVec2(x, y), color, text.c_str());
+                return;
+            }
+            float pen = x;
+            size_t i = 0;
+            while (i < text.size()) {
+                const unsigned char byte = static_cast<unsigned char>(text[i]);
+                size_t length = 1;
+                if ((byte & 0xE0) == 0xC0) {
+                    length = 2;
+                } else if ((byte & 0xF0) == 0xE0) {
+                    length = 3;
+                } else if ((byte & 0xF8) == 0xF0) {
+                    length = 4;
                 }
+                ImWchar codepoint = 0;
+                length = decodeUtf8(text.data() + i, text.size() - i, codepoint);
+                const ImFontGlyph* glyph = baked->FindGlyph(codepoint);
+                i += length;
+                if (glyph == nullptr) {
+                    continue;
+                }
+                const float x0 = pen + glyph->X0 * glyph_scale * stretch;
+                const float x1 = pen + glyph->X1 * glyph_scale * stretch;
+                const float y0 = y + glyph->Y0 * glyph_scale;
+                const float y1 = y + glyph->Y1 * glyph_scale;
+                draw_list->AddImageQuad(font_texture, place(x0, y0), place(x1, y0), place(x1, y1),
+                                        place(x0, y1), ImVec2(glyph->U0, glyph->V0),
+                                        ImVec2(glyph->U1, glyph->V0), ImVec2(glyph->U1, glyph->V1),
+                                        ImVec2(glyph->U0, glyph->V1), color);
+                pen += glyph->AdvanceX * glyph_scale * stretch + spacing;
             }
-            if (soft_radius > 0.0f) {
-                const float step = std::max(soft_radius / 2.0f, 1.0f);
-                float pen = x;
+        };
+
+        // Everything the cue draws.
+        const auto draw_cue = [&] {
+            float y = top;
+            for (const std::vector<Run>& line : wrapped) {
+                float width = 0.0f;
                 for (const Run& run : line) {
-                    const ImVec2 size =
-                        cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str());
+                    width += run_width(run.text);
+                }
+                float x = line_left(width);
+                const auto pass = [&](float dx, float dy, ImU32 color) {
+                    float pen = x;
+                    for (const Run& run : line) {
+                        draw_text(run.text, pen + dx, y + dy, color);
+                        pen += run_width(run.text);
+                    }
+                };
+                // Outline the whole line first: outlining run by run lets a
+                // run's outline eat into the glyphs of the one before it.
+                if (shadow > 0.0f) {
+                    pass(shadow, shadow, shadow_color);
+                }
+                const float soft_radius = outline + blur;
+                if (soft_radius > 0.0f) {
+                    const float step = std::max(soft_radius / 2.0f, 1.0f);
                     for (float dx = -soft_radius; dx <= soft_radius; dx += step) {
                         for (float dy = -soft_radius; dy <= soft_radius; dy += step) {
                             if (dx * dx + dy * dy > soft_radius * soft_radius) {
                                 continue;
                             }
-                            draw_list->AddText(cue_font, font_size, ImVec2(pen + dx, y + dy),
-                                               soft_color, run.text.c_str());
+                            pass(dx, dy, soft_color);
                         }
                     }
-                    pen += size.x;
                 }
-            }
-            if (outline > 0.0f) {
-                float pen = x;
-                for (const Run& run : line) {
-                    const ImVec2 size =
-                        cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str());
+                if (outline > 0.0f) {
                     for (float dx = -outline; dx <= outline; dx += outline) {
                         for (float dy = -outline; dy <= outline; dy += outline) {
                             if (dx == 0.0f && dy == 0.0f) {
                                 continue;
                             }
-                            draw_list->AddText(cue_font, font_size, ImVec2(pen + dx, y + dy),
-                                               outline_color, run.text.c_str());
+                            pass(dx, dy, outline_color);
                         }
                     }
-                    pen += size.x;
+                }
+                if (face.synthetic_bold) {
+                    pass(font_size * 0.03f, 0.0f, text_color);
+                }
+                float pen = x;
+                for (const Run& run : line) {
+                    const float run_w = run_width(run.text);
+                    const ImU32 color = withAlpha(run.color, rs.text_opacity);
+                    draw_text(run.text, pen, y, color);
+                    // Underline and strikeout are thin bars under and through
+                    // the run.
+                    if (rs.underline || rs.strikeout) {
+                        const float thickness = std::max(font_size * 0.06f, 1.0f);
+                        if (rs.underline) {
+                            draw_list->AddRectFilled(
+                                ImVec2(pen, y + font_size * 0.92f),
+                                ImVec2(pen + run_w, y + font_size * 0.92f + thickness), color);
+                        }
+                        if (rs.strikeout) {
+                            draw_list->AddRectFilled(
+                                ImVec2(pen, y + font_size * 0.45f),
+                                ImVec2(pen + run_w, y + font_size * 0.45f + thickness), color);
+                        }
+                    }
+                    pen += run_w;
+                }
+                y += line_height;
+            }
+
+            // Vector drawings: filled with the primary colour and outlined with
+            // the border width.
+            for (const DrawingShape& shape : shapes) {
+                const float left = line_left(shape.max_x - shape.min_x) - shape.min_x;
+                for (const std::vector<ImVec2>& contour : shape.contours) {
+                    std::vector<ImVec2> points;
+                    points.reserve(contour.size());
+                    for (const ImVec2& point : contour) {
+                        points.push_back(ImVec2(left + point.x, top + point.y - shape.min_y));
+                    }
+                    std::vector<int> indices;
+                    triangulatePolygon(points, indices);
+                    for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+                        draw_list->AddTriangleFilled(
+                            points[static_cast<size_t>(indices[i])],
+                            points[static_cast<size_t>(indices[i + 1])],
+                            points[static_cast<size_t>(indices[i + 2])], text_color);
+                    }
+                    if (outline > 0.0f) {
+                        draw_list->AddPolyline(points.data(), static_cast<int>(points.size()),
+                                               outline_color, ImDrawFlags_Closed,
+                                               std::max(outline, 1.0f));
+                    }
                 }
             }
-            for (const Run& run : line) {
-                const ImVec2 size = cue_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, run.text.c_str());
-                const ImU32 color = IM_COL32(channel(run.color, 16), channel(run.color, 8),
-                                             channel(run.color, 0),
-                                             static_cast<int>(std::clamp(rs.text_opacity, 0.0f, 1.0f) *
-                                                              255.0f));
-                draw_list->AddText(cue_font, font_size, ImVec2(x, y), color, run.text.c_str());
-                x += size.x;
+        };
+
+        // Clips: rectangles shrink the video rectangle, and an inverse clip is
+        // drawn as the four bands around its hole. A vector clip uses the box
+        // of its points, since the draw list clips to rectangles only.
+        ImVec4 clip_rect(video_pos.x, video_pos.y, video_pos.x + video_size.x,
+                         video_pos.y + video_size.y);
+        const subtitle::AssClip* inverse = nullptr;
+        for (const subtitle::AssClip& clip : cue->clips) {
+            float x1 = clip.rect ? clip.x1 : 0.0f;
+            float y1 = clip.rect ? clip.y1 : 0.0f;
+            float x2 = clip.rect ? clip.x2 : 0.0f;
+            float y2 = clip.rect ? clip.y2 : 0.0f;
+            if (!clip.rect) {
+                for (const auto& point : clip.points) {
+                    x1 = std::min(x1, point.first);
+                    y1 = std::min(y1, point.second);
+                    x2 = std::max(x2, point.first);
+                    y2 = std::max(y2, point.second);
+                }
             }
-            y += line_height;
+            if (clip.inverse) {
+                if (inverse == nullptr) {
+                    inverse = &clip;
+                }
+                continue;
+            }
+            clip_rect.x = std::max(clip_rect.x, video_pos.x + x1 * scale);
+            clip_rect.y = std::max(clip_rect.y, video_pos.y + y1 * scale);
+            clip_rect.z = std::min(clip_rect.z, video_pos.x + x2 * scale);
+            clip_rect.w = std::min(clip_rect.w, video_pos.y + y2 * scale);
+        }
+
+        // Clips: the transformed text already carries its own corners, so only
+        // the clip rectangles have to be applied here.
+        if (inverse == nullptr) {
+            draw_list->PushClipRect(ImVec2(clip_rect.x, clip_rect.y),
+                                    ImVec2(clip_rect.z, clip_rect.w), true);
+            draw_cue();
+            draw_list->PopClipRect();
+        } else {
+            float hx1 = inverse->rect ? inverse->x1 : 0.0f;
+            float hy1 = inverse->rect ? inverse->y1 : 0.0f;
+            float hx2 = inverse->rect ? inverse->x2 : 0.0f;
+            float hy2 = inverse->rect ? inverse->y2 : 0.0f;
+            if (!inverse->rect) {
+                for (const auto& point : inverse->points) {
+                    hx1 = std::min(hx1, point.first);
+                    hy1 = std::min(hy1, point.second);
+                    hx2 = std::max(hx2, point.first);
+                    hy2 = std::max(hy2, point.second);
+                }
+            }
+            const float hole_x1 = video_pos.x + hx1 * scale;
+            const float hole_y1 = video_pos.y + hy1 * scale;
+            const float hole_x2 = video_pos.x + hx2 * scale;
+            const float hole_y2 = video_pos.y + hy2 * scale;
+            const ImVec4 bands[4] = {
+                ImVec4(clip_rect.x, clip_rect.y, clip_rect.z, hole_y1),
+                ImVec4(clip_rect.x, hole_y2, clip_rect.z, clip_rect.w),
+                ImVec4(clip_rect.x, hole_y1, hole_x1, hole_y2),
+                ImVec4(hole_x2, hole_y1, clip_rect.z, hole_y2),
+            };
+            for (const ImVec4& band : bands) {
+                if (band.x >= band.z || band.y >= band.w) {
+                    continue;
+                }
+                draw_list->PushClipRect(ImVec2(band.x, band.y), ImVec2(band.z, band.w), true);
+                draw_cue();
+                draw_list->PopClipRect();
+            }
         }
     }
     draw_list->PopClipRect();

@@ -24,6 +24,14 @@ struct AssState {
     float border = 0.0f;  // outline width
     float shadow = 0.0f;
     float blur = 0.0f;
+    float angle = 0.0f;    // \frz, degrees
+    float shear_x = 0.0f;  // \fax
+    float shear_y = 0.0f;  // \fay
+    float spacing = 0.0f;  // \fsp, script units
+    bool bold = false;
+    bool italic = false;
+    bool underline = false;
+    bool strikeout = false;
     int alpha1 = 0;  // text
     int alpha2 = 0;  // karaoke
     int alpha3 = 0;  // outline
@@ -50,6 +58,10 @@ enum AssField : uint32_t {
     kAssSecondary = 1u << 11,
     kAssOutline = 1u << 12,
     kAssBack = 1u << 13,
+    kAssAngle = 1u << 14,
+    kAssShearX = 1u << 15,
+    kAssShearY = 1u << 16,
+    kAssSpacing = 1u << 17,
 };
 
 // One \t block: the masked fields move from their current value to the target
@@ -75,6 +87,25 @@ struct AssFade {
     double t4 = 0.0;
 };
 
+// \clip and \iclip. A rectangle clip is the common case; the vector form keeps
+// its points in script coordinates.
+struct AssClip {
+    bool inverse = false;
+    bool rect = true;
+    float x1 = 0.0f;
+    float y1 = 0.0f;
+    float x2 = 0.0f;
+    float y2 = 0.0f;
+    std::vector<std::pair<float, float>> points;
+};
+
+// One \p drawing: its contours and the \p scale (coordinates are in units of
+// 1 / 2^(scale-1) script pixels).
+struct AssDrawing {
+    std::vector<std::vector<std::pair<float, float>>> contours;
+    int scale = 1;
+};
+
 // The evaluated state of a cue at one instant, which is all the renderer needs.
 struct AssRenderState {
     float font_size = 0.0f;
@@ -83,7 +114,15 @@ struct AssRenderState {
     float border = 0.0f;
     float shadow = 0.0f;
     float blur = 0.0f;
-    float text_opacity = 1.0f;     // 0..1, fades included
+    float angle = 0.0f;
+    float shear_x = 0.0f;
+    float shear_y = 0.0f;
+    float spacing = 0.0f;
+    bool bold = false;
+    bool italic = false;
+    bool underline = false;
+    bool strikeout = false;
+    float text_opacity = 1.0f;  // 0..1, fades included
     float outline_opacity = 1.0f;
     float shadow_opacity = 1.0f;
     uint32_t primary = 0xFFFFFF;
@@ -121,6 +160,12 @@ struct Cue {
     float move_y2 = 0.0f;
     double move_t1 = 0.0;
     double move_t2 = 0.0;
+    std::vector<AssClip> clips;
+    std::vector<AssDrawing> drawings;
+    bool has_origin = false;  // \org, the rotation origin
+    float origin_x = 0.0f;
+    float origin_y = 0.0f;
+    int wrap_style = 0;  // \q: 1 and 2 disable wrapping
 };
 
 // Applies the transitions and fades of a cue at the given time.
