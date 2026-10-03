@@ -28,13 +28,14 @@ const Basis& basis() {
     return table;
 }
 
-// One 8-point pass of the separable inverse transform. `basis` is the row of
-// the basis matrix belonging to the output position.
-void transform1d(const float* in, float* out, const float* basis) {
+// One 8-point pass of the separable inverse transform. `basis` is the whole
+// matrix: row n is the basis for output position n, so every output uses its
+// own row.
+void transform1d(const float* in, float* out, const Basis& basis) {
     for (int n = 0; n < 8; ++n) {
         float sum = 0.0f;
         for (int k = 0; k < 8; ++k) {
-            sum += basis[k] * in[k];
+            sum += basis.value[n][k] * in[k];
         }
         out[n] = sum * 0.5f;
     }
@@ -51,7 +52,7 @@ void idct8x8(const int16_t* coef, float out[64]) {
             column[u] = static_cast<float>(coef[u * 8 + x]);
         }
         float result[8];
-        transform1d(column, result, b.value[x]);
+        transform1d(column, result, b);
         for (int y = 0; y < 8; ++y) {
             rows[y * 8 + x] = result[y];
         }
@@ -60,7 +61,7 @@ void idct8x8(const int16_t* coef, float out[64]) {
     // Horizontal pass: input is indexed by horizontal frequency, output by
     // column.
     for (int y = 0; y < 8; ++y) {
-        transform1d(rows + y * 8, out + y * 8, b.value[y]);
+        transform1d(rows + y * 8, out + y * 8, b);
     }
 }
 

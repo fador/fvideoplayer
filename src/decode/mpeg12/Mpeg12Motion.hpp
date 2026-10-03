@@ -31,10 +31,14 @@ bool predictBlock(const PlaneGrid& dst, const PlaneGrid& src, int x, int y, int 
                   int mv_x, int mv_y);
 
 // Copies `width` x `height` samples between grids, used to stash a prediction
-// before averaging it with a second one.
-void copyBlock(const PlaneGrid& dst, const PlaneGrid& src, int x, int y, int width, int height);
+// before averaging it with a second one. The two grids can have different
+// strides and origins, which is what lets a macroblock be stashed into a
+// macroblock-sized scratch grid at 0,0.
+void copyBlock(const PlaneGrid& dst, int dst_x, int dst_y, const PlaneGrid& src, int src_x,
+               int src_y, int width, int height);
 
-// Averages `src` into `dst`, rounding up.
-void averageBlock(const PlaneGrid& dst, const PlaneGrid& src, int x, int y, int width, int height);
+// Averages `src` into `dst`, rounding up, with independent origins.
+void averageBlock(const PlaneGrid& dst, int dst_x, int dst_y, const PlaneGrid& src, int src_x,
+                  int src_y, int width, int height);
 
 }  // namespace player::decode::mpeg12

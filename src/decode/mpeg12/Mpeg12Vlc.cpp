@@ -137,8 +137,14 @@ int readIntraDcDifference(BitReader& reader, int component) {
     if (size == 0) {
         return 0;
     }
-    // The sign is the most significant of the `size` following bits.
-    return reader.readSigned(static_cast<unsigned>(size));
+    // The DC differential is not two's complement: a leading one is the
+    // value itself, a leading zero means the value minus 2^size - 1. So a
+    // size of 7 holding 0001111 is -112, not +15.
+    const auto raw = reader.read(static_cast<unsigned>(size));
+    if (raw >= (1u << (size - 1))) {
+        return static_cast<int>(raw);
+    }
+    return static_cast<int>(raw) - static_cast<int>((1u << size) - 1u);
 }
 
 bool readAcCoefficient(BitReader& reader, AcTable table, int& coefficient_index, int& level) {

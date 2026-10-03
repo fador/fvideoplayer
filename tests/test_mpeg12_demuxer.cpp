@@ -106,11 +106,11 @@ void appendFlatIntraPicture(std::vector<uint8_t>& out) {
                 // have separate predictors, so the first luma block and both
                 // chroma blocks carry it.
                 if (block == 0) {
-                    bits.putCode(0xe, 4);    // luma DC symbol 5
-                    bits.put(0b01000, 5);    // +8
+                    bits.putCode(0x6, 3);    // luma DC symbol 4
+                    bits.put(0b1000, 4);     // +8
                 } else {
-                    bits.putCode(0x1e, 5);   // chroma DC symbol 5
-                    bits.put(0b01000, 5);    // +8
+                    bits.putCode(0xe, 4);    // chroma DC symbol 4
+                    bits.put(0b1000, 4);     // +8
                 }
             } else {
                 bits.putCode(0x4, 3);        // luma DC difference of 0

@@ -265,11 +265,15 @@ int Decoder::flush(std::vector<DecodedFrame>& out) {
         emit(frame);
     }
     pending_b_.clear();
+    // Both anchors are still held: the older one never reached its second
+    // successor, and the newer one is still needed as a reference by the B
+    // pictures that follow it, which will never arrive now.
+    emit(reference_[0]);
+    reference_[0].release();
     if (reference_[1].valid()) {
         emit(reference_[1]);
         reference_[1].release();
     }
-    reference_[0].release();
     return pullFrames(out);
 }
 
@@ -294,18 +298,8 @@ void Decoder::emit(Frame& frame) {
     decoded.pts = decoded.image.pts;
     decoded.poc = static_cast<int32_t>(output_order_++);
     decoded.image.poc = decoded.poc;
-    switch (header_.type) {
-        case PictureType::I:
-            decoded.slice_type = SliceType::I;
-            break;
-        case PictureType::P:
-            decoded.slice_type = SliceType::P;
-            break;
-        case PictureType::B:
-            decoded.slice_type = SliceType::B;
-            break;
-    }
-    decoded.qp = quant_scale_code_ * 2;
+    decoded.slice_type = decoded.image.coding_type;
+    decoded.qp = decoded.image.quantiser * 2;
     ready_.push_back(std::move(decoded));
     ++pictures_decoded_;
 }
@@ -554,19 +548,39 @@ void Decoder::endPicture() {
         return;
     }
 
+    // Record the coding type and quantiser on the frame itself: this picture
+    // may not be emitted until two more anchors have been decoded, and by then
+    // header_ describes a different picture.
+    switch (header_.type) {
+        case PictureType::I:
+            current_.coding_type = SliceType::I;
+            break;
+        case PictureType::P:
+            current_.coding_type = SliceType::P;
+            break;
+        case PictureType::B:
+            current_.coding_type = SliceType::B;
+            break;
+    }
+    current_.quantiser = quant_scale_code_;
+
     if (header_.type == PictureType::B) {
         pending_b_.push_back(std::move(current_));
         return;
     }
 
-    emit(reference_[1]);
-    reference_[1].release();
-    reference_[0] = std::move(reference_[1]);
-    reference_[1] = std::move(current_);
+    // A new anchor arrived, so the B pictures that display between the two held
+    // anchors are complete. The older anchor goes out first, then those B
+    // pictures. The newer anchor stays held: the B pictures that display after
+    // it are still to come and need it as their backward reference, so it must
+    // not be moved into the output queue yet.
+    emit(reference_[0]);
     for (Frame& frame : pending_b_) {
         emit(frame);
     }
     pending_b_.clear();
+    reference_[0] = std::move(reference_[1]);
+    reference_[1] = std::move(current_);
 }
 
 // ---------------------------------------------------------------------------
@@ -1136,7 +1150,7 @@ void Decoder::savePrediction() {
         scratch.stride = width;
         scratch.width = width;
         scratch.height = height;
-        copyBlock(scratch, grid, x, y, width, height);
+        copyBlock(scratch, 0, 0, grid, x, y, width, height);
     }
 }
 
@@ -1159,7 +1173,7 @@ void Decoder::averageWithPrediction() {
         scratch.stride = width;
         scratch.width = width;
         scratch.height = height;
-        averageBlock(grid, scratch, x, y, width, height);
+        averageBlock(grid, x, y, scratch, 0, 0, width, height);
     }
 }
 

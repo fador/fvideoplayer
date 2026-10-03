@@ -209,6 +209,11 @@ public:
 
     int64_t pts = 0;
     int32_t poc = 0;
+    // Coding type and quantiser of the picture this frame came from. A decoder
+    // that reorders pictures fills these in when the picture is decoded so it
+    // can still label a frame correctly when it is emitted later.
+    SliceType coding_type = SliceType::Unknown;
+    int quantiser = 0;
 
 private:
     void moveFrom(Frame& other) {
@@ -237,6 +242,8 @@ private:
         crop_bottom_ = other.crop_bottom_;
         pts = other.pts;
         poc = other.poc;
+        coding_type = other.coding_type;
+        quantiser = other.quantiser;
     }
 
     void* payload_ = nullptr;

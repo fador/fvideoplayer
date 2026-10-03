@@ -336,14 +336,35 @@ TEST(Mpeg1Vlc, IntraDcDifferenceUsesTheSymbolAsBitCount) {
         BitReader reader(data, sizeof(data));
         EXPECT_EQ(readIntraDcDifference(reader, 0), 0);
     }
-    // Luma codeword `01` is symbol 2, so two signed bits follow.
+    // Luma codeword `01` is symbol 2, so two differential bits follow. The
+    // differential is not two's complement: a leading zero subtracts 2^2 - 1,
+    // so 01 is -2 while 10 is +2.
     {
         BitWriter writer;
         writer.putCode(0x1, 2);
-        writer.putCode(0b11, 2);  // -1 in two's complement
+        writer.putCode(0b01, 2);
         const std::vector<uint8_t> bytes = writer.bytes();
         BitReader reader(bytes.data(), bytes.size());
-        EXPECT_EQ(readIntraDcDifference(reader, 0), -1);
+        EXPECT_EQ(readIntraDcDifference(reader, 0), -2);
+    }
+    {
+        BitWriter writer;
+        writer.putCode(0x1, 2);
+        writer.putCode(0b10, 2);
+        const std::vector<uint8_t> bytes = writer.bytes();
+        BitReader reader(bytes.data(), bytes.size());
+        EXPECT_EQ(readIntraDcDifference(reader, 0), 2);
+    }
+    // A leading zero means value - (2^size - 1), which is how an encoder writes
+    // a large negative difference. `111110` is size 7, and 0001111 is
+    // 15 - 127 = -112, taking the predictor from 128 down to 16.
+    {
+        BitWriter writer;
+        writer.putCode(0x3e, 6);
+        writer.putCode(0b0001111, 7);
+        const std::vector<uint8_t> bytes = writer.bytes();
+        BitReader reader(bytes.data(), bytes.size());
+        EXPECT_EQ(readIntraDcDifference(reader, 0), -112);
     }
 }
 
@@ -434,16 +455,44 @@ TEST(Mpeg1Idct, AddOverTheExistingPrediction) {
 }
 
 TEST(Mpeg1Idct, ClipsToEightBits) {
+    // A DC large enough to land past each end of the range. Setting every
+    // coefficient would not do it: with a correct transform the AC terms
+    // cancel rather than summing to a constant.
+    {
+        Block block;
+        clearBlock(block);
+        block.coef[0] = 4096;
+        uint8_t pixels[64] = {};
+        idctPutBlock(block, pixels, 8);
+        for (int i = 0; i < 64; ++i) {
+            EXPECT_EQ(pixels[i], 255) << "sample " << i;
+        }
+    }
+    {
+        Block block;
+        clearBlock(block);
+        block.coef[0] = -4096;
+        uint8_t pixels[64] = {};
+        idctPutBlock(block, pixels, 8);
+        for (int i = 0; i < 64; ++i) {
+            EXPECT_EQ(pixels[i], 0) << "sample " << i;
+        }
+    }
+}
+
+TEST(Mpeg1Idct, AcCoefficientVariesAcrossTheBlock) {
+    // A single AC coefficient has to vary with the output position. A transform
+    // that ignores the output index makes the block constant instead, which
+    // leaves DC-only pictures looking right and everything else wrong.
     Block block;
     clearBlock(block);
-    for (int i = 0; i < 64; ++i) {
-        block.coef[i] = 4096;
-    }
+    block.coef[0] = 1024;  // flat mid grey of 128
+    block.coef[1] = 512;   // first horizontal frequency
     uint8_t pixels[64] = {};
     idctPutBlock(block, pixels, 8);
-    for (int i = 0; i < 64; ++i) {
-        EXPECT_EQ(pixels[i], 255) << "sample " << i;
-    }
+    EXPECT_NE(pixels[0], pixels[7]);
+    // The horizontal pass must vary along a row, not along a column.
+    EXPECT_EQ(pixels[0], pixels[8 * 7]);
 }
 
 // ---------------------------------------------------------------------------
@@ -490,16 +539,41 @@ TEST(Mpeg1Motion, HalfPelAveragesUpwards) {
     }
 }
 
-TEST(Mpeg1Motion, RejectsVectorsOutsideTheReference) {
+TEST(Mpeg1Motion, ReplicatesTheEdgeForVectorsOutsideTheReference) {
     Frame reference;
     ASSERT_TRUE(reference.alloc(16, 16, ChromaFormat::Mono));
+    // A column of 40 at the right edge and a row of 60 at the bottom edge, so
+    // clamping is distinguishable from reading whatever follows the picture.
+    std::memset(reference.plane(0), 10, 256);
+    for (int y = 0; y < 16; ++y) {
+        reference.plane(0)[y * 16 + 15] = 40;
+    }
+    for (int x = 0; x < 16; ++x) {
+        reference.plane(0)[15 * 16 + x] = 60;
+    }
+    reference.plane(0)[15 * 16 + 15] = 90;
+
     Frame destination;
     ASSERT_TRUE(destination.alloc(16, 16, ChromaFormat::Mono));
 
-    // Two pixels past the right edge, plus a half sample refinement.
-    EXPECT_FALSE(predictBlock(frameGrid(destination, 0), frameGrid(reference, 0), 0, 0, 16, 16, 2 * 16 + 1, 0));
-    EXPECT_FALSE(predictBlock(frameGrid(destination, 0), frameGrid(reference, 0), 0, 0, 16, 16, 0, 2 * 16 + 1));
-    EXPECT_FALSE(predictBlock(frameGrid(destination, 0), frameGrid(reference, 0), 0, 0, 16, 16, -2, 0));
+    // Two pixels past the right edge: the whole block reads the 40 column, so
+    // the first column of the destination must be 40 rather than 10.
+    ASSERT_TRUE(predictBlock(frameGrid(destination, 0), frameGrid(reference, 0), 0, 0, 16, 16,
+                             2 * 16, 0));
+    EXPECT_EQ(destination.plane(0)[0], 40);
+
+    // Past the bottom edge: the 60 row, and the corner where both clamp is 90.
+    std::memset(destination.plane(0), 0, 256);
+    ASSERT_TRUE(predictBlock(frameGrid(destination, 0), frameGrid(reference, 0), 0, 0, 16, 16, 0,
+                             2 * 16));
+    EXPECT_EQ(destination.plane(0)[0], 60);
+    EXPECT_EQ(destination.plane(0)[15], 90);
+
+    // Past the left edge: column 0, which is 10.
+    std::memset(destination.plane(0), 0, 256);
+    ASSERT_TRUE(predictBlock(frameGrid(destination, 0), frameGrid(reference, 0), 0, 0, 16, 16, -2,
+                             0));
+    EXPECT_EQ(destination.plane(0)[0], 10);
 }
 
 // ---------------------------------------------------------------------------
@@ -562,11 +636,11 @@ std::vector<uint8_t> buildIntraFrame() {
                 // have separate predictors, so the first luma block and both
                 // chroma blocks carry it.
                 if (block == 0) {
-                    writer.putCode(0xe, 4);    // luma DC symbol 5
-                    writer.put(0b01000, 5);    // +8
+                    writer.putCode(0x6, 3);    // luma DC symbol 4
+                    writer.put(0b1000, 4);     // +8
                 } else {
-                    writer.putCode(0x1e, 5);   // chroma DC symbol 5
-                    writer.put(0b01000, 5);    // +8
+                    writer.putCode(0xe, 4);    // chroma DC symbol 4
+                    writer.put(0b1000, 4);     // +8
                 }
             } else {
                 writer.putCode(0x4, 3);        // luma DC difference of 0
