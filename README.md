@@ -94,8 +94,9 @@ hevc_player [options] [file]
 ```
 src/
   app/        SDL3 + ImGui application shell and UI
-  demux/      container demuxers (MP4, MKV, AVI, raw HEVC, raw MPEG-1, raw
-              MP3, raw FLAC) + hvcC and esds parsers
+  demux/      container demuxers (MP4, MKV, AVI, MPEG program streams,
+              raw HEVC, raw MPEG-1/2, raw MP3, raw FLAC) + hvcC and esds
+              parsers
   subtitle/   SRT/ASS/SSA/WebVTT/MicroDVD parsers and cue lookup
   decode/     codec-neutral Frame, decode backends (KvzdecDecoder,
               mpeg12/ from-scratch MPEG-1 and MPEG-2), NAL handling, decode-to-YUV
@@ -202,13 +203,12 @@ MPEG-2 adds the following, all of which are implemented:
   spatial and high profiles. These are rejected explicitly.
 - **Scalability**: the sequence scalability extension and its layers are not
   parsed.
-- MPEG-2 features deliberately absent: there are no flat/non-flat quantiser
+- **MPEG-2 features deliberately absent**: there are no flat/non-flat quantiser
   matrix tests and no `q_scale_type` interaction with the DC predictor beyond
   what the standard specifies.
-- **MPEG program streams**: `.mpg` files from DVD rippers are program streams
-  rather than elementary streams, and the program stream demuxer is not written
-  yet. A program stream is detected as an elementary stream and reports
-  "no MPEG-1 pictures found".
+- **Program stream audio**: a program stream's audio PES packets are skipped,
+  so a `.vob` or `.mpg` plays video only. MPEG audio, AC-3 and the rest would
+  each need their own elementary stream framing.
 
 ### Containers
 
@@ -219,13 +219,27 @@ a raw elementary stream by looking for a sequence extension:
 | Container | MPEG-1 marker | MPEG-2 marker |
 | --- | --- | --- |
 | Raw elementary stream | `.mpg`, `.mpeg`, `.m1v`, `.mpe`, `.vcd` | `.m2v`, `.m2p`, `.mpv`, or a sequence extension in the stream |
+| Program stream | `.vob`, `.evo`, or a leading pack or system header | same |
 | AVI | `mpg1`, `MPG1`, `PIM1`, `BW10`, `XMPG` | `mpg2`, `MPG2`, `MPEG`, `PIM2`, `VCR2`, `DVR `, `MMES`, `LMP2`, `slif`, `EM2V`, `M701`..`M705`, `mpgv` |
 | Matroska | `V_MPEG1` | `V_MPEG2` |
 | MP4 / MOV | `mp4v` with an `esds` object type of `0x01` | `mp4v` with an `esds` object type of `0x60`..`0x65` |
 
 A raw stream is split into pictures at picture headers, and the sequence and
 group headers that precede a picture are folded into that picture's sample,
-because the decoder needs them and there is no separate sample for them.
+because the decoder needs them and there is no separate sample for them. A
+sequence or group header therefore ends the picture before it, which is what
+makes every sample independently decodable from a keyframe.
+
+A **program stream** (`MPEG-PS`) is walked pack by pack: pack headers, system
+headers and PES packets are skipped by their declared length, and the video
+PES payloads are reassembled into one elementary stream before being split into
+pictures exactly like a raw stream. PES packets that split a picture, and video
+PES packets whose declared length is zero, are both handled. Each picture takes
+the PTS of the PES packet it started in, and the frame rate is derived from the
+PTS spacing when the stream provides one. Both the MPEG-1 (`01` marker with a
+STD buffer field) and MPEG-2 (`10` marker with flags and a header length) PES
+header forms are parsed.
+
 `mp4v` with an object type of `0x20` (MPEG-4 Visual) or `0x21` (H.264) is
 rejected with a clear message rather than decoded incorrectly.
 

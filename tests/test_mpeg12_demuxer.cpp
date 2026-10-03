@@ -270,7 +270,7 @@ TEST(RawMpegDemuxer, RejectsAStreamWithoutPictures) {
         RawMpegDemuxer demuxer;
         std::string error;
         EXPECT_FALSE(demuxer.open(path, error));
-        EXPECT_NE(error.find("no MPEG-1 pictures"), std::string::npos);
+        EXPECT_NE(error.find("no MPEG pictures"), std::string::npos);
     }
 
     std::filesystem::remove(path);

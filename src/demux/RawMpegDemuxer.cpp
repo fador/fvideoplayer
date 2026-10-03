@@ -2,23 +2,10 @@
 
 #include <cmath>
 #include <cstdio>
-#include <cstring>
 #include <vector>
 
 namespace player::demux {
 namespace {
-
-constexpr uint8_t kStartSequence = 0xB3;
-constexpr uint8_t kStartExtension = 0xB5;
-constexpr uint8_t kStartGop = 0xB8;
-constexpr uint8_t kStartUserData = 0xB2;
-constexpr uint8_t kStartPicture = 0x00;
-constexpr uint8_t kStartSliceFirst = 0x01;
-constexpr uint8_t kStartSliceLast = 0xAF;
-
-bool isSliceStart(uint8_t code) {
-    return code >= kStartSliceFirst && code <= kStartSliceLast;
-}
 
 bool seekFile(FILE* file, int64_t offset) {
 #ifdef _WIN32
@@ -36,118 +23,26 @@ int64_t fileSize(FILE* file) {
 #endif
 }
 
-struct StartCode {
-    int64_t header = 0;  // exact offset of the `00 00 01` pattern
-    int64_t body = 0;    // first payload byte after the code byte
-    uint8_t code = 0;
-};
-
-bool findStartCode(const std::vector<uint8_t>& buffer, size_t from, StartCode& out) {
-    for (size_t i = from; i + 3 < buffer.size(); ++i) {
-        if (buffer[i] != 0 || buffer[i + 1] != 0 || buffer[i + 2] != 1) {
-            continue;
-        }
-        out.header = static_cast<int64_t>(i);
-        out.body = static_cast<int64_t>(i) + 4;
-        out.code = buffer[i + 3];
-        return true;
+bool readWholeFile(FILE* file, std::vector<uint8_t>& out, std::string& error) {
+    if (std::fseek(file, 0, SEEK_END) != 0) {
+        error = "failed to determine file size";
+        return false;
     }
-    return false;
-}
-
-// Returns the fields of a picture header that the demuxer needs.
-struct PictureInfo {
-    uint8_t type = 1;
-    bool valid = false;
-};
-
-PictureInfo parsePictureHeader(const std::vector<uint8_t>& buffer, int64_t offset, int64_t limit) {
-    PictureInfo info;
-    if (offset + 4 > limit) {
-        return info;
+    const int64_t size = fileSize(file);
+    if (size <= 0) {
+        error = "empty file";
+        return false;
     }
-    // temporal_reference is 10 bits, then the 3-bit picture_coding_type.
-    const uint32_t bits = (static_cast<uint32_t>(buffer[static_cast<size_t>(offset)]) << 24) |
-                          (static_cast<uint32_t>(buffer[static_cast<size_t>(offset) + 1]) << 16) |
-                          (static_cast<uint32_t>(buffer[static_cast<size_t>(offset) + 2]) << 8) |
-                          static_cast<uint32_t>(buffer[static_cast<size_t>(offset) + 3]);
-    info.type = static_cast<uint8_t>((bits >> 19) & 0x07);
-    info.valid = info.type >= 1 && info.type <= 3;
-    return info;
-}
-
-// Splits the stream into pictures and reads the geometry from the sequence
-// headers. Also reports whether the stream is MPEG-2, which is decided by a
-// sequence extension (an extension start code with id 1) following the
-// sequence header.
-void scanPictures(const std::vector<uint8_t>& buffer, int64_t file_size,
-                  std::vector<RawMpegDemuxer::PictureRange>* pictures, uint32_t* width,
-                  uint32_t* height, bool* mpeg2) {
-    StartCode sc;
-    if (!findStartCode(buffer, 0, sc)) {
-        return;
+    if (!seekFile(file, 0)) {
+        error = "failed to seek input";
+        return false;
     }
-
-    int64_t picture_start = -1;
-    // Start of the sequence or group header block that has not been emitted yet.
-    int64_t header_start = -1;
-    PictureInfo picture_info{};
-    bool awaiting_extension = false;
-
-    for (;;) {
-        if (sc.code == kStartSequence) {
-            // The first four bytes carry horizontal_size, vertical_size,
-            // pixel_aspect_ratio and frame_rate_code.
-            if (sc.body + 4 <= static_cast<int64_t>(buffer.size())) {
-                const size_t at = static_cast<size_t>(sc.body);
-                const uint32_t bits =
-                    (static_cast<uint32_t>(buffer[at]) << 24) |
-                    (static_cast<uint32_t>(buffer[at + 1]) << 16) |
-                    (static_cast<uint32_t>(buffer[at + 2]) << 8) |
-                    static_cast<uint32_t>(buffer[at + 3]);
-                *width = (bits >> 20) & 0x0FFF;
-                *height = (bits >> 8) & 0x0FFF;
-            }
-            if (picture_start < 0) {
-                header_start = sc.header;
-            }
-            awaiting_extension = true;
-        } else if (sc.code == kStartExtension && awaiting_extension) {
-            // The extension id is the top nibble of the first payload byte.
-            if (sc.body < static_cast<int64_t>(buffer.size()) &&
-                (buffer[static_cast<size_t>(sc.body)] >> 4) == 1) {
-                *mpeg2 = true;
-            }
-            awaiting_extension = false;
-        } else if (sc.code == kStartPicture) {
-            awaiting_extension = false;
-            if (picture_start >= 0) {
-                pictures->push_back(
-                    {picture_start, sc.header - picture_start, picture_info.type});
-            }
-            // Carry any not-yet-emitted sequence or group header along.
-            picture_start = header_start >= 0 ? header_start : sc.header;
-            picture_info = parsePictureHeader(buffer, sc.body, file_size);
-            header_start = -1;
-        } else if (sc.code == 0xB7) {
-            if (picture_start >= 0) {
-                pictures->push_back(
-                    {picture_start, sc.header - picture_start, picture_info.type});
-            }
-            picture_start = -1;
-            break;
-        } else if (picture_start < 0 && (sc.code == kStartGop || sc.code == kStartUserData)) {
-            header_start = header_start >= 0 ? header_start : sc.header;
-        }
-
-        if (!findStartCode(buffer, static_cast<size_t>(sc.body), sc)) {
-            break;
-        }
+    out.resize(static_cast<size_t>(size));
+    if (std::fread(out.data(), 1, out.size(), file) != out.size()) {
+        error = "failed to read input";
+        return false;
     }
-
-    if (picture_start >= 0 && file_size > picture_start) {
-        pictures->push_back({picture_start, file_size - picture_start, picture_info.type});
-    }
+    return true;
 }
 
 }  // namespace
@@ -163,42 +58,27 @@ RawMpegDemuxer::~RawMpegDemuxer() {
 
 bool RawMpegDemuxer::open(const std::filesystem::path& path, std::string& error) {
     file_ = std::fopen(path.string().c_str(), "rb");
-    if (!file_) {
+    if (file_ == nullptr) {
         error = "failed to open " + path.string();
         return false;
     }
-    if (std::fseek(file_, 0, SEEK_END) != 0) {
-        error = "failed to determine file size";
-        return false;
-    }
-    const int64_t size = fileSize(file_);
-    if (size <= 0) {
-        error = "empty file";
-        return false;
-    }
-    if (!seekFile(file_, 0)) {
-        error = "failed to seek input";
-        return false;
-    }
-    std::vector<uint8_t> buffer(static_cast<size_t>(size));
-    if (std::fread(buffer.data(), 1, buffer.size(), file_) != buffer.size()) {
-        error = "failed to read input";
+
+    std::vector<uint8_t> buffer;
+    if (!readWholeFile(file_, buffer, error)) {
         return false;
     }
 
-    uint32_t width = 0;
-    uint32_t height = 0;
-    bool mpeg2 = false;
-    scanPictures(buffer, size, &pictures_, &width, &height, &mpeg2);
+    MpegEsInfo info;
+    scanMpegPictures(buffer, static_cast<int64_t>(buffer.size()), pictures_, info);
     if (pictures_.empty()) {
-        error = "no MPEG-1 pictures found in stream";
+        error = "no MPEG pictures found in stream";
         return false;
     }
 
     video_ = VideoTrackInfo{};
-    video_.codec = mpeg2 ? Codec::Mpeg2 : Codec::Mpeg1;
-    video_.width = width;
-    video_.height = height;
+    video_.codec = info.mpeg2 ? Codec::Mpeg2 : Codec::Mpeg1;
+    video_.width = info.width;
+    video_.height = info.height;
     video_.fps = fps_;
     video_.timescale = 1000;
     // The payload is a start-code prefixed elementary stream.
@@ -216,10 +96,10 @@ double RawMpegDemuxer::duration() const {
 }
 
 bool RawMpegDemuxer::readSample(Sample& sample) {
-    if (!file_ || next_picture_ >= pictures_.size()) {
+    if (file_ == nullptr || next_picture_ >= pictures_.size()) {
         return false;
     }
-    const PictureRange& picture = pictures_[next_picture_];
+    const MpegEsPicture& picture = pictures_[next_picture_];
     sample.data.resize(static_cast<size_t>(picture.size));
     if (!seekFile(file_, picture.offset)) {
         return false;
@@ -263,4 +143,3 @@ bool RawMpegDemuxer::seek(double seconds) {
 }
 
 }  // namespace player::demux
-

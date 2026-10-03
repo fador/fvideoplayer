@@ -5,6 +5,7 @@
 #include "demux/MkvDemuxer.hpp"
 #include "demux/Mp3Demuxer.hpp"
 #include "demux/Mp4Demuxer.hpp"
+#include "demux/MpegPsDemuxer.hpp"
 #include "demux/RawHevcDemuxer.hpp"
 #include "demux/RawMpegDemuxer.hpp"
 
@@ -23,6 +24,7 @@ enum class Container {
     Avi,
     RawHevc,
     RawMpeg,
+    MpegPs,
     Mp3,
     Flac,
 };
@@ -63,8 +65,15 @@ Container detectContainer(const std::filesystem::path& path) {
                        (magic[0] == 0 && magic[1] == 0 && magic[2] == 0 && magic[3] == 1))) {
         // The prefix is `000001` or `00000001`; the code byte follows it.
         const size_t code_index = magic[2] == 1 ? 3 : 4;
-        if (code_index < count && isMpeg1StartCode(magic[code_index])) {
-            return Container::RawMpeg;
+        if (code_index < count) {
+            // A pack header or system header means an MPEG program stream
+            // rather than a bare elementary stream.
+            if (magic[code_index] == 0xBA || magic[code_index] == 0xBB) {
+                return Container::MpegPs;
+            }
+            if (isMpeg1StartCode(magic[code_index])) {
+                return Container::RawMpeg;
+            }
         }
         return Container::RawHevc;
     }
@@ -81,6 +90,9 @@ if (count >= 4 && std::memcmp(magic, "fLaC", 4) == 0) {
     const std::string ext = toLower(path.extension().string());
     if (ext == ".hevc" || ext == ".h265" || ext == ".265") {
         return Container::RawHevc;
+    }
+    if (ext == ".vob" || ext == ".evo") {
+        return Container::MpegPs;
     }
     if (ext == ".mpg" || ext == ".mpeg" || ext == ".m1v" || ext == ".mpe" || ext == ".vcd" || ext == ".m2v" || ext == ".m2p" || ext == ".mpv") {
         return Container::RawMpeg;
@@ -107,6 +119,13 @@ std::unique_ptr<IDemuxer> createDemuxer(const std::filesystem::path& path, std::
         }
         case Container::RawMpeg: {
             auto demuxer = std::make_unique<RawMpegDemuxer>();
+            if (!demuxer->open(path, error)) {
+                return nullptr;
+            }
+            return demuxer;
+        }
+        case Container::MpegPs: {
+            auto demuxer = std::make_unique<MpegPsDemuxer>();
             if (!demuxer->open(path, error)) {
                 return nullptr;
             }

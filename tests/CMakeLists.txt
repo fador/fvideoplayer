@@ -26,6 +26,7 @@ add_executable(player_tests
     test_mpeg12.cpp
     test_mpeg12_demuxer.cpp
     test_mpeg2.cpp
+    test_mpeg_ps_demuxer.cpp
     test_nal_units.cpp
     test_raw_hevc_demuxer.cpp
     test_subtitle.cpp)

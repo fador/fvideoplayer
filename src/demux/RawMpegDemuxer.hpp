@@ -1,24 +1,19 @@
 #pragma once
 
 #include "demux/Demuxer.hpp"
+#include "demux/MpegEsScan.hpp"
 
 namespace player::demux {
 
 // Raw MPEG-1 or MPEG-2 video elementary stream (.mpg, .mpeg, .m1v, .m2v).
 //
 // The file is scanned for start codes once at open, and pictures are cut at
-// picture headers. Picture order is decode order, which is what the MPEG-1
-// decoder expects; the decoder reorders for display.
+// picture headers. Picture order is decode order, which is what the decoder
+// expects; the decoder reorders for display.
 class RawMpegDemuxer : public IDemuxer {
 public:
-    struct PictureRange {
-        int64_t offset = 0;
-        int64_t size = 0;
-        int type = 0;  // picture_coding_type, 1 = I
-    };
-
-    // Frame rate used for sample timestamps. Zero means the decoder reports the
-    // one from the sequence header, and 25 is assumed until then.
+    // Frame rate used for sample timestamps. Zero means 25 until the decoder
+    // reports the rate from the sequence header.
     explicit RawMpegDemuxer(double fps = 0.0);
     ~RawMpegDemuxer();
 
@@ -29,7 +24,8 @@ public:
     bool readSample(Sample& sample) override;
     bool seek(double seconds) override;
 
-    std::vector<PictureRange> pictures_;
+private:
+    std::vector<MpegEsPicture> pictures_;
     FILE* file_ = nullptr;
     VideoTrackInfo video_{};
     AudioTrackInfo audio_{};
@@ -38,4 +34,3 @@ public:
 };
 
 }  // namespace player::demux
-
