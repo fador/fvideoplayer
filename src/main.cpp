@@ -14,6 +14,19 @@
 
 namespace {
 
+const char* videoCodecName(player::demux::Codec codec) {
+    switch (codec) {
+        case player::demux::Codec::Hevc:
+            return "HEVC";
+        case player::demux::Codec::Mpeg1:
+            return "MPEG-1";
+        case player::demux::Codec::Mpeg2:
+            return "MPEG-2";
+        default:
+            return "none";
+    }
+}
+
 // The GUI does not need a console. CLI modes keep it so that output can be
 // redirected and shells wait for the process to finish.
 void detachConsoleForGui() {
@@ -54,7 +67,7 @@ int printFileInfo(const std::string& input) {
     const player::demux::AudioTrackInfo& audio = demuxer->audio();
 
     std::printf("file: %s\n", input.c_str());
-    std::printf("video: HEVC %ux%u\n", video.width, video.height);
+    std::printf("video: %s %ux%u\n", videoCodecName(video.codec), video.width, video.height);
     std::printf("fps: %.3f\n", video.fps);
     std::printf("timescale: %u\n", video.timescale);
     std::printf("duration: %.3f s\n", demuxer->duration());

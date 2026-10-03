@@ -1,5 +1,7 @@
 #include "app/Application.hpp"
 
+#include "app/Win98Theme.hpp"
+
 #include <SDL3/SDL_opengl.h>
 
 #include <imgui.h>
@@ -97,26 +99,26 @@ const char* chromaName(int chroma_format) {
     }
 }
 
-const char* sliceName(int slice_type) {
+const char* sliceName(decode::SliceType slice_type) {
     switch (slice_type) {
-        case KVZDEC_SLICE_B:
+        case decode::SliceType::B:
             return "B";
-        case KVZDEC_SLICE_P:
+        case decode::SliceType::P:
             return "P";
-        case KVZDEC_SLICE_I:
+        case decode::SliceType::I:
             return "I";
         default:
             return "?";
     }
 }
 
-const char* hashResultName(int result) {
+const char* hashResultName(decode::HashResult result) {
     switch (result) {
-        case KVZDEC_HASH_NOT_PRESENT:
+        case decode::HashResult::NotPresent:
             return "n/a";
-        case KVZDEC_HASH_MATCH:
+        case decode::HashResult::Match:
             return "match";
-        case KVZDEC_HASH_MISMATCH:
+        case decode::HashResult::Mismatch:
             return "MISMATCH";
         default:
             return "?";
@@ -163,11 +165,12 @@ bool Application::init(const std::string& title) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.IniFilename = nullptr;
-    ImGui::StyleColorsDark();
+    win98::applyStyle();
 
-    // The first font added becomes the UI font, so add the built-in one first
+    // The first font added becomes the UI font, so add the Win98 UI font first
     // and keep the CJK font for subtitles only.
-    io.FontDefault = io.Fonts->AddFontDefault();
+    const char* ui_font_file = nullptr;
+    io.FontDefault = win98::loadUiFont(&ui_font_file);
     // Subtitles are often CJK, which the built-in font cannot draw. ImGui
     // loads glyphs on demand, so any font with the coverage works; take the
     // first one the system has.
@@ -194,6 +197,7 @@ bool Application::init(const std::string& title) {
         std::fprintf(stderr, "ImGui OpenGL3 backend init failed\n");
         return false;
     }
+    win98::stylePlots();
     imgui_ready_ = true;
 
     std::string renderer_error;
@@ -203,8 +207,9 @@ bool Application::init(const std::string& title) {
     }
     engine_.setAudioSink(&audio_sink_);
 
+    log::addf(log::Level::Info, "UI font: %s", ui_font_file != nullptr ? ui_font_file : "?");
     log::addf(log::Level::Info, "HEVC Player started (kvzdec %s)",
-              kvzdec_get_version_string());
+              decode::hevcBackendVersion());
     const char* gl_version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
     const char* gl_renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
     log::addf(log::Level::Info, "OpenGL: %s (%s)", gl_version ? gl_version : "?",
@@ -275,12 +280,13 @@ int Application::run(int max_frames) {
 
         engine_.update();
         const decode::DecodedFrame* current = engine_.currentFrame();
-        if (current && current->picture && engine_.currentSerial() != uploaded_serial_) {
-            renderer_.upload(current->picture);
+    if (current && current->image.valid() && engine_.currentSerial() != uploaded_serial_) {
+        renderer_.upload(&current->image);
             uploaded_serial_ = engine_.currentSerial();
         }
         video_texture_ = renderer_.render(color_);
-        if (!screenshot_path_.empty() && video_texture_ != 0) {
+        // A UI capture does not need a decoded frame, a video capture does.
+        if (!screenshot_path_.empty() && (video_texture_ != 0 || screenshot_window_)) {
             if (screenshot_every_ > 0) {
                 if (frame_count_ % screenshot_every_ == 0) {
                     saveScreenshotTo(screenshot_path_ + "-" +
@@ -329,16 +335,19 @@ void Application::drawUI() {
     drawVideoArea();
     drawStatsWindow();
     drawLogWindow();
+    // Menus are popup windows of ImGui, which only exist once everything else
+    // has been submitted.
+    win98::decoratePopups();
 }
 
 void Application::drawMenuBar() {
     if (ImGui::BeginMainMenuBar()) {
-        if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Open...", "Ctrl+O")) {
+        if (win98::beginMenu("File")) {
+            if (win98::menuItem("Open...", "Ctrl+O")) {
                 openFileDialog();
             }
-            ImGui::Separator();
-            if (ImGui::MenuItem("Close")) {
+            win98::separator();
+            if (win98::menuItem("Close")) {
                 engine_.close();
                 uploaded_serial_ = 0;
                 video_texture_ = 0;
@@ -346,64 +355,67 @@ void Application::drawMenuBar() {
                 active_subtitle_ = -1;
                 status_.clear();
             }
-            ImGui::Separator();
-            if (ImGui::MenuItem("Quit", "Alt+F4")) {
+            win98::separator();
+            if (win98::menuItem("Quit", "Alt+F4")) {
                 SDL_Event quit{};
                 quit.type = SDL_EVENT_QUIT;
                 SDL_PushEvent(&quit);
             }
-            ImGui::EndMenu();
+            win98::endMenu();
         }
-        if (ImGui::BeginMenu("Playback")) {
+        if (win98::beginMenu("Playback")) {
             const bool has_file = engine_.hasFile();
-            if (ImGui::MenuItem(engine_.state() == playback::State::Playing ? "Pause" : "Play",
+            if (win98::menuItem(engine_.state() == playback::State::Playing ? "Pause" : "Play",
                                 "Space", false, has_file)) {
                 engine_.togglePlayPause();
             }
-            if (ImGui::MenuItem("Stop", nullptr, false, has_file)) {
+            if (win98::menuItem("Stop", nullptr, false, has_file)) {
                 engine_.stop();
             }
-            ImGui::EndMenu();
+            win98::endMenu();
         }
-        if (ImGui::BeginMenu("Subtitles")) {
+        if (win98::beginMenu("Subtitles")) {
             const bool has_file = engine_.hasFile();
-            if (ImGui::MenuItem("None", nullptr, active_subtitle_ < 0, has_file)) {
+            if (win98::menuItem("None", nullptr, active_subtitle_ < 0, has_file)) {
                 activateSubtitle(-1);
             }
-            ImGui::Separator();
+            win98::separator();
             for (size_t i = 0; i < subtitle_options_.size(); ++i) {
                 const SubtitleOption& option = subtitle_options_[i];
                 const bool selected = active_subtitle_ == static_cast<int>(i);
-                if (ImGui::MenuItem(option.label.c_str(), nullptr, selected, !option.bitmap)) {
+                if (win98::menuItem(option.label.c_str(), nullptr, selected, !option.bitmap)) {
                     activateSubtitle(static_cast<int>(i));
                 }
             }
             if (subtitle_options_.empty()) {
-                ImGui::MenuItem("(no subtitle tracks found)", nullptr, false, false);
+                win98::menuItem("(no subtitle tracks found)", nullptr, false, false);
             }
-            ImGui::Separator();
-            if (ImGui::MenuItem("Load from file...", nullptr, false, has_file)) {
+            win98::separator();
+            if (win98::menuItem("Load from file...", nullptr, false, has_file)) {
                 openSubtitleDialog();
             }
-            ImGui::EndMenu();
+            win98::endMenu();
         }
-        if (ImGui::BeginMenu("Audio")) {
+        if (win98::beginMenu("Audio")) {
             const bool has_file = engine_.hasFile();
             const bool muted = engine_.muted() == audio::Mute::On;
-            if (ImGui::MenuItem("Mute", "M", muted, has_file)) {
+            if (win98::menuItem("Mute", "M", muted, has_file)) {
                 engine_.setMuted(muted ? audio::Mute::Off : audio::Mute::On);
             }
             int volume_percent = static_cast<int>(engine_.volume() * 100.0f + 0.5f);
             ImGui::SetNextItemWidth(160.0f);
-            if (ImGui::SliderInt("Volume", &volume_percent, 0, 100, "%d%%",
+            if (win98::sliderInt("Volume", &volume_percent, 0, 100,
                                  ImGuiSliderFlags_AlwaysClamp)) {
                 engine_.setVolume(static_cast<float>(volume_percent) / 100.0f);
             }
-            ImGui::Separator();
-            if (ImGui::MenuItem("None", nullptr, !engine_.audioEnabled(), has_file)) {
+            ImGui::SameLine();
+            const std::string volume_text = std::to_string(volume_percent) + "%";
+            ImGui::TextUnformatted(volume_text.c_str());
+            win98::separator();
+            if (win98::menuItem("None", nullptr, !engine_.audioEnabled(), has_file)) {
                 engine_.selectAudioTrack(playback::PlaybackEngine::kNoAudioTrack);
             }
-            ImGui::Separator();
+            win98::separator();
             const std::vector<demux::AudioTrackInfo>& tracks = engine_.audioTracks();
             for (const demux::AudioTrackInfo& track : tracks) {
                 std::string label = track.name.empty() ? "Track " + std::to_string(track.index + 1)
@@ -414,31 +426,31 @@ void Application::drawMenuBar() {
                 label += " (" + track.codec + ")";
                 const bool selected =
                     engine_.audioEnabled() && engine_.selectedAudioTrack() == track.index;
-                if (ImGui::MenuItem(label.c_str(), nullptr, selected, has_file)) {
+                if (win98::menuItem(label.c_str(), nullptr, selected, has_file)) {
                     engine_.selectAudioTrack(track.index);
                 }
             }
             if (tracks.empty()) {
-                ImGui::MenuItem("(no audio tracks found)", nullptr, false, false);
+                win98::menuItem("(no audio tracks found)", nullptr, false, false);
             }
-            ImGui::EndMenu();
+            win98::endMenu();
         }
-        if (ImGui::BeginMenu("View")) {
-            ImGui::MenuItem("Statistics", "S", &show_stats_);
-            ImGui::MenuItem("Log", "L", &show_log_);
-            ImGui::Separator();
-            ImGui::MenuItem("BT.709 color", nullptr, &color_.bt709);
-            ImGui::MenuItem("Full range", nullptr, &color_.full_range);
-            ImGui::EndMenu();
+        if (win98::beginMenu("View")) {
+            win98::menuItemToggle("Statistics", "S", &show_stats_);
+            win98::menuItemToggle("Log", "L", &show_log_);
+            win98::separator();
+            win98::menuItemToggle("BT.709 color", nullptr, &color_.bt709);
+            win98::menuItemToggle("Full range", nullptr, &color_.full_range);
+            win98::endMenu();
         }
-        if (ImGui::BeginMenu("Help")) {
-            ImGui::MenuItem("Space: play/pause  Left/Right: seek 5s", nullptr, false, false);
-            ImGui::MenuItem("Up/Down: volume  M: mute", nullptr, false, false);
-            ImGui::MenuItem("F: fullscreen  S: statistics  L: log", nullptr, false, false);
-            ImGui::EndMenu();
+        if (win98::beginMenu("Help")) {
+            win98::menuItem("Space: play/pause  Left/Right: seek 5s", nullptr, false, false);
+            win98::menuItem("Up/Down: volume  M: mute", nullptr, false, false);
+            win98::menuItem("F: fullscreen  S: statistics  L: log", nullptr, false, false);
+            win98::endMenu();
         }
-        ImGui::EndMainMenuBar();
     }
+    win98::endMainMenuBar();
 }
 
 void Application::drawVideoArea() {
@@ -493,12 +505,12 @@ void Application::drawTransport() {
     const bool has_file = engine_.hasFile();
     const double duration = engine_.duration();
 
-    if (ImGui::Button(engine_.state() == playback::State::Playing ? "Pause" : "Play")) {
+    if (win98::button(engine_.state() == playback::State::Playing ? "Pause" : "Play")) {
         engine_.togglePlayPause();
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(!has_file);
-    if (ImGui::Button("Stop")) {
+    if (win98::button("Stop")) {
         engine_.stop();
     }
     ImGui::SameLine();
@@ -510,9 +522,8 @@ void Application::drawTransport() {
         drag_position_ = static_cast<float>(current);
     }
     ImGui::SetNextItemWidth(std::max(120.0f, ImGui::GetContentRegionAvail().x - 260.0f));
-    if (ImGui::SliderFloat("##seek", &drag_position_, 0.0f,
-                           static_cast<float>(duration > 0.0 ? duration : 1.0), "%.3f s")) {
-    }
+    win98::sliderFloat("##seek", &drag_position_, 0.0f,
+                       static_cast<float>(duration > 0.0 ? duration : 1.0));
     if (ImGui::IsItemActivated()) {
         dragging_seek_ = true;
     }
@@ -544,7 +555,7 @@ void Application::drawTransport() {
 
 void Application::drawAudioControls() {
     const bool muted = engine_.muted() == audio::Mute::On;
-    if (ImGui::Button(muted ? "Unmute" : "Mute", ImVec2(64.0f, 0.0f))) {
+    if (win98::button(muted ? "Unmute" : "Mute", ImVec2(64.0f, 0.0f))) {
         engine_.setMuted(muted ? audio::Mute::Off : audio::Mute::On);
     }
     if (ImGui::IsItemHovered()) {
@@ -554,10 +565,12 @@ void Application::drawAudioControls() {
     ImGui::SameLine();
     int volume_percent = static_cast<int>(engine_.volume() * 100.0f + 0.5f);
     ImGui::SetNextItemWidth(120.0f);
-    if (ImGui::SliderInt("##volume", &volume_percent, 0, 100, "vol %d%%",
-                         ImGuiSliderFlags_AlwaysClamp)) {
+    if (win98::sliderInt("##volume", &volume_percent, 0, 100, ImGuiSliderFlags_AlwaysClamp)) {
         engine_.setVolume(static_cast<float>(volume_percent) / 100.0f);
     }
+    ImGui::SameLine();
+    const std::string volume_text = std::to_string(volume_percent) + "%";
+    ImGui::TextUnformatted(volume_text.c_str());
 }
 
 void Application::drawStatsWindow() {
@@ -566,8 +579,8 @@ void Application::drawStatsWindow() {
     }
     stats::Snapshot snapshot = engine_.stats().snapshot();
 
-    ImGui::Begin("Statistics", &show_stats_);
-    if (ImGui::CollapsingHeader("Stream", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::Begin("Statistics", nullptr);
+    if (win98::collapsingHeader("Stream", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text("Container: %s", snapshot.stream.container.c_str());
         ImGui::Text("Codec: %s %s @ %s", snapshot.stream.codec.c_str(),
                     snapshot.stream.profile.c_str(), snapshot.stream.level.c_str());
@@ -608,7 +621,7 @@ void Application::drawStatsWindow() {
         }
     }
 
-    if (ImGui::CollapsingHeader("Playback", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (win98::collapsingHeader("Playback", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text("State: %s", stateName(engine_.state()));
         ImGui::Text("Decode FPS: %.1f   Display FPS: %.1f", snapshot.decode_fps,
                     snapshot.display_fps);
@@ -623,7 +636,7 @@ void Application::drawStatsWindow() {
                     snapshot.last_seek_ms);
     }
 
-    if (ImGui::CollapsingHeader("Decode performance", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (win98::collapsingHeader("Decode performance", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text("Avg: %.2f ms   Min: %.2f ms   Max: %.2f ms   P95: %.2f ms",
                     snapshot.avg_decode_ms, snapshot.min_decode_ms, snapshot.max_decode_ms,
                     snapshot.p95_decode_ms);
@@ -636,13 +649,12 @@ void Application::drawStatsWindow() {
         }
     }
 
-    if (ImGui::CollapsingHeader("Current frame", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (win98::collapsingHeader("Current frame", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (snapshot.current.valid) {
             ImGui::Text("PTS: %.3f s   POC: %d", snapshot.current.pts / 1000.0,
                         snapshot.current.poc);
-            ImGui::Text("QP: %d   TemporalId: %d   Slice: %s   NAL type: %d",
-                        snapshot.current.qp, snapshot.current.temporal_id,
-                        sliceName(snapshot.current.slice_type), snapshot.current.nal_unit_type);
+            ImGui::Text("QP: %d   Slice: %s", snapshot.current.qp,
+                        sliceName(snapshot.current.slice_type));
             ImGui::Text("Decode: %.2f ms   Sample: %zu bytes", snapshot.current.decode_ms,
                         snapshot.current.sample_bytes);
             ImGui::Text("Hash check: %s", hashResultName(snapshot.current.hash_result));
@@ -651,7 +663,7 @@ void Application::drawStatsWindow() {
         }
     }
 
-    if (ImGui::CollapsingHeader("Buffer level (s)")) {
+    if (win98::collapsingHeader("Buffer level (s)")) {
         if (!snapshot.queue_history.empty() && ImPlot::BeginPlot("##buffer", ImVec2(-1, 120))) {
             ImPlot::SetupAxes("sample", "seconds");
             ImPlot::PlotLine("buffered", snapshot.queue_history.data(),
@@ -660,7 +672,7 @@ void Application::drawStatsWindow() {
         }
     }
 
-    if (ImGui::CollapsingHeader("Bitrate (Mbps)")) {
+    if (win98::collapsingHeader("Bitrate (Mbps)")) {
         if (!snapshot.bitrate_history_mbps.empty() &&
             ImPlot::BeginPlot("##bitrate", ImVec2(-1, 120))) {
             ImPlot::SetupAxes("sample", "Mbps");
@@ -670,6 +682,7 @@ void Application::drawStatsWindow() {
         }
     }
     ImGui::End();
+    win98::windowFrame("Statistics", &show_stats_);
 }
 
 void Application::drawLogWindow() {
@@ -677,16 +690,16 @@ void Application::drawLogWindow() {
         return;
     }
     ImGui::SetNextWindowSize(ImVec2(720.0f, 360.0f), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Log", &show_log_);
+    ImGui::Begin("Log", nullptr);
 
-    if (ImGui::Button("Clear")) {
+    if (win98::button("Clear")) {
         log::clear();
     }
     ImGui::SameLine();
-    ImGui::Checkbox("Auto-scroll", &log_autoscroll_);
+    win98::checkbox("Auto-scroll", &log_autoscroll_);
     ImGui::SameLine();
     ImGui::TextDisabled("%zu messages", log_cache_.size());
-    ImGui::Separator();
+    win98::separator();
 
     const uint64_t version = log::version();
     if (version != log_version_) {
@@ -694,22 +707,24 @@ void Application::drawLogWindow() {
         log_version_ = version;
     }
 
+    // The log reads like a console window: black text on a sunken white field.
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, win98::kWindow);
     ImGui::BeginChild("##log_scroll", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
                       ImGuiWindowFlags_HorizontalScrollbar);
     for (const log::Entry& entry : log_cache_) {
-        ImVec4 color(0.85f, 0.85f, 0.85f, 1.0f);
+        ImVec4 color(0.0f, 0.0f, 0.0f, 1.0f);
         switch (entry.level) {
             case log::Level::Debug:
-                color = ImVec4(0.55f, 0.55f, 0.55f, 1.0f);
+                color = ImVec4(0.4f, 0.4f, 0.4f, 1.0f);
                 break;
             case log::Level::Info:
-                color = ImVec4(0.85f, 0.85f, 0.85f, 1.0f);
+                color = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
                 break;
             case log::Level::Warning:
-                color = ImVec4(1.0f, 0.8f, 0.3f, 1.0f);
+                color = ImVec4(0.55f, 0.25f, 0.0f, 1.0f);
                 break;
             case log::Level::Error:
-                color = ImVec4(1.0f, 0.35f, 0.35f, 1.0f);
+                color = ImVec4(0.65f, 0.0f, 0.0f, 1.0f);
                 break;
         }
         ImGui::TextDisabled("%7.2f", entry.time_seconds);
@@ -719,8 +734,15 @@ void Application::drawLogWindow() {
     if (log_autoscroll_) {
         ImGui::SetScrollHereY(1.0f);
     }
+    const ImVec2 log_bounds_min = ImGui::GetWindowPos();
+    const ImVec2 log_bounds_size = ImGui::GetWindowSize();
     ImGui::EndChild();
+    win98::sunkenBorder(log_bounds_min,
+                        ImVec2(log_bounds_min.x + log_bounds_size.x,
+                               log_bounds_min.y + log_bounds_size.y));
+    ImGui::PopStyleColor();
     ImGui::End();
+    win98::windowFrame("Log", &show_log_);
 }
 
 void Application::handleShortcuts() {
@@ -760,7 +782,7 @@ void Application::handleShortcuts() {
 
 void Application::openFileDialog() {
     static const SDL_DialogFileFilter filters[] = {
-        {"Video files", "mp4;mkv;avi;hevc;h265;265;mov"},
+        {"Video files", "mp4;mkv;avi;hevc;h265;265;mov;mpg;mpeg;m1v"},
         {"All files", "*"},
     };
     SDL_ShowOpenFileDialog(&Application::fileDialogCallback, this, window_, filters, 2, nullptr,

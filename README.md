@@ -1,11 +1,16 @@
 # HEVC Player
 
-A focused HEVC/H.265 video player built around the custom
-[kvzdec](https://gitlab.tuni.fi/cs/ultravideo/hevc/kvzdec) decoder.
+A video player built around an external HEVC/H.265 decoder plus a from-scratch
+MPEG-1 decoder.
 
-- **Decoder**: kvzdec (git submodule), wrapped through its public C API
-- **Containers**: native demuxers for MP4, Matroska (MKV) and AVI — no
-libavformat; raw Annex B `.hevc` streams and raw `.mp3` / `.flac` files
+- **Decoders**: kvzdec (git submodule) for HEVC through its public C API, and a
+custom MPEG-1 video decoder written from scratch. Both produce the same
+codec-neutral decoded frame, so the renderer, queue and statistics do not know
+  which one ran.
+  See [MPEG-1 video decoding](#mpeg-1-video-decoding) for details
+- **Containers**: native demuxers for MP4, Matroska (MKV) and AVI - no
+libavformat; raw `.hevc` and `.mpg` / `.mpeg` / `.m1v` elementary streams, and
+  raw `.mp3` / `.flac` files
   (audio-only playback) are supported as well
 - **GUI**: Dear ImGui + SDL3 with a custom OpenGL YUV -> RGB render path
 - **Playback**: correct-FPS pacing with a ~2 second decode-ahead buffer and
@@ -89,11 +94,12 @@ hevc_player [options] [file]
 ```
 src/
   app/        SDL3 + ImGui application shell and UI
-  demux/      container demuxers (MP4, MKV, AVI, raw HEVC, raw MP3, raw FLAC)
-            + hvcC parser
-              parser
+  demux/      container demuxers (MP4, MKV, AVI, raw HEVC, raw MPEG-1, raw
+              MP3, raw FLAC) + hvcC and esds parsers
   subtitle/   SRT/ASS/SSA/WebVTT/MicroDVD parsers and cue lookup
-  decode/     kvzdec wrapper, NAL handling, decode-to-YUV verification mode
+  decode/     codec-neutral Frame, decode backends (KvzdecDecoder,
+              mpeg12/ from-scratch MPEG-1 and MPEG-2), NAL handling, decode-to-YUV
+              verification mode
   playback/   pipeline thread, frame queue, media clock
   render/     OpenGL YUV -> RGB renderer (8/10-bit, 4:2:0/4:2:2/4:4:4)
   stats/      thread-safe statistics collector
@@ -107,6 +113,14 @@ packet loss concealment; mp3/: frame parsing, bit reservoir,
             frame headers, constant/verbatim/fixed/LPC subframes, Rice
             residuals)
 ```
+
+`decode::Frame` is the single currency between a decoder and everything
+downstream: three planar sample arrays plus geometry, a conformance window and
+the presentation metadata. A frame either owns its sample storage or adopts
+storage belonging to a backend decoder, released through a small payload hook.
+This is why kvzdec types do not appear in the renderer, the frame queue, the
+statistics collector or the UI.
+
 
 The demux + decode pipeline runs on a dedicated thread and fills a bounded
 frame queue (about two seconds, capped by a memory budget). The UI thread
@@ -122,7 +136,112 @@ cannot starve it) moves chunks into the sink to keep the device queue around
 dropped, which keeps audio locked to the video after stalls and seeks. Volume
 and mute are applied as a software gain when chunks leave the buffer.
 
+## MPEG-1 and MPEG-2 video decoding
+
+The decoder (`src/decode/mpeg12/`) covers ISO/IEC 11172-2 (MPEG-1) and
+ISO/IEC 13818-2 / H.262 (MPEG-2, Main Profile at Main Level). It is written from
+scratch: no external codec library is involved, and no new dependency was added
+to the build. The two standards share one implementation because MPEG-2 is a
+strict superset; a sequence extension or a picture coding extension switches it
+into MPEG-2 mode, and `Decoder::standard()` reports which was seen.
+
+### What is implemented
+
+- **Headers**: sequence header including the optional quantisation matrices and
+  VBV size, group of pictures, picture header and slice header
+- **Pictures**: all four coding types - I, P, B and the reserved D - decoded
+  in 4:2:0 at 8 bits
+- **Slice layer**: multiple slices per picture, slices spanning macroblock
+  rows, `macroblock_skip_run` with escape and stuffing, and the slice
+  terminator. `macroblock_address_increment` and `macroblock_skip_run` share
+  the same code table, so a single counter drives both
+- **Macroblock layer**: `macroblock_type` for I, P and B pictures, including
+  the P-picture types that imply an all-zero motion vector
+- **Block layer**: all variable-length code tables (Tables B-1 to B-14),
+  matched longest codeword first because the `macroblock_type` tables are not
+  prefix codes
+- **Inverse quantisation**: the MPEG-1 rules, including the intra / non-intra
+  split (`/16` versus `(2 * level + 1) / 32`) and the requirement that every
+  reconstructed coefficient is odd
+- **Transform**: separable 8x8 floating-point inverse DCT
+- **Motion compensation**: full-sample and half-sample prediction, half-sample
+  rounding always upwards as the standard requires, and chroma vectors derived
+  by halving the luma vector
+- **Reference handling**: a two-slot reference set where B pictures never
+  become references, with I and P pictures emitted only once the following
+  picture has been decoded, and B pictures held until the I or P picture that
+  precedes them can be displayed
+
+MPEG-2 adds the following, all of which are implemented:
+
+- **Sequence extension**: profile/level, `progressive_sequence`, `chroma_format`
+  and the size and frame-rate extensions
+- **Picture coding extension**: `f_code`, `intra_dc_precision`,
+  `picture_structure`, `frame_pred_frame_dct`, `concealment_motion_vectors`,
+  `q_scale_type`, `intra_vlc_format`, `alternate_scan`, `repeat_first_field`
+  and `progressive_frame`
+- **Field pictures**: top and bottom fields are decoded into one full-height
+  buffer as their own parity lines and emitted as a single frame once both
+  fields are present, so interlaced material displays correctly
+- **Motion types**: frame prediction, field prediction (per 16x8 half, with
+  `field_select`), 16x8 prediction in field pictures, and field DCT
+  (`dct_type`), which writes the two luma halves to the two parities of the
+  same eight-line span
+- **Coding tools**: the non-linear quantiser scale (Table 7-6), the alternate
+  (vertical) scan, `intra_vlc_format` with the Table B-14 coefficient codes,
+  12-bit escape levels, the precision-scaled DC predictor, and IDCT mismatch
+  control
+- **Concealment motion vectors** are parsed (and discarded, since the block is
+  intra anyway)
+
+### What is not implemented
+
+- **Dual prime prediction** (`motion_type == 11`). A picture that uses it is
+  skipped with a message rather than decoded with the wrong vectors.
+- **Profiles above Main**: `chroma_format` other than 4:2:0, and the SNR,
+  spatial and high profiles. These are rejected explicitly.
+- **Scalability**: the sequence scalability extension and its layers are not
+  parsed.
+- MPEG-2 features deliberately absent: there are no flat/non-flat quantiser
+  matrix tests and no `q_scale_type` interaction with the DC predictor beyond
+  what the standard specifies.
+- **MPEG program streams**: `.mpg` files from DVD rippers are program streams
+  rather than elementary streams, and the program stream demuxer is not written
+  yet. A program stream is detected as an elementary stream and reports
+  "no MPEG-1 pictures found".
+
+### Containers
+
+MPEG-1 and MPEG-2 are reachable from every container the player can already
+open. The container reports which of the two it is, and the demuxer decides for
+a raw elementary stream by looking for a sequence extension:
+
+| Container | MPEG-1 marker | MPEG-2 marker |
+| --- | --- | --- |
+| Raw elementary stream | `.mpg`, `.mpeg`, `.m1v`, `.mpe`, `.vcd` | `.m2v`, `.m2p`, `.mpv`, or a sequence extension in the stream |
+| AVI | `mpg1`, `MPG1`, `PIM1`, `BW10`, `XMPG` | `mpg2`, `MPG2`, `MPEG`, `PIM2`, `VCR2`, `DVR `, `MMES`, `LMP2`, `slif`, `EM2V`, `M701`..`M705`, `mpgv` |
+| Matroska | `V_MPEG1` | `V_MPEG2` |
+| MP4 / MOV | `mp4v` with an `esds` object type of `0x01` | `mp4v` with an `esds` object type of `0x60`..`0x65` |
+
+A raw stream is split into pictures at picture headers, and the sequence and
+group headers that precede a picture are folded into that picture's sample,
+because the decoder needs them and there is no separate sample for them.
+`mp4v` with an object type of `0x20` (MPEG-4 Visual) or `0x21` (H.264) is
+rejected with a clear message rather than decoded incorrectly.
+
+### Verification
+
+The tables were transcribed by hand from ISO/IEC 11172-2 and then
+cross-checked programmatically against an independent implementation, which
+caught two transcription errors: a misaligned run/level magnitude table and six
+transposed `macroblock_type` codewords. `tests/test_mpeg1.cpp` additionally
+checks that every code table is prefix free and free of duplicate codewords,
+that the zig-zag table is a permutation, and that the decoder reproduces a
+hand-computed flat-grey intra picture pixel for pixel - including when the
+stream is fed one byte at a time, which splits every header.
+
 ## Audio decoding
+
 
 The AAC-LC decoder is written from scratch, with no external codec library.
 Implemented:
@@ -357,10 +476,33 @@ the console so their output can be redirected.
 
 ## Verification
 
-The decode path was checked bit-exact against the HM reference outputs of
+The HEVC decode path was checked bit-exact against the HM reference outputs of
 the kvzdec conformance suite for raw, MP4, MKV and AVI inputs (8/10-bit,
 4:2:0/4:4:4, tiles/WPP). `--dump-yuv` performs a synchronous decode of the
 whole file for this purpose.
+
+The MPEG-1/MPEG-2 decoder has no reference bitstream in the repository, so it
+is covered by unit tests instead: the VLC tables, inverse quantisation, IDCT
+normalisation and motion compensation are checked against hand-computed values,
+and whole pictures are decoded from synthesised bitstreams and compared pixel
+for pixel. Both code table sets were generated from, or cross-checked against,
+an independent implementation rather than transcribed by hand. This is a weaker
+guarantee than the HEVC path, and the gap is not uniform:
+
+- MPEG-1 I pictures are verified end to end, including byte-at-a-time input.
+  P and B pictures are verified only against synthetic streams.
+- MPEG-2 frame pictures are verified end to end for the intra path, including
+  all four `intra_dc_precision` values and the alternate scan, `intra_vlc_format`
+  and `q_scale_type` paths.
+- MPEG-2 field pictures, field and 16x8 prediction, field DCT and B pictures
+  are implemented but have **no end-to-end test at all**, because a synthetic
+  stream exercising them would be a decoder of its own. Treat interlaced
+  MPEG-2 as unproven.
+- Dual prime is not implemented, and a picture that needs it is skipped.
+
+`--dump-yuv` reports a decode as damaged if a slice does not parse cleanly, so
+a bad result is at least visible.
+
 
 ## License
 

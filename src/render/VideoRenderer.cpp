@@ -176,25 +176,24 @@ void VideoRenderer::shutdown() {
     }
 }
 
-void VideoRenderer::ensureTextures(const kvzdec_picture* picture) {
-    const int plane_count = picture->chroma_format == KVZDEC_CSP_400 ? 1 : 3;
+void VideoRenderer::ensureTextures(const decode::Frame* frame) {
+    const int plane_count = decode::chromaPlaneCount(frame->format());
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
     for (int plane = 0; plane < plane_count; ++plane) {
-        const bool chroma = plane > 0;
-        const int width = chroma ? picture->width_c : picture->width;
-        const int height = chroma ? picture->height_c : picture->height;
-        const int stride = chroma ? picture->stride_c : picture->stride;
-        const int bits = picture->pixel_size == 2 ? 16 : 8;
-        const uint8_t* data = static_cast<const uint8_t*>(picture->data[plane]);
+        const int width = frame->planeWidth(plane);
+        const int height = frame->planeHeight(plane);
+        const int stride = frame->planeStride(plane);
+        const int bits = frame->pixelSize() == 2 ? 16 : 8;
+        const uint8_t* data = frame->plane(plane);
 
         // Repack into tightly packed rows so the upload does not depend on
         // GL_UNPACK_ROW_LENGTH handling.
-        const size_t row_bytes = static_cast<size_t>(width) * picture->pixel_size;
+        const size_t row_bytes = static_cast<size_t>(width) * frame->pixelSize();
         staging_[plane].resize(row_bytes * static_cast<size_t>(height));
         for (int y = 0; y < height; ++y) {
             std::memcpy(staging_[plane].data() + static_cast<size_t>(y) * row_bytes,
-                        data + static_cast<size_t>(y) * stride * picture->pixel_size, row_bytes);
+                        data + static_cast<size_t>(y) * stride * frame->pixelSize(), row_bytes);
         }
         const void* packed = staging_[plane].data();
 
@@ -271,35 +270,32 @@ void VideoRenderer::destroyFramebuffer() {
     framebuffer_height_ = 0;
 }
 
-void VideoRenderer::upload(const kvzdec_picture* picture) {
-    if (!picture) {
+void VideoRenderer::upload(const decode::Frame* frame) {
+    if (!frame || !frame->valid()) {
         return;
     }
-    const int width = picture->width;
-    const int height = picture->height;
-    if (width <= 0 || height <= 0) {
-        return;
-    }
+    const int width = frame->width_;
+    const int height = frame->height_;
 
-    cropped_width_ = width - picture->crop_left - picture->crop_right;
-    cropped_height_ = height - picture->crop_top - picture->crop_bottom;
-    crop_u0_ = static_cast<float>(picture->crop_left) / static_cast<float>(width);
-    crop_v0_ = static_cast<float>(picture->crop_top) / static_cast<float>(height);
-    crop_u1_ = 1.0f - static_cast<float>(picture->crop_right) / static_cast<float>(width);
-    crop_v1_ = 1.0f - static_cast<float>(picture->crop_bottom) / static_cast<float>(height);
-    has_chroma_ = picture->chroma_format != KVZDEC_CSP_400;
+    cropped_width_ = frame->displayWidth();
+    cropped_height_ = frame->displayHeight();
+    crop_u0_ = static_cast<float>(frame->crop_left_) / static_cast<float>(width);
+    crop_v0_ = static_cast<float>(frame->crop_top_) / static_cast<float>(height);
+    crop_u1_ = 1.0f - static_cast<float>(frame->crop_right_) / static_cast<float>(width);
+    crop_v1_ = 1.0f - static_cast<float>(frame->crop_bottom_) / static_cast<float>(height);
+    has_chroma_ = frame->format() != decode::ChromaFormat::Mono;
 
-    // kvzdec does not always set bitdepth on output pictures (pool_get
-    // replaces the rec without copying it), so latch the first valid value
-    // and fall back to the bit depth parsed from the stream's hvcC.
-    if (picture->pixel_size == 2) {
-        if (picture->bitdepth > 0) {
-            luma_bitdepth_ = picture->bitdepth;
+    // Some backends do not always report a bit depth on output pictures, so
+    // latch the first valid value and fall back to the depth parsed from the
+    // container's configuration record.
+    if (frame->pixelSize() == 2) {
+        if (frame->bitdepth_ > 0) {
+            luma_bitdepth_ = frame->bitdepth_;
         } else if (luma_bitdepth_ <= 8 && stream_bitdepth_ > 8) {
             luma_bitdepth_ = stream_bitdepth_;
         }
-        if (picture->bitdepth_c > 0) {
-            chroma_bitdepth_ = picture->bitdepth_c;
+        if (frame->bitdepth_c_ > 0) {
+            chroma_bitdepth_ = frame->bitdepth_c_;
         } else if (chroma_bitdepth_ <= 8 && stream_bitdepth_ > 8) {
             chroma_bitdepth_ = stream_bitdepth_;
         }
@@ -318,7 +314,7 @@ void VideoRenderer::upload(const kvzdec_picture* picture) {
         chroma_scale_ = 1.0f;
     }
 
-    ensureTextures(picture);
+    ensureTextures(frame);
 }
 
 unsigned int VideoRenderer::render(const VideoColorSettings& settings) {

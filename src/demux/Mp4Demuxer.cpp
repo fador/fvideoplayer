@@ -1,5 +1,6 @@
 #include "demux/Mp4Demuxer.hpp"
 
+#include "demux/Esds.hpp"
 #include "demux/HvcC.hpp"
 
 #include <algorithm>
@@ -443,6 +444,7 @@ struct SampleEntry {
     uint32_t channels = 0;
     uint32_t sample_rate = 0;
     std::vector<uint8_t> hvcc;
+    std::vector<uint8_t> esds;
     std::vector<uint8_t> codec_private;
 };
 
@@ -550,8 +552,12 @@ bool parseStsd(const BoxView& box, SampleEntry& entry) {
             continue;
         }
 
-        const bool is_video =
-            format == fourcc('h', 'v', 'c', '1') || format == fourcc('h', 'e', 'v', '1');
+        const bool is_hevc = format == fourcc('h', 'v', 'c', '1') ||
+                             format == fourcc('h', 'e', 'v', '1');
+        // `mp4v` carries MPEG-1, MPEG-2 or MPEG-4 video; the esds descriptor
+        // below tells them apart.
+        const bool is_mpeg_family = format == fourcc('m', 'p', '4', 'v');
+        const bool is_video = is_hevc || is_mpeg_family;
         const bool is_text = format == fourcc('t', 'x', '3', 'g') ||
                              format == fourcc('w', 'v', 't', 't') ||
                              format == fourcc('s', 'b', 't', 'l') ||
@@ -578,6 +584,8 @@ bool parseStsd(const BoxView& box, SampleEntry& entry) {
             while (iterateBoxes(payload, payload_size, child_pos, child)) {
                 if (child.type == fourcc('h', 'v', 'c', 'C')) {
                     entry.hvcc.assign(child.payload, child.payload + child.size);
+                } else if (child.type == fourcc('e', 's', 'd', 's')) {
+                    entry.esds.assign(child.payload, child.payload + child.size);
                 }
             }
         } else if (is_audio) {
@@ -931,12 +939,40 @@ bool Mp4Demuxer::open(const std::filesystem::path& path, std::string& error) {
     }
 
     if (!have_video) {
-        error = "no HEVC video track found in MP4";
+        error = "no HEVC or MPEG-1 video track found in MP4";
         return false;
     }
 
+    // Decide between HEVC, MPEG-2 and MPEG-1 before reporting the track.
+    Codec video_codec = Codec::Unknown;
+    if (video_track.entry.format == fourcc('m', 'p', '4', 'v')) {
+        EsdsInfo esds;
+        std::string esds_error;
+        if (!video_track.entry.esds.empty() &&
+            parseEsds(video_track.entry.esds.data(), video_track.entry.esds.size(), esds,
+                      &esds_error)) {
+            if (esds.object_type == kObjectTypeMpeg1Video) {
+                video_codec = Codec::Mpeg1;
+            } else if (isMpeg2ObjectType(esds.object_type)) {
+                video_codec = Codec::Mpeg2;
+            } else if (esds.object_type == kObjectTypeMpeg4Visual ||
+                       esds.object_type == kObjectTypeAvc) {
+                error = "MPEG-4 Visual / H.264 video in MP4 is not supported";
+                return false;
+            } else {
+                error = "unsupported video object type in esds";
+                return false;
+            }
+        } else {
+            error = esds_error.empty() ? "missing esds for mp4v track" : esds_error;
+            return false;
+        }
+    } else {
+        video_codec = Codec::Hevc;
+    }
+
     video_ = VideoTrackInfo{};
-    video_.codec = Codec::Hevc;
+    video_.codec = video_codec;
     video_.timescale = video_track.timescale != 0 ? video_track.timescale : 1000;
     video_.format.annexb = false;
     video_.format.nal_length_size = 4;

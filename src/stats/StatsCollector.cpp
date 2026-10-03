@@ -67,12 +67,9 @@ void StatsCollector::onFrameDecoded(const decode::DecodedFrame& frame, double de
 
     current_.valid = true;
     current_.pts = frame.pts;
-    current_.poc = frame.info.poc;
-    current_.qp = frame.info.qp;
-    current_.temporal_id = frame.info.temporal_id;
-    current_.slice_type = static_cast<int>(frame.info.slice_type);
-    current_.nal_unit_type = static_cast<int>(frame.info.nal_unit_type);
-    current_.hash_result = frame.info.hash_result;
+    current_.poc = frame.poc;
+    current_.qp = frame.qp;
+    current_.slice_type = frame.slice_type;
     current_.decode_ms = decode_ms;
     current_.sample_bytes = frame.sample_bytes;
 }

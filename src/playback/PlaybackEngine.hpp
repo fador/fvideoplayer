@@ -10,6 +10,7 @@
 #include "audio/mp3/Mp3Decoder.hpp"
 #include "audio/opus/OpusDecoder.hpp"
 #include "decode/KvzdecDecoder.hpp"
+#include "decode/mpeg12/Mpeg12Decoder.hpp"
 #include "demux/Demuxer.hpp"
 #include "playback/FrameQueue.hpp"
 #include "playback/MediaClock.hpp"
@@ -107,10 +108,28 @@ private:
     enum class AudioCodec {
         None,
         Aac,
-Opus,
+        Opus,
         Mp3,
         Flac,
     };
+
+    // Video backend selected from the container's codec id.
+    enum class VideoCodec {
+        None,
+        Hevc,
+        Mpeg1,
+        Mpeg2,
+    };
+
+    //    Video: one sample is fed to the backend selected by the container and
+    //    the pictures it produces are pulled in display order.
+    bool configureVideoDecoder(std::string& error);
+    void resetVideoDecoder();
+    bool pushVideoSample(const demux::Sample& sample);
+    int pullVideoFrames(std::vector<decode::DecodedFrame>& out);
+    int flushVideoDecoder(std::vector<decode::DecodedFrame>& out);
+    static const char* videoCodecName(demux::Codec codec);
+
 
     //    Audio scheduling: decoded PCM goes into audio_buffer_ up to
     //    kAudioBufferMs ahead of the media clock; feedAudio() moves chunks
@@ -150,7 +169,9 @@ Opus,
 
     // Pipeline-thread state.
     std::unique_ptr<demux::IDemuxer> demuxer_;
+    VideoCodec video_codec_ = VideoCodec::None;
     decode::KvzdecDecoder decoder_;
+    decode::mpeg12::Decoder mpeg12_decoder_;
     audio::IAudioSink* audio_sink_ = nullptr;
     audio::NullAudioSink null_sink_;
     AudioCodec audio_codec_ = AudioCodec::None;
@@ -188,3 +209,5 @@ Opus,
 };
 
 }  // namespace player::playback
+
+

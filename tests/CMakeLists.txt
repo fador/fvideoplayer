@@ -23,6 +23,9 @@ add_executable(player_tests
     test_log.cpp
     test_mkv_demuxer.cpp
     test_mp4_demuxer.cpp
+    test_mpeg12.cpp
+    test_mpeg12_demuxer.cpp
+    test_mpeg2.cpp
     test_nal_units.cpp
     test_raw_hevc_demuxer.cpp
     test_subtitle.cpp)
@@ -42,3 +45,5 @@ endif()
 
 include(GoogleTest)
 gtest_discover_tests(player_tests)
+
+

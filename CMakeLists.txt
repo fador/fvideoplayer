@@ -70,20 +70,27 @@ target_compile_definitions(player_subtitle PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_library(player_demux STATIC
     src/demux/AviDemuxer.cpp
     src/demux/Demuxer.cpp
+    src/demux/Esds.cpp
     src/demux/FlacDemuxer.cpp
     src/demux/HvcC.cpp
     src/demux/MkvDemuxer.cpp
     src/demux/Mp3Demuxer.cpp
     src/demux/Mp4Demuxer.cpp
-    src/demux/RawHevcDemuxer.cpp)
+    src/demux/RawHevcDemuxer.cpp
+    src/demux/RawMpegDemuxer.cpp)
 target_include_directories(player_demux PUBLIC src)
 target_compile_definitions(player_demux PRIVATE _CRT_SECURE_NO_WARNINGS)
 
-# --- player decode (kvzdec wrapper, no GUI dependencies) --------------------
+# --- player decode (codec backends, no GUI dependencies) --------------------
 add_library(player_decode STATIC
     src/decode/DecodeDump.cpp
     src/decode/KvzdecDecoder.cpp
-    src/decode/NalUnits.cpp)
+    src/decode/NalUnits.cpp
+    src/decode/mpeg12/Mpeg12Decoder.cpp
+    src/decode/mpeg12/Mpeg12Idct.cpp
+    src/decode/mpeg12/Mpeg12Motion.cpp
+    src/decode/mpeg12/Mpeg12Tables.cpp
+    src/decode/mpeg12/Mpeg12Vlc.cpp)
 target_include_directories(player_decode PUBLIC src)
 target_link_libraries(player_decode PUBLIC player_demux kvzdec)
 target_compile_definitions(player_decode PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -162,6 +169,7 @@ target_link_libraries(player_playback PUBLIC player_audio player_decode player_d
 # --- player -----------------------------------------------------------------
 add_library(player_core STATIC
     src/app/Application.cpp
+    src/app/Win98Theme.cpp
     src/render/GLFunctions.cpp
     src/render/VideoRenderer.cpp)
 target_include_directories(player_core PUBLIC src)
@@ -201,3 +209,5 @@ if(PLAYER_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.t
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+

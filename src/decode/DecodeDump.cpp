@@ -1,6 +1,7 @@
 #include "decode/DecodeDump.hpp"
 
 #include "decode/KvzdecDecoder.hpp"
+#include "decode/mpeg12/Mpeg12Decoder.hpp"
 #include "demux/Demuxer.hpp"
 
 #include <chrono>
@@ -11,25 +12,22 @@
 namespace player::decode {
 namespace {
 
-bool writePicture(FILE* out, const kvzdec_picture* picture) {
-    for (int plane = 0; plane < 3; ++plane) {
-        if (plane > 0 && picture->chroma_format == KVZDEC_CSP_400) {
-            break;
-        }
-        const int shift_w =
-            (plane > 0 && picture->chroma_format != KVZDEC_CSP_444) ? 1 : 0;
-        const int shift_h = (plane > 0 && picture->chroma_format == KVZDEC_CSP_420) ? 1 : 0;
-        const int width = (picture->width - picture->crop_left - picture->crop_right) >> shift_w;
-        const int height = (picture->height - picture->crop_top - picture->crop_bottom) >> shift_h;
-        const int stride = plane > 0 ? picture->stride_c : picture->stride;
+bool writePicture(FILE* out, const Frame& frame) {
+    const int plane_count = chromaPlaneCount(frame.format());
+    for (int plane = 0; plane < plane_count; ++plane) {
+        const int shift_w = (plane > 0 && frame.format() != ChromaFormat::C444) ? 1 : 0;
+        const int shift_h = (plane > 0 && frame.format() == ChromaFormat::C420) ? 1 : 0;
+        const int width = (frame.displayWidth()) >> shift_w;
+        const int height = (frame.displayHeight()) >> shift_h;
+        const int stride = frame.planeStride(plane);
         const uint8_t* source =
-            static_cast<const uint8_t*>(picture->data[plane]) +
-            (static_cast<size_t>(picture->crop_top >> shift_h) * stride +
-             (picture->crop_left >> shift_w)) *
-                picture->pixel_size;
+            frame.plane(plane) +
+            (static_cast<size_t>(frame.crop_top_ >> shift_h) * stride +
+             (frame.crop_left_ >> shift_w)) *
+                frame.pixelSize();
         for (int y = 0; y < height; ++y) {
-            const size_t bytes = static_cast<size_t>(width) * picture->pixel_size;
-            if (std::fwrite(source + static_cast<size_t>(y) * stride * picture->pixel_size, 1, bytes,
+            const size_t bytes = static_cast<size_t>(width) * frame.pixelSize();
+            if (std::fwrite(source + static_cast<size_t>(y) * stride * frame.pixelSize(), 1, bytes,
                             out) != bytes) {
                 return false;
             }
@@ -60,23 +58,50 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
     }
 
     KvzdecDecoder decoder;
-    const int threads = std::getenv("HEVC_PLAYER_THREADS") ? std::atoi(std::getenv("HEVC_PLAYER_THREADS")) : -1;
-    const int owf = std::getenv("HEVC_PLAYER_OWF") ? std::atoi(std::getenv("HEVC_PLAYER_OWF")) : -1;
-    if (!decoder.open(&local_error, threads, owf)) {
-        std::fclose(out);
-        if (error) {
-            *error = local_error;
+    mpeg12::Decoder mpeg12_decoder;
+    const demux::Codec codec = demuxer->video().codec;
+
+    if (codec == demux::Codec::Mpeg1 || codec == demux::Codec::Mpeg2) {
+        mpeg12_decoder.reset();
+    } else {
+        const int threads = std::getenv("HEVC_PLAYER_THREADS")
+                                ? std::atoi(std::getenv("HEVC_PLAYER_THREADS"))
+                                : -1;
+        const int owf = std::getenv("HEVC_PLAYER_OWF") ? std::atoi(std::getenv("HEVC_PLAYER_OWF"))
+                                                         : -1;
+        if (!decoder.open(&local_error, threads, owf)) {
+            std::fclose(out);
+            if (error) {
+                *error = local_error;
+            }
+            return 1;
         }
-        return 1;
-    }
-    if (!demuxer->video().hvcc.empty() &&
-        !decoder.pushParameterSets(demuxer->video().hvcc, &local_error)) {
-        std::fclose(out);
-        if (error) {
-            *error = local_error;
+        if (!demuxer->video().hvcc.empty() &&
+            !decoder.pushParameterSets(demuxer->video().hvcc, &local_error)) {
+            std::fclose(out);
+            if (error) {
+                *error = local_error;
+            }
+            return 1;
         }
-        return 1;
     }
+
+    // Feeds one sample to the selected backend and drains its pictures.
+    const auto pushSample = [&](const demux::Sample& sample, std::vector<DecodedFrame>& frames) {
+        if (codec == demux::Codec::Mpeg1 || codec == demux::Codec::Mpeg2) {
+            mpeg12_decoder.pushSample(sample.data.data(), sample.data.size(), sample.pts);
+            return mpeg12_decoder.pullFrames(frames);
+        }
+        if (!decoder.pushSample(sample.data.data(), sample.data.size(), sample.pts,
+                                demuxer->video().format.annexb,
+                                demuxer->video().format.nal_length_size)) {
+            return 0;
+        }
+        return decoder.pullFrames(frames);
+    };
+    const auto flushDecoder = [&](std::vector<DecodedFrame>& frames) {
+        return (codec == demux::Codec::Mpeg1 || codec == demux::Codec::Mpeg2) ? mpeg12_decoder.flush(frames) : decoder.flush(frames);
+    };
 
     const auto start = std::chrono::steady_clock::now();
     DumpStats local_stats;
@@ -94,7 +119,7 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
             if (max_frames >= 0 && local_stats.frames >= max_frames) {
                 break;
             }
-            if (!writePicture(out, frame.picture)) {
+            if (!writePicture(out, frame.image)) {
                 local_error = "failed to write output";
                 wrote = false;
                 break;
@@ -110,15 +135,13 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
     bool ok = true;
     while (demuxer->readSample(sample)) {
         local_stats.bytes += static_cast<int64_t>(sample.data.size());
-        if (!decoder.pushSample(sample.data.data(), sample.data.size(), sample.pts,
-                                demuxer->video().format.annexb,
-                                demuxer->video().format.nal_length_size)) {
+        frames.clear();
+        if (pushSample(sample, frames) == 0 && !sample.data.empty() &&
+            codec != demux::Codec::Mpeg1 && codec != demux::Codec::Mpeg2) {
             local_error = "decoder rejected a sample";
             ok = false;
             break;
         }
-        frames.clear();
-        decoder.pullFrames(frames);
         if (!writeFrames(frames)) {
             ok = false;
             break;
@@ -130,7 +153,7 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
 
     if (ok && (max_frames < 0 || local_stats.frames < max_frames)) {
         frames.clear();
-        decoder.flush(frames);
+        flushDecoder(frames);
         if (!writeFrames(frames)) {
             ok = false;
         }
@@ -153,3 +176,5 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
 }
 
 }  // namespace player::decode
+
+

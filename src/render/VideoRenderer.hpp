@@ -1,6 +1,6 @@
 #pragma once
 
-#include <kvzdec.h>
+#include "decode/Frame.hpp"
 
 #include <cstdint>
 #include <string>
@@ -24,7 +24,7 @@ public:
     // report one on the decoded picture.
     void setStreamBitDepth(int bitdepth) { stream_bitdepth_ = bitdepth; }
 
-    void upload(const kvzdec_picture* picture);
+    void upload(const decode::Frame* frame);
 
     // Returns the FBO texture id, or 0 when no frame has been uploaded.
     unsigned int render(const VideoColorSettings& settings);
@@ -37,7 +37,7 @@ public:
     bool readback(std::vector<uint8_t>& rgb, int& width, int& height);
 
 private:
-    void ensureTextures(const kvzdec_picture* picture);
+    void ensureTextures(const decode::Frame* frame);
     void ensureFramebuffer(int width, int height);
     void destroyTextures();
     void destroyFramebuffer();

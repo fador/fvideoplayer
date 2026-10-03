@@ -29,9 +29,9 @@ struct FrameInfoSnapshot {
     int32_t poc = 0;
     int qp = 0;
     int temporal_id = 0;
-    int slice_type = -1;
-    int nal_unit_type = -1;
-    int hash_result = 0;
+    decode::SliceType slice_type = decode::SliceType::Unknown;
+    
+    decode::HashResult hash_result = decode::HashResult::NotPresent;
     double decode_ms = 0.0;
     size_t sample_bytes = 0;
 };

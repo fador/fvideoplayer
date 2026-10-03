@@ -35,6 +35,112 @@ PlaybackEngine::~PlaybackEngine() {
     close();
 }
 
+const char* PlaybackEngine::videoCodecName(demux::Codec codec) {
+    switch (codec) {
+        case demux::Codec::Hevc:
+            return "HEVC";
+        case demux::Codec::Mpeg1:
+            return "MPEG-1";
+        case demux::Codec::Mpeg2:
+            return "MPEG-2";
+        default:
+            return "audio only";
+    }
+}
+
+bool PlaybackEngine::configureVideoDecoder(std::string& error) {
+    switch (video_info_.codec) {
+        case demux::Codec::Hevc:
+            video_codec_ = VideoCodec::Hevc;
+            if (!decoder_.open(&error)) {
+                video_codec_ = VideoCodec::None;
+                return false;
+            }
+            if (!video_info_.hvcc.empty() && !decoder_.pushParameterSets(video_info_.hvcc, &error)) {
+                decoder_.close();
+                video_codec_ = VideoCodec::None;
+                return false;
+            }
+            break;
+        case demux::Codec::Mpeg1:
+        case demux::Codec::Mpeg2:
+            video_codec_ = VideoCodec::Mpeg1;
+            mpeg12_decoder_.reset();
+            break;
+        default:
+            // Audio-only files carry no video track, which is not an error.
+            video_codec_ = VideoCodec::None;
+            break;
+    }
+    if (video_codec_ == VideoCodec::None) {
+        log::add(log::Level::Info, "No video track");
+        return true;
+    }
+    log::addf(log::Level::Info, "Video decoder: %s %ux%u @ %.3f fps", videoCodecName(video_info_.codec),
+              video_info_.width, video_info_.height, video_info_.fps);
+    return true;
+}
+
+void PlaybackEngine::resetVideoDecoder() {
+    switch (video_codec_) {
+        case VideoCodec::Hevc:
+            decoder_.close();
+            if (!decoder_.open(nullptr)) {
+                video_codec_ = VideoCodec::None;
+                return;
+            }
+            if (!video_info_.hvcc.empty()) {
+                decoder_.pushParameterSets(video_info_.hvcc, nullptr);
+            }
+            break;
+        case VideoCodec::Mpeg1:
+            // The reference pictures have to go, so the decoder is rebuilt.
+            mpeg12_decoder_.reset();
+            break;
+        case VideoCodec::None:
+            break;
+    }
+}
+
+bool PlaybackEngine::pushVideoSample(const demux::Sample& sample) {
+    switch (video_codec_) {
+        case VideoCodec::Hevc:
+            return decoder_.pushSample(sample.data.data(), sample.data.size(), sample.pts,
+                                       video_info_.format.annexb,
+                                       video_info_.format.nal_length_size);
+        case VideoCodec::Mpeg1:
+            mpeg12_decoder_.pushSample(sample.data.data(), sample.data.size(), sample.pts);
+            return true;
+        case VideoCodec::None:
+            return false;
+    }
+    return false;
+}
+
+int PlaybackEngine::pullVideoFrames(std::vector<decode::DecodedFrame>& out) {
+    switch (video_codec_) {
+        case VideoCodec::Hevc:
+            return decoder_.pullFrames(out);
+        case VideoCodec::Mpeg1:
+            return mpeg12_decoder_.pullFrames(out);
+        case VideoCodec::None:
+            return 0;
+    }
+    return 0;
+}
+
+int PlaybackEngine::flushVideoDecoder(std::vector<decode::DecodedFrame>& out) {
+    switch (video_codec_) {
+        case VideoCodec::Hevc:
+            return decoder_.flush(out);
+        case VideoCodec::Mpeg1:
+            return mpeg12_decoder_.flush(out);
+        case VideoCodec::None:
+            return 0;
+    }
+    return 0;
+}
+
 bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error) {
     close();
 
@@ -52,18 +158,10 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
     subtitle_track_infos_ = demuxer->subtitleTracks();
     duration_ = demuxer->duration();
 
-    if (!decoder_.open(&local_error)) {
+    if (!configureVideoDecoder(local_error)) {
         last_error_ = local_error;
         error = local_error;
         log::addf(log::Level::Error, "Decoder open failed: %s", local_error.c_str());
-        return false;
-    }
-    if (!video_info_.hvcc.empty() &&
-        !decoder_.pushParameterSets(video_info_.hvcc, &local_error)) {
-        last_error_ = local_error;
-        error = local_error;
-        log::addf(log::Level::Error, "Parameter set error: %s", local_error.c_str());
-        decoder_.close();
         return false;
     }
     demuxer_ = std::move(demuxer);
@@ -84,7 +182,7 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
     stats_.reset();
     stats::StreamInfo info;
     info.container = containerName(path);
-    info.codec = video_info_.codec == demux::Codec::Hevc ? "HEVC" : "audio only";
+    info.codec = videoCodecName(video_info_.codec);
     info.width = video_info_.width;
     info.height = video_info_.height;
     info.fps = video_info_.fps;
@@ -356,7 +454,7 @@ void PlaybackEngine::pipelineLoop() {
             demux::Sample sample;
             if (!demuxer_->readSample(sample)) {
                 std::vector<decode::DecodedFrame> frames;
-                decoder_.flush(frames);
+                flushVideoDecoder(frames);
                 for (decode::DecodedFrame& frame : frames) {
                     stats_.onFrameDecoded(frame, 0.0);
                     if (!queue_.push(std::move(frame), [this] { return quit_.load(); })) {
@@ -370,12 +468,10 @@ void PlaybackEngine::pipelineLoop() {
             } else {
                 stats_.onBytesDemuxed(sample.data.size());
                 const auto start = std::chrono::steady_clock::now();
-                const bool ok =
-                    decoder_.pushSample(sample.data.data(), sample.data.size(), sample.pts,
-                                        video_info_.format.annexb, video_info_.format.nal_length_size);
+                const bool ok = pushVideoSample(sample);
                 std::vector<decode::DecodedFrame> frames;
                 if (ok) {
-                    decoder_.pullFrames(frames);
+                    pullVideoFrames(frames);
                 } else {
                     log::addf(log::Level::Error, "Decoder rejected a sample (pts %lld)",
                               static_cast<long long>(sample.pts));
@@ -412,12 +508,7 @@ void PlaybackEngine::pipelineLoop() {
 void PlaybackEngine::performSeek(double seconds) {
     const auto start = std::chrono::steady_clock::now();
     queue_.clear();
-    decoder_.close();
-    std::string error;
-    decoder_.open(&error);
-    if (!video_info_.hvcc.empty()) {
-        decoder_.pushParameterSets(video_info_.hvcc, nullptr);
-    }
+    resetVideoDecoder();
     demuxer_->seek(seconds);
     resetAudioState();
     eos_ = false;
@@ -645,3 +736,6 @@ void PlaybackEngine::resetAudioState() {
 }
 
 }  // namespace player::playback
+
+
+

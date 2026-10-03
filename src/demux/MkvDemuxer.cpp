@@ -624,6 +624,7 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
     uint64_t video_track_number = 0;
     MkvTrack video_track;
     bool have_video = false;
+    Codec video_codec = Codec::Unknown;
 
     // Track number -> (kind, index): 0 video, 1 audio, 2 subtitle.
     struct TrackRef {
@@ -638,7 +639,17 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
     subtitle_samples_.clear();
 
     for (MkvTrack& track : tracks) {
-        if (track.type == 1 && track.codec == "V_MPEGH/ISO/HEVC" && !have_video) {
+        if (track.type == 1 && !have_video) {
+            // Matroska codec ids for the video formats the player can decode.
+            if (track.codec == "V_MPEGH/ISO/HEVC") {
+                video_codec = Codec::Hevc;
+            } else if (track.codec == "V_MPEG2") {
+                video_codec = Codec::Mpeg2;
+            } else if (track.codec == "V_MPEG1") {
+                video_codec = Codec::Mpeg1;
+            } else {
+                continue;
+            }
             video_track = std::move(track);
             video_track_number = video_track.number;
             track_map[video_track_number] = {0, 0};
@@ -820,7 +831,7 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
     }
 
     video_ = VideoTrackInfo{};
-    video_.codec = Codec::Hevc;
+    video_.codec = video_codec;
     video_.timescale = 1000;  // milliseconds
     video_.format.annexb = false;
     video_.format.nal_length_size = 4;

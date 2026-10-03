@@ -77,6 +77,27 @@ bool isHevcFourcc(uint32_t value) {
            value == fourcc('h', 'e', 'v', '1') || value == fourcc('x', '2', '6', '5');
 }
 
+// Fourccs VFW uses for MPEG-1 video.
+bool isMpeg1Fourcc(uint32_t value) {
+    return value == fourcc('m', 'p', 'g', '1') || value == fourcc('M', 'P', 'G', '1') ||
+           value == fourcc('P', 'I', 'M', '1') || value == fourcc('B', 'W', '1', '0') ||
+           value == fourcc('X', 'M', 'P', 'G') ||
+           value == 0x10000001u;  // the numeric tag 1,0,0,16
+}
+
+// Fourccs VFW uses for MPEG-2 video.
+bool isMpeg2Fourcc(uint32_t value) {
+    return value == fourcc('m', 'p', 'g', '2') || value == fourcc('M', 'P', 'G', '2') ||
+           value == fourcc('M', 'P', 'E', 'G') || value == fourcc('P', 'I', 'M', '2') ||
+           value == fourcc('V', 'C', 'R', '2') || value == fourcc('D', 'V', 'R', ' ') ||
+           value == fourcc('M', 'M', 'E', 'S') || value == fourcc('L', 'M', 'P', '2') ||
+           value == fourcc('s', 'l', 'i', 'f') || value == fourcc('E', 'M', '2', 'V') ||
+           value == fourcc('M', '7', '0', '1') || value == fourcc('M', '7', '0', '2') ||
+           value == fourcc('M', '7', '0', '3') || value == fourcc('M', '7', '0', '4') ||
+           value == fourcc('M', '7', '0', '5') || value == fourcc('m', 'p', 'g', 'v') ||
+           value == 0x10000002u;  // the numeric tag 2,0,0,16
+}
+
 struct AviStream {
     uint32_t fcc_type = 0;
     uint32_t fcc_handler = 0;
@@ -367,29 +388,45 @@ bool AviDemuxer::open(const std::filesystem::path& path, std::string& error) {
         return false;
     }
 
-    // Select the first HEVC video stream.
+    // Select the first HEVC, MPEG-2 or MPEG-1 video stream.
     int video_stream_index = -1;
+    Codec video_codec = Codec::Unknown;
     for (size_t i = 0; i < streams.size(); ++i) {
         const AviStream& stream = streams[i];
         if (stream.fcc_type != fourcc('v', 'i', 'd', 's')) {
             continue;
         }
         const bool hevc_fourcc = isHevcFourcc(stream.fcc_handler) || isHevcFourcc(stream.compression);
+        const bool mpeg1_fourcc =
+            isMpeg1Fourcc(stream.fcc_handler) || isMpeg1Fourcc(stream.compression);
+        const bool mpeg2_fourcc =
+            isMpeg2Fourcc(stream.fcc_handler) || isMpeg2Fourcc(stream.compression);
         const bool hvcc_extradata =
             stream.extradata.size() >= 23 && stream.extradata[0] == 1;
         if (hevc_fourcc || hvcc_extradata || looksLikeAnnexBHevc(stream.extradata)) {
             video_stream_index = static_cast<int>(i);
+            video_codec = Codec::Hevc;
+            break;
+        }
+        if (mpeg2_fourcc) {
+            video_stream_index = static_cast<int>(i);
+            video_codec = Codec::Mpeg2;
+            break;
+        }
+        if (mpeg1_fourcc) {
+            video_stream_index = static_cast<int>(i);
+            video_codec = Codec::Mpeg1;
             break;
         }
     }
     if (video_stream_index < 0) {
-        error = "no HEVC video stream found in AVI";
+        error = "no HEVC, MPEG-2 or MPEG-1 video stream found in AVI";
         return false;
     }
     const AviStream& video_stream = streams[static_cast<size_t>(video_stream_index)];
 
     video_ = VideoTrackInfo{};
-    video_.codec = Codec::Hevc;
+    video_.codec = video_codec;
     video_.timescale = 1000;
     video_.width = video_stream.width;
     video_.height = video_stream.height;
