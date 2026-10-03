@@ -163,6 +163,10 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     if (codec == demux::Codec::Mpeg1 || codec == demux::Codec::Mpeg2) {
         local_stats.damaged = static_cast<int64_t>(mpeg12_decoder.damagedPictures());
+        local_stats.damage_mb_x = mpeg12_decoder.damageMbX();
+        local_stats.damage_mb_y = mpeg12_decoder.damageMbY();
+        local_stats.damage_bit = mpeg12_decoder.damageBit();
+        local_stats.damage_reason = mpeg12_decoder.damageReason();
     }
     std::fclose(out);
 

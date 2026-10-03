@@ -197,8 +197,10 @@ int main(int argc, char** argv) {
                     static_cast<long long>(stats.frames), stats.width, stats.height, stats.seconds,
                     fps);
         if (stats.damaged > 0) {
-            std::printf("%lld pictures had a damaged slice\n",
-                        static_cast<long long>(stats.damaged));
+            std::printf("%lld pictures had a damaged slice; the last gave up at "
+                        "macroblock %d,%d bit %zu (%s)\n",
+                        static_cast<long long>(stats.damaged), stats.damage_mb_x,
+                        stats.damage_mb_y, stats.damage_bit, stats.damage_reason);
         }
         return EXIT_SUCCESS;
     }

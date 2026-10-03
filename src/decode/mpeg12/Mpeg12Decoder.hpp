@@ -55,6 +55,14 @@ public:
     // Pictures whose slices did not parse cleanly since the last reset().
     uint64_t damagedPictures() const { return damaged_pictures_; }
 
+    // Where the most recent damaged slice gave up. Diagnostics only: a damaged
+    // stream is much easier to chase with the macroblock position and the bit
+    // offset inside the slice than with a bare flag.
+    int damageMbX() const { return damage_mb_x_; }
+    int damageMbY() const { return damage_mb_y_; }
+    size_t damageBit() const { return damage_bit_; }
+    const char* damageReason() const { return damage_reason_; }
+
     uint64_t picturesDecoded() const { return pictures_decoded_; }
     uint64_t picturesDropped() const { return pictures_dropped_; }
 
@@ -146,6 +154,8 @@ private:
     void blockPosition(int plane, int block_index, int& x, int& y) const;
 
     // Motion compensation.
+    void readMotionVectors(BitReader& reader, const MacroblockFlags& flags,
+                           MotionVector mv[2][2]);
     void motionCompensate(const MacroblockFlags& flags, const MotionVector mv[2][2]);
     void predictDirection(const Frame& reference, const MacroblockFlags& flags,
                           const MotionVector mv[2]);
@@ -157,6 +167,8 @@ private:
     void startPicture();
 
     void emit(Frame& frame);
+    // Records where a slice gave up, for diagnostics.
+    void markDamaged(const char* reason);
     void resetPictureState();
     int quantScale() const;
     int dcPredictorBase() const { return 128 << header_.intra_dc_precision; }
@@ -223,6 +235,11 @@ private:
     uint8_t prediction_[3][256] = {};
     uint64_t pictures_decoded_ = 0;
     uint64_t damaged_pictures_ = 0;
+    const BitReader* active_reader_ = nullptr;
+    int damage_mb_x_ = -1;
+    int damage_mb_y_ = -1;
+    size_t damage_bit_ = 0;
+    const char* damage_reason_ = "";
     uint64_t pictures_dropped_ = 0;
 };
 

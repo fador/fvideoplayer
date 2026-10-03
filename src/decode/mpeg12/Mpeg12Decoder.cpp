@@ -273,6 +273,18 @@ int Decoder::flush(std::vector<DecodedFrame>& out) {
     return pullFrames(out);
 }
 
+void Decoder::markDamaged(const char* reason) {
+    // Keep the first failure: the outer checks run after the inner ones and
+    // would otherwise overwrite the specific reason with a generic one.
+    if (!picture_damaged_) {
+        damage_mb_x_ = mb_x_;
+        damage_mb_y_ = mb_y_;
+        damage_bit_ = active_reader_ != nullptr ? active_reader_->bitPosition() : 0;
+        damage_reason_ = reason;
+    }
+    picture_damaged_ = true;
+}
+
 void Decoder::emit(Frame& frame) {
     if (!frame.valid()) {
         return;
@@ -567,6 +579,7 @@ void Decoder::decodeSlice(const uint8_t* data, size_t size, int slice_start_code
         return;
     }
     BitReader reader(data, size);
+    active_reader_ = &reader;
 
     // The vertical position is the low seven bits of the slice start code, so
     // code 0x01 is the first macroblock row. Very tall MPEG-2 pictures extend
@@ -581,7 +594,7 @@ void Decoder::decodeSlice(const uint8_t* data, size_t size, int slice_start_code
     // writes quantiser_scale_code followed by a single zero bit, so the
     // macroblock data starts six bits into the payload.
     if (!reader.skip1Stop8DataBits()) {
-        picture_damaged_ = true;
+        markDamaged("slice header");
     }
 
     mb_x_ = 0;
@@ -603,8 +616,9 @@ void Decoder::decodeSlice(const uint8_t* data, size_t size, int slice_start_code
 
     decodeSliceBody(reader);
     if (reader.error()) {
-        picture_damaged_ = true;
+        markDamaged("slice body read past end");
     }
+    active_reader_ = nullptr;
 }
 
 void Decoder::decodeSliceBody(BitReader& reader) {
@@ -620,7 +634,7 @@ void Decoder::decodeSliceBody(BitReader& reader) {
             for (;;) {
                 const int symbol = readVlc(reader, kMbAddrIncr, kMbAddrIncrCount, 11);
                 if (symbol < 0) {
-                    picture_damaged_ = true;
+                    markDamaged("macroblock address increment");
                     return;
                 }
                 if (symbol == kMbAddrIncrEnd) {
@@ -637,7 +651,7 @@ void Decoder::decodeSliceBody(BitReader& reader) {
                 break;
             }
             if (skip_run != 0 && header_.type == PictureType::I) {
-                picture_damaged_ = true;
+                markDamaged("skipped macroblock in an I picture");
                 return;
             }
         }
@@ -657,7 +671,7 @@ void Decoder::decodeSliceBody(BitReader& reader) {
             }
         }
         if (reader.error()) {
-            picture_damaged_ = true;
+            markDamaged("slice loop read past end");
             return;
         }
     }
@@ -669,7 +683,7 @@ void Decoder::skipMacroblock() {
 
     if (header_.type == PictureType::B) {
         if (last_intra_) {
-            picture_damaged_ = true;
+            markDamaged("skipped B macroblock after an intra one");
         }
         flags.intra = false;
         flags.motion_forward = last_motion_forward_;
@@ -709,7 +723,7 @@ void Decoder::decodeMacroblock(BitReader& reader) {
             bool quant_type = false;
             const int type = readMbTypeI(reader, quant_type);
             if (type < 0) {
-                picture_damaged_ = true;
+                markDamaged("macroblock_type (I)");
                 return;
             }
             flags.intra = true;
@@ -719,7 +733,7 @@ void Decoder::decodeMacroblock(BitReader& reader) {
         case PictureType::P: {
             const int type = readMbTypeP(reader);
             if (type < 0) {
-                picture_damaged_ = true;
+                markDamaged("macroblock_type (P)");
                 return;
             }
             const MbTypeP& entry = kMbTypeP[type];
@@ -733,7 +747,7 @@ void Decoder::decodeMacroblock(BitReader& reader) {
         case PictureType::B: {
             const int type = readMbTypeB(reader);
             if (type < 0) {
-                picture_damaged_ = true;
+                markDamaged("macroblock_type (B)");
                 return;
             }
             const MbTypeB& entry = kMbTypeB[type];
@@ -770,12 +784,14 @@ void Decoder::decodeMacroblock(BitReader& reader) {
             const int type = static_cast<int>(reader.read(2));
             if (type < static_cast<int>(MotionType::Field) ||
                 type > static_cast<int>(MotionType::DualPrime)) {
-                picture_damaged_ = true;
+                markDamaged("motion_type");
                 return;
             }
             flags.motion_type = static_cast<MotionType>(type);
         }
-        if (dct_type_coded) {
+        // With explicit vectors the DCT type is only present when the
+        // macroblock also codes a pattern.
+        if (dct_type_coded && flags.has_pattern) {
             mb_interlaced_dct_ = reader.read(1) != 0;
         }
     }
@@ -794,16 +810,13 @@ void Decoder::decodeMacroblock(BitReader& reader) {
             quant_scale_code_ = 1;
         }
     }
-    if (flags.has_pattern) {
-        flags.coded_block_pattern = readCodedBlockPattern(reader);
-        if (flags.coded_block_pattern < 0) {
-            picture_damaged_ = true;
-            return;
-        }
-    }
 
+    // The syntax reads the motion vectors before the coded block pattern.
+    // Reading them the other way round misaligns every inter macroblock, which
+    // is why intra pictures decoded and predicted ones did not.
     if (flags.intra) {
-        // Concealment vectors are parsed but not used for reconstruction.
+        // Intra macroblocks have no coded vectors; the concealment vectors, if
+        // present, are parsed and discarded.
         if (header_.concealment_motion_vectors) {
             if (header_.structure != PictureStructure::Frame) {
                 reader.skip(1);  // field_select
@@ -813,7 +826,7 @@ void Decoder::decodeMacroblock(BitReader& reader) {
             last_mv_[0][0][1] = readMotionVector(reader, last_mv_[0][0][1], header_.f_code[0][1]);
             last_mv_[0][1][1] = last_mv_[0][0][1];
             if (reader.read(1) != 1) {  // marker_bit
-                picture_damaged_ = true;
+                markDamaged("concealment marker bit");
             }
         } else {
             for (int d = 0; d < 2; ++d) {
@@ -824,6 +837,19 @@ void Decoder::decodeMacroblock(BitReader& reader) {
                 }
             }
         }
+    } else {
+        readMotionVectors(reader, flags, mv);
+    }
+
+    if (flags.has_pattern) {
+        flags.coded_block_pattern = readCodedBlockPattern(reader);
+        if (flags.coded_block_pattern < 0) {
+            markDamaged("coded_block_pattern");
+            return;
+        }
+    }
+
+    if (flags.intra) {
         for (int i = 0; i < 4; ++i) {
             decodeBlockIntra(reader, i, 0, quantScale());
         }
@@ -833,95 +859,9 @@ void Decoder::decodeMacroblock(BitReader& reader) {
         last_motion_forward_ = false;
         last_motion_backward_ = false;
         if (reader.error()) {
-            picture_damaged_ = true;
+            markDamaged("intra block read past end");
         }
         return;
-    }
-
-    // Motion vectors.
-    if (flags.zero_mv) {
-        for (int k = 0; k < 2; ++k) {
-            last_mv_[0][0][k] = 0;
-            last_mv_[0][1][k] = 0;
-        }
-    } else if (flags.motion_forward || flags.motion_backward) {
-        const bool field_picture = header_.structure != PictureStructure::Frame;
-        for (int direction = 0; direction < 2; ++direction) {
-            const bool forward = direction == static_cast<int>(Direction::Forward);
-            if (forward ? !flags.motion_forward : !flags.motion_backward) {
-                continue;
-            }
-            const int fcode_x = header_.f_code[direction][0];
-            const int fcode_y = header_.f_code[direction][1];
-            if (flags.motion_type == MotionType::Frame && !field_picture) {
-                // 16x16 frame prediction: one vector, shared by both halves.
-                int x = readMotionVector(reader, last_mv_[direction][0][0], fcode_x);
-                int y = readMotionVector(reader, last_mv_[direction][0][1], fcode_y);
-                for (int half = 0; half < 2; ++half) {
-                    last_mv_[direction][half][0] = x;
-                    last_mv_[direction][half][1] = y;
-                    mv[direction][half].x = x;
-                    mv[direction][half].y = y;
-                }
-            } else if (flags.motion_type == MotionType::Frame) {
-                // 16x8 in a field picture: a vector per half, each with its own
-                // reference field.
-                for (int half = 0; half < 2; ++half) {
-                    mv[direction][half].field_select = static_cast<int>(reader.read(1));
-                    mv[direction][half].x =
-                        readMotionVector(reader, last_mv_[direction][half][0], fcode_x);
-                    mv[direction][half].y =
-                        readMotionVector(reader, last_mv_[direction][half][1], fcode_y);
-                    last_mv_[direction][half][0] = mv[direction][half].x;
-                    last_mv_[direction][half][1] = mv[direction][half].y;
-                }
-            } else if (flags.motion_type == MotionType::Field && !field_picture) {
-                // Field prediction in a frame picture: the vertical component
-                // is coded in field lines, so its predictor is halved.
-                for (int half = 0; half < 2; ++half) {
-                    mv[direction][half].field_select = static_cast<int>(reader.read(1));
-                    const int predicted_y = last_mv_[direction][half][1] >> 1;
-                    const int y = readMotionVector(reader, predicted_y, fcode_y);
-                    mv[direction][half].x =
-                        readMotionVector(reader, last_mv_[direction][half][0], fcode_x);
-                    mv[direction][half].y = y;
-                    last_mv_[direction][half][0] = mv[direction][half].x;
-                    last_mv_[direction][half][1] = 2 * y;
-                }
-            } else {
-                // Field prediction in a field picture: one vector in field
-                // units, shared by both halves.
-                mv[direction][0].field_select = static_cast<int>(reader.read(1));
-                mv[direction][0].x =
-                    readMotionVector(reader, last_mv_[direction][0][0], fcode_x);
-                mv[direction][0].y =
-                    readMotionVector(reader, last_mv_[direction][0][1], fcode_y);
-                for (int half = 0; half < 2; ++half) {
-                    mv[direction][half].field_select = mv[direction][0].field_select;
-                    mv[direction][half].x = mv[direction][0].x;
-                    mv[direction][half].y = mv[direction][0].y;
-                    last_mv_[direction][half][0] = mv[direction][0].x;
-                    last_mv_[direction][half][1] = mv[direction][0].y;
-                }
-            }
-            // MPEG-1 picture_full_pel doubles the reconstructed vector.
-            const bool full_pel = forward ? header_.full_pel_forward : header_.full_pel_backward;
-            if (full_pel) {
-                for (int half = 0; half < 2; ++half) {
-                    mv[direction][half].x *= 2;
-                    mv[direction][half].y *= 2;
-                }
-            }
-        }
-    } else {
-        // Neither direction is coded, so the macroblock repeats the previous
-        // macroblock's prediction.
-        for (int d = 0; d < 2; ++d) {
-            for (int half = 0; half < 2; ++half) {
-                mv[d][half].x = last_mv_[d][half][0];
-                mv[d][half].y = last_mv_[d][half][1];
-            }
-        }
     }
 
     motionCompensate(flags, mv);
@@ -949,7 +889,7 @@ void Decoder::decodeMacroblock(BitReader& reader) {
     last_motion_forward_ = flags.motion_forward;
     last_motion_backward_ = flags.motion_backward;
     if (reader.error()) {
-        picture_damaged_ = true;
+        markDamaged("inter block read past end");
     }
 }
 
@@ -1215,6 +1155,95 @@ void Decoder::averageWithPrediction() {
         scratch.width = width;
         scratch.height = height;
         averageBlock(grid, scratch, x, y, width, height);
+    }
+}
+
+void Decoder::readMotionVectors(BitReader& reader, const MacroblockFlags& flags,
+                                MotionVector mv[2][2]) {
+    if (flags.zero_mv) {
+        for (int k = 0; k < 2; ++k) {
+            last_mv_[0][0][k] = 0;
+            last_mv_[0][1][k] = 0;
+        }
+        return;
+    }
+    if (!flags.motion_forward && !flags.motion_backward) {
+        // Neither direction is coded, so the macroblock repeats the previous
+        // macroblock's prediction.
+        for (int d = 0; d < 2; ++d) {
+            for (int half = 0; half < 2; ++half) {
+                mv[d][half].x = last_mv_[d][half][0];
+                mv[d][half].y = last_mv_[d][half][1];
+            }
+        }
+        return;
+    }
+
+    const bool field_picture = header_.structure != PictureStructure::Frame;
+    for (int direction = 0; direction < 2; ++direction) {
+        const bool forward = direction == static_cast<int>(Direction::Forward);
+        if (forward ? !flags.motion_forward : !flags.motion_backward) {
+            continue;
+        }
+        const int fcode_x = header_.f_code[direction][0];
+        const int fcode_y = header_.f_code[direction][1];
+        if (flags.motion_type == MotionType::Frame && !field_picture) {
+            // 16x16 frame prediction: one vector, shared by both halves.
+            const int x = readMotionVector(reader, last_mv_[direction][0][0], fcode_x);
+            const int y = readMotionVector(reader, last_mv_[direction][0][1], fcode_y);
+            for (int half = 0; half < 2; ++half) {
+                last_mv_[direction][half][0] = x;
+                last_mv_[direction][half][1] = y;
+                mv[direction][half].x = x;
+                mv[direction][half].y = y;
+            }
+        } else if (flags.motion_type == MotionType::Frame) {
+            // 16x8 in a field picture: a vector per half, each with its own
+            // reference field.
+            for (int half = 0; half < 2; ++half) {
+                mv[direction][half].field_select = static_cast<int>(reader.read(1));
+                mv[direction][half].x =
+                    readMotionVector(reader, last_mv_[direction][half][0], fcode_x);
+                mv[direction][half].y =
+                    readMotionVector(reader, last_mv_[direction][half][1], fcode_y);
+                last_mv_[direction][half][0] = mv[direction][half].x;
+                last_mv_[direction][half][1] = mv[direction][half].y;
+            }
+        } else if (!field_picture) {
+            // Field prediction in a frame picture: the vertical component is
+            // coded in field lines, so its predictor is halved.
+            for (int half = 0; half < 2; ++half) {
+                mv[direction][half].field_select = static_cast<int>(reader.read(1));
+                const int predicted_y = last_mv_[direction][half][1] >> 1;
+                const int y = readMotionVector(reader, predicted_y, fcode_y);
+                mv[direction][half].x =
+                    readMotionVector(reader, last_mv_[direction][half][0], fcode_x);
+                mv[direction][half].y = y;
+                last_mv_[direction][half][0] = mv[direction][half].x;
+                last_mv_[direction][half][1] = 2 * y;
+            }
+        } else {
+            // Field prediction in a field picture: one vector in field units,
+            // shared by both halves.
+            mv[direction][0].field_select = static_cast<int>(reader.read(1));
+            mv[direction][0].x = readMotionVector(reader, last_mv_[direction][0][0], fcode_x);
+            mv[direction][0].y = readMotionVector(reader, last_mv_[direction][0][1], fcode_y);
+            for (int half = 0; half < 2; ++half) {
+                mv[direction][half].field_select = mv[direction][0].field_select;
+                mv[direction][half].x = mv[direction][0].x;
+                mv[direction][half].y = mv[direction][0].y;
+                last_mv_[direction][half][0] = mv[direction][0].x;
+                last_mv_[direction][half][1] = mv[direction][0].y;
+            }
+        }
+        // MPEG-1 picture_full_pel doubles the reconstructed vector.
+        const bool full_pel = forward ? header_.full_pel_forward : header_.full_pel_backward;
+        if (full_pel) {
+            for (int half = 0; half < 2; ++half) {
+                mv[direction][half].x *= 2;
+                mv[direction][half].y *= 2;
+            }
+        }
     }
 }
 
