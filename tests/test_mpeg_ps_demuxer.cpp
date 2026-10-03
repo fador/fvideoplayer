@@ -39,6 +39,8 @@ public:
         }
     }
 
+    void putCode(uint32_t code, unsigned bits) { put(code, bits); }
+
     std::vector<uint8_t> bytes() {
         while (count_ != 0) {
             put(0, 1);
@@ -185,15 +187,27 @@ std::vector<uint8_t> buildElementaryPicture(int temporal_reference, int slices) 
         startCode(out, static_cast<uint8_t>(0x01 + slice));
         Bits bits;
         bits.put(8, 5);
-        bits.put(0, 1);
-        bits.put(1, 1);
-        bits.put(1, 1);
+        bits.put(0, 1);  // skip_1stop_8data_bits stop bit
         bits.put(1, 1);  // address increment of 0
         bits.put(1, 1);  // intra
         for (int block = 0; block < 6; ++block) {
-            bits.put(4, 3);
-            bits.put(0, 2);
-            bits.put(2, 2);
+            if (block == 0 || block >= 4) {
+                // DC difference of +8 so the picture cannot be confused with
+                // the neutral fill, and so every intra_dc_precision lands on a
+                // distinguishable value. A difference is DPCM and Cb and Cr
+                // have separate predictors, so the first luma block and both
+                // chroma blocks carry it.
+                if (block == 0) {
+                    bits.putCode(0xe, 4);    // luma DC symbol 5
+                    bits.put(0b01000, 5);    // +8
+                } else {
+                    bits.putCode(0x1e, 5);   // chroma DC symbol 5
+                    bits.put(0b01000, 5);    // +8
+                }
+            } else {
+                bits.putCode(0x4, 3);        // luma DC difference of 0
+            }
+            bits.putCode(0x2, 2);            // end_of_block
         }
         append(out, bits.bytes());
     }

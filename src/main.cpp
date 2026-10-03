@@ -196,6 +196,10 @@ int main(int argc, char** argv) {
         std::printf("Decoded %lld frames (%ux%u) in %.3f s (%.1f fps)\n",
                     static_cast<long long>(stats.frames), stats.width, stats.height, stats.seconds,
                     fps);
+        if (stats.damaged > 0) {
+            std::printf("%lld pictures had a damaged slice\n",
+                        static_cast<long long>(stats.damaged));
+        }
         return EXIT_SUCCESS;
     }
 

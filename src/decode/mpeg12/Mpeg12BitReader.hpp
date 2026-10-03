@@ -108,6 +108,25 @@ public:
         return skipped == (pad == 32 ? 0xFFFFFFFFu : ((1u << pad) - 1));
     }
 
+    // skip_1stop_8data_bits: reads one bit and, while it is one, skips a whole
+    // byte and repeats, stopping at the first zero bit. This is how both
+    // standards terminate the slice header's extra information, and it is not
+    // the same as aligning to a byte boundary.
+    bool skip1Stop8DataBits() {
+        for (;;) {
+            if (bitsLeft() < 1) {
+                return false;
+            }
+            if (read(1) == 0) {
+                return true;
+            }
+            if (bitsLeft() < 8) {
+                return false;
+            }
+            skip(8);
+        }
+    }
+
     // Number of whole bytes that can be read without touching the tail.
     size_t bytePosition() const { return bitPosition() >> 3; }
 

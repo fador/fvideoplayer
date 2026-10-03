@@ -52,6 +52,9 @@ public:
     // True when the last slice hit a damaged or truncated bitstream.
     bool damaged() const { return damaged_; }
 
+    // Pictures whose slices did not parse cleanly since the last reset().
+    uint64_t damagedPictures() const { return damaged_pictures_; }
+
     uint64_t picturesDecoded() const { return pictures_decoded_; }
     uint64_t picturesDropped() const { return pictures_dropped_; }
 
@@ -130,7 +133,7 @@ private:
     bool parseSequenceExtension(BitReader& reader);
     bool parsePictureHeader(BitReader& reader, int64_t pts);
     bool parsePictureCodingExtension(BitReader& reader);
-    void decodeSlice(const uint8_t* data, size_t size, int slice_vertical_position);
+    void decodeSlice(const uint8_t* data, size_t size, int slice_start_code);
     void decodeSliceBody(BitReader& reader);
     void decodeMacroblock(BitReader& reader);
     void skipMacroblock();
@@ -219,6 +222,7 @@ private:
     bool last_motion_backward_ = false;
     uint8_t prediction_[3][256] = {};
     uint64_t pictures_decoded_ = 0;
+    uint64_t damaged_pictures_ = 0;
     uint64_t pictures_dropped_ = 0;
 };
 

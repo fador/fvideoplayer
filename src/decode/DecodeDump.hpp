@@ -12,6 +12,9 @@ struct DumpStats {
     double seconds = 0.0;
     uint32_t width = 0;
     uint32_t height = 0;
+    // Pictures whose slices did not parse cleanly. A damaged picture still
+    // produces output, so this is the only way to tell that it happened.
+    int64_t damaged = 0;
 };
 
 // Decodes the file and writes cropped planar YUV to output. The first

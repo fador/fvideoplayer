@@ -147,15 +147,32 @@ std::vector<uint8_t> buildMpeg2IntraFrame(const PictureOptions& options = {}) {
     {
         Bits bits;
         bits.put(static_cast<uint32_t>(options.quantiser_scale_code), 5);
-        bits.put(0, 1);   // intra_slice_flag
-        bits.put(1, 1);   // extra_bit_slice
-        bits.put(1, 1);   // skip_1stop_8data_bits
+        bits.put(0, 1);   // skip_1stop_8data_bits stop bit
         bits.put(1, 1);   // macroblock_address_increment of 0
         bits.put(1, 1);   // macroblock_type: intra, quantiser unchanged
         for (int block = 0; block < 6; ++block) {
-            bits.put(4, 3);  // luma DC difference of 0
-            bits.put(0, 2);  // chroma DC difference of 0
-            bits.put(2, 2);  // end_of_block
+            if (block == 0 || block >= 4) {
+                // DC difference of +8 so the picture cannot be confused with
+                // the neutral fill, and so every intra_dc_precision lands on a
+                // distinguishable value. A difference is DPCM and Cb and Cr
+                // have separate predictors, so the first luma block and both
+                // chroma blocks carry it.
+                if (block == 0) {
+                    bits.putCode(0xe, 4);    // luma DC symbol 5
+                    bits.put(0b01000, 5);    // +8
+                } else {
+                    bits.putCode(0x1e, 5);   // chroma DC symbol 5
+                    bits.put(0b01000, 5);    // +8
+                }
+            } else {
+                bits.putCode(0x4, 3);        // luma DC difference of 0
+            }
+            // The end_of_block codeword follows the table in use.
+            if (options.intra_vlc_format) {
+                bits.putCode(0x6, 4);     // MPEG-2 table: 0110
+            } else {
+                bits.putCode(0x2, 2);     // MPEG-1 table: 10
+            }
         }
         append(out, bits.bytes());
     }
@@ -201,13 +218,13 @@ TEST(Mpeg2, DecodesAFlatGreyIntraPicture) {
     // inverse transform is under half a sample, so the picture stays flat.
     for (int y = 0; y < 16; ++y) {
         for (int x = 0; x < 16; ++x) {
-            ASSERT_EQ(luma(frame, x, y), 128) << "at " << x << "," << y;
+            ASSERT_EQ(luma(frame, x, y), 136) << "at " << x << "," << y;
         }
     }
     for (int plane = 1; plane < 3; ++plane) {
         for (int y = 0; y < frame.height_c_; ++y) {
             for (int x = 0; x < frame.width_c_; ++x) {
-                ASSERT_EQ(frame.plane(plane)[y * frame.stride_c_ + x], 128);
+                ASSERT_EQ(frame.plane(plane)[y * frame.stride_c_ + x], 136);
             }
         }
     }
@@ -227,8 +244,12 @@ TEST(Mpeg2, IntraDcPrecisionKeepsMidGreyAtMidGrey) {
         decoder.flush(frames);
         ASSERT_EQ(frames.size(), 1u) << "precision " << precision;
         EXPECT_FALSE(decoder.damaged()) << "precision " << precision;
-        EXPECT_EQ(luma(frames[0].image, 0, 0), 128) << "precision " << precision;
-        EXPECT_EQ(luma(frames[0].image, 15, 15), 128) << "precision " << precision;
+        // (128 << precision) + 8, then shifted by 3 - precision, over the
+        // transform's 1/8: the same DC difference lands on a different level
+        // for each precision, and none of them is the neutral 128.
+        const uint32_t expected = 128 + (8u >> precision);
+        EXPECT_EQ(luma(frames[0].image, 0, 0), expected) << "precision " << precision;
+        EXPECT_EQ(luma(frames[0].image, 15, 15), expected) << "precision " << precision;
     }
 }
 
@@ -245,7 +266,7 @@ TEST(Mpeg2, AlternateScanAndIntraVlcFormatAreAccepted) {
 
     ASSERT_EQ(frames.size(), 1u);
     EXPECT_FALSE(decoder.damaged());
-    EXPECT_EQ(luma(frames[0].image, 0, 0), 128);
+    EXPECT_EQ(luma(frames[0].image, 0, 0), 136);
 }
 
 TEST(Mpeg2, NonLinearQuantiserScaleIsAccepted) {
@@ -261,7 +282,7 @@ TEST(Mpeg2, NonLinearQuantiserScaleIsAccepted) {
 
     ASSERT_EQ(frames.size(), 1u);
     EXPECT_FALSE(decoder.damaged());
-    EXPECT_EQ(luma(frames[0].image, 0, 0), 128);
+    EXPECT_EQ(luma(frames[0].image, 0, 0), 136);
 }
 
 TEST(Mpeg2, FieldPictureIsRecognisedAsInterlaced) {

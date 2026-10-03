@@ -100,6 +100,7 @@ void Decoder::reset() {
     resetPictureState();
     pictures_decoded_ = 0;
     pictures_dropped_ = 0;
+    damaged_pictures_ = 0;
 }
 
 void Decoder::resetPictureState() {
@@ -528,6 +529,9 @@ void Decoder::endPicture() {
     field_pending_ = false;
     field_temporal_reference_ = -1;
     damaged_ = picture_damaged_;
+    if (damaged_) {
+        ++damaged_pictures_;
+    }
     if (picture_unsupported_) {
         current_.release();
         return;
@@ -552,7 +556,7 @@ void Decoder::endPicture() {
 // slices and macroblocks
 // ---------------------------------------------------------------------------
 
-void Decoder::decodeSlice(const uint8_t* data, size_t size, int slice_vertical_position) {
+void Decoder::decodeSlice(const uint8_t* data, size_t size, int slice_start_code) {
     if (waiting_for_reference_ || !in_picture_) {
         return;
     }
@@ -564,20 +568,24 @@ void Decoder::decodeSlice(const uint8_t* data, size_t size, int slice_vertical_p
     }
     BitReader reader(data, size);
 
+    // The vertical position is the low seven bits of the slice start code, so
+    // code 0x01 is the first macroblock row. Very tall MPEG-2 pictures extend
+    // it with three more bits.
+    int slice_vertical = slice_start_code - kStartSliceFirst;
+    if (standard_ == Standard::Mpeg2 && mb_height_ > 2800 / 16) {
+        slice_vertical += static_cast<int>(reader.read(3)) << 7;
+    }
+
     quant_scale_code_ = static_cast<int>(reader.read(5));
-    const bool intra_slice_flag = reader.read(1) != 0;
-    if (standard_ == Standard::Mpeg2 && intra_slice_flag) {
-        reader.skip(8);  // intra_slice and reserved bits
-    }
-    if (reader.read(1) != 1) {  // extra_bit_slice
-        picture_damaged_ = true;
-    }
-    if (!reader.skipAllOnes()) {
+    // The slice header ends with skip_1stop_8data_bits. A conformant encoder
+    // writes quantiser_scale_code followed by a single zero bit, so the
+    // macroblock data starts six bits into the payload.
+    if (!reader.skip1Stop8DataBits()) {
         picture_damaged_ = true;
     }
 
     mb_x_ = 0;
-    mb_y_ = slice_vertical_position;
+    mb_y_ = slice_vertical;
 
     for (int c = 0; c < 3; ++c) {
         dc_pred_[c] = dcPredictorBase();

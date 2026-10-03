@@ -45,6 +45,8 @@ public:
         }
     }
 
+    void putCode(uint32_t code, unsigned bits) { put(code, bits); }
+
     std::vector<uint8_t> bytes() {
         while (count_ != 0) {
             put(0, 1);
@@ -93,15 +95,27 @@ void appendFlatIntraPicture(std::vector<uint8_t>& out) {
     {
         Bits bits;
         bits.put(16, 5);   // quantiser_scale_code
-        bits.put(0, 1);    // intra_slice_flag
-        bits.put(1, 1);    // extra_bit_slice
-        bits.put(1, 1);    // skip_1stop_8data_bits
+        bits.put(0, 1);    // skip_1stop_8data_bits stop bit
         bits.put(1, 1);    // macroblock_address_increment of 0
         bits.put(1, 1);    // macroblock_type: intra
         for (int block = 0; block < 6; ++block) {
-            bits.put(4, 3);  // luma DC difference of 0
-            bits.put(0, 2);  // chroma DC difference of 0
-            bits.put(2, 2);  // end_of_block
+            if (block == 0 || block >= 4) {
+                // DC difference of +8 so the picture cannot be confused with
+                // the neutral fill, and so every intra_dc_precision lands on a
+                // distinguishable value. A difference is DPCM and Cb and Cr
+                // have separate predictors, so the first luma block and both
+                // chroma blocks carry it.
+                if (block == 0) {
+                    bits.putCode(0xe, 4);    // luma DC symbol 5
+                    bits.put(0b01000, 5);    // +8
+                } else {
+                    bits.putCode(0x1e, 5);   // chroma DC symbol 5
+                    bits.put(0b01000, 5);    // +8
+                }
+            } else {
+                bits.putCode(0x4, 3);        // luma DC difference of 0
+            }
+            bits.putCode(0x2, 2);            // end_of_block
         }
         appendBytes(out, bits.bytes());
     }
@@ -337,7 +351,7 @@ TEST(Mpeg1Pipeline, DecodesEveryPictureFromTheRawDemuxer) {
         EXPECT_EQ(frame.slice_type, SliceType::I);
         EXPECT_EQ(frame.image.width_, 16);
         EXPECT_EQ(frame.image.height_, 16);
-        EXPECT_EQ(frame.image.plane(0)[0], 128);
+        EXPECT_EQ(frame.image.plane(0)[0], 136);
     }
 
     std::filesystem::remove(path);
