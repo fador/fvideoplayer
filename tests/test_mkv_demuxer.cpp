@@ -1,5 +1,6 @@
 #include "demux/Demuxer.hpp"
 #include "demux/MkvDemuxer.hpp"
+#include "playback/PlaybackEngine.hpp"
 
 #include "audio/opus/OpusDecoder.hpp"
 
@@ -504,6 +505,42 @@ TEST(MkvDemuxer, FactoryDetectsMkv) {
         std::unique_ptr<player::demux::IDemuxer> demuxer = player::demux::createDemuxer(path, error);
         ASSERT_TRUE(demuxer) << error;
         EXPECT_EQ(demuxer->video().codec, player::demux::Codec::Hevc);
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(MkvDemuxer, EnginePlaysTheAudioWhenTheHevcBackendIsMissing) {
+    // The HEVC backend is optional. When it is built the engine opens it for
+    // this file; when it is not, the track has no decoder and the audio plays.
+    const Bytes aac_config = {0x11, 0x88};
+    const std::filesystem::path path =
+        writeMkv(buildMkv(true, false, false, "A_AAC", aac_config),
+                 "hevc_player_mkv_engine_hevc.mkv");
+    {
+        player::playback::PlaybackEngine engine;
+        std::string error;
+        ASSERT_TRUE(engine.open(path, error)) << error;
+        EXPECT_EQ(engine.videoInfo().codec, player::demux::Codec::Hevc);
+        EXPECT_EQ(std::string(engine.audioCodecName()), "AAC");
+        EXPECT_TRUE(engine.audioDecoding());
+        engine.close();
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(MkvDemuxer, EngineRejectsAnHevcOnlyFileWithoutTheBackend) {
+    const std::filesystem::path path =
+        writeMkv(buildMkv(false), "hevc_player_mkv_engine_hevc_only.mkv");
+    {
+        player::playback::PlaybackEngine engine;
+        std::string error;
+#if PLAYER_HAS_KVZDEC
+        EXPECT_TRUE(engine.open(path, error)) << error;
+#else
+        EXPECT_FALSE(engine.open(path, error));
+        EXPECT_NE(error.find("no audio"), std::string::npos) << error;
+#endif
+        engine.close();
     }
     std::filesystem::remove(path);
 }

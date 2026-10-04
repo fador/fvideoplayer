@@ -1,9 +1,9 @@
 # Verification
 
-The HEVC decode path was checked bit-exact against the HM reference outputs of
-the kvzdec conformance suite for raw, MP4, MKV and AVI inputs (8/10-bit,
-4:2:0/4:4:4, tiles/WPP). `--dump-yuv` performs a synchronous decode of the
-whole file for this purpose.
+When the optional kvzdec backend is built, the HEVC decode path was checked
+bit-exact against the HM reference outputs of the kvzdec conformance suite for
+raw, MP4, MKV and AVI inputs (8/10-bit, 4:2:0/4:4:4, tiles/WPP). `--dump-yuv`
+performs a synchronous decode of the whole file for this purpose.
 
 The MPEG-1/MPEG-2 decoder has no reference bitstream in the repository, so it
 is covered by unit tests instead: the VLC tables, inverse quantisation, IDCT

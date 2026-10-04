@@ -1,5 +1,10 @@
 #include "decode/KvzdecDecoder.hpp"
 
+// The backend is external: when its sources are absent the build defines
+// PLAYER_HAS_KVZDEC=0 and this file compiles to a stub that refuses to open,
+// so the player, the dump path and the tests still link and run.
+#if PLAYER_HAS_KVZDEC
+
 #include "decode/NalUnits.hpp"
 #include "demux/HvcC.hpp"
 
@@ -249,3 +254,67 @@ int KvzdecDecoder::flush(std::vector<DecodedFrame>& out) {
 }
 
 }  // namespace player::decode
+
+#else  // !PLAYER_HAS_KVZDEC
+
+namespace player::decode {
+namespace {
+
+constexpr const char* kNoBackend =
+    "HEVC support was not built (kvzdec was not available or was disabled)";
+
+}  // namespace
+
+bool KvzdecDecoder::isOpen() const {
+    return false;
+}
+
+const char* hevcBackendVersion() {
+    return "not built";
+}
+
+KvzdecDecoder::~KvzdecDecoder() = default;
+
+bool KvzdecDecoder::open(std::string* error, int threads, int owf, bool hash_check) {
+    (void)threads;
+    (void)owf;
+    (void)hash_check;
+    if (error) {
+        *error = kNoBackend;
+    }
+    return false;
+}
+
+void KvzdecDecoder::close() {}
+
+bool KvzdecDecoder::pushParameterSets(const std::vector<uint8_t>& hvcc, std::string* error) {
+    (void)hvcc;
+    if (error) {
+        *error = kNoBackend;
+    }
+    return false;
+}
+
+bool KvzdecDecoder::pushSample(const uint8_t* data, size_t size, int64_t pts, bool annexb,
+                               uint8_t nal_length_size) {
+    (void)data;
+    (void)size;
+    (void)pts;
+    (void)annexb;
+    (void)nal_length_size;
+    return false;
+}
+
+int KvzdecDecoder::pullFrames(std::vector<DecodedFrame>& out) {
+    (void)out;
+    return 0;
+}
+
+int KvzdecDecoder::flush(std::vector<DecodedFrame>& out) {
+    (void)out;
+    return 0;
+}
+
+}  // namespace player::decode
+
+#endif  // PLAYER_HAS_KVZDEC

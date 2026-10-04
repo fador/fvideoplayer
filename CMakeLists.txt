@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 project(hevc_player
     VERSION 0.1.0
-    DESCRIPTION "HEVC video player built on the kvzdec decoder"
+    DESCRIPTION "Video player with from-scratch decoders and an optional kvzdec HEVC backend"
     LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -14,15 +14,25 @@ option(PLAYER_BUILD_TESTS "Build player unit tests" ON)
 find_package(Threads REQUIRED)
 find_package(OpenGL REQUIRED)
 
-# --- kvzdec: static library only -------------------------------------------
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(BUILD_KVZDEC_BINARY OFF CACHE BOOL "" FORCE)
-set(GIT_SUBMODULE OFF CACHE BOOL "" FORCE)
-add_subdirectory(external/kvzdec EXCLUDE_FROM_ALL)
-if(NOT BUILD_SHARED_LIBS)
-    # kvzdec's public header needs this to avoid __declspec(dllimport) on Windows.
-    target_compile_definitions(kvzdec INTERFACE KVZDEC_STATIC_LIB)
+# --- kvzdec: optional external HEVC backend, static library only -----------
+# The backend is omitted when the submodule is not checked out, so the player
+# and its tests build and run without it (HEVC files then play audio only).
+option(PLAYER_ENABLE_KVZDEC "Build the external kvzdec HEVC backend when present" ON)
+set(PLAYER_HAS_KVZDEC OFF)
+if(PLAYER_ENABLE_KVZDEC AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/kvzdec/CMakeLists.txt")
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(BUILD_KVZDEC_BINARY OFF CACHE BOOL "" FORCE)
+    set(GIT_SUBMODULE OFF CACHE BOOL "" FORCE)
+    add_subdirectory(external/kvzdec EXCLUDE_FROM_ALL)
+    if(NOT BUILD_SHARED_LIBS)
+        # kvzdec's public header needs this to avoid __declspec(dllimport) on Windows.
+        target_compile_definitions(kvzdec INTERFACE KVZDEC_STATIC_LIB)
+    endif()
+    set(PLAYER_HAS_KVZDEC ON)
+    message(STATUS "kvzdec found: HEVC playback enabled")
+else()
+    message(STATUS "kvzdec not found: building without HEVC playback")
 endif()
 
 # --- SDL3: static, no tests/examples/install -------------------------------
@@ -98,8 +108,14 @@ add_library(player_decode STATIC
     src/decode/mpeg12/Mpeg12Tables.cpp
     src/decode/mpeg12/Mpeg12Vlc.cpp)
 target_include_directories(player_decode PUBLIC src)
-target_link_libraries(player_decode PUBLIC player_demux kvzdec)
+target_link_libraries(player_decode PUBLIC player_demux)
 target_compile_definitions(player_decode PRIVATE _CRT_SECURE_NO_WARNINGS)
+if(PLAYER_HAS_KVZDEC)
+    target_link_libraries(player_decode PUBLIC kvzdec)
+    target_compile_definitions(player_decode PUBLIC PLAYER_HAS_KVZDEC=1)
+else()
+    target_compile_definitions(player_decode PUBLIC PLAYER_HAS_KVZDEC=0)
+endif()
 
 # --- player audio (PCM helpers + from-scratch AAC decoder, no GUI deps) ------
 add_library(player_audio STATIC
@@ -200,12 +216,14 @@ target_link_libraries(player_core PUBLIC
     player_util
     player_audio
     player_audio_sdl
-    kvzdec
     imgui
     implot
     SDL3::SDL3
     OpenGL::GL
     Threads::Threads)
+if(PLAYER_HAS_KVZDEC)
+    target_link_libraries(player_core PUBLIC kvzdec)
+endif()
 
 if(MSVC)
     target_compile_options(player_audio PRIVATE /W4 /permissive- /Zc:__cplusplus)

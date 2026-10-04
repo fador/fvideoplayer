@@ -56,6 +56,7 @@ const char* PlaybackEngine::videoCodecName(demux::Codec codec) {
 bool PlaybackEngine::configureVideoDecoder(std::string& error) {
     switch (video_info_.codec) {
         case demux::Codec::Hevc:
+#if PLAYER_HAS_KVZDEC
             video_codec_ = VideoCodec::Hevc;
             if (!decoder_.open(&error)) {
                 video_codec_ = VideoCodec::None;
@@ -66,6 +67,13 @@ bool PlaybackEngine::configureVideoDecoder(std::string& error) {
                 video_codec_ = VideoCodec::None;
                 return false;
             }
+#else
+            // The HEVC backend is external. Without it an HEVC track is
+            // treated like any other codec without a decoder: it is named and
+            // the audio plays.
+            video_codec_ = VideoCodec::None;
+            log::add(log::Level::Warning, "HEVC support was not built; playing audio only");
+#endif
             break;
         case demux::Codec::Mpeg1:
         case demux::Codec::Mpeg2:
@@ -358,6 +366,18 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
         last_error_ = local_error;
         error = local_error;
         log::addf(log::Level::Error, "Decoder open failed: %s", local_error.c_str());
+        return false;
+    }
+    // With no video decoder and no audio there is nothing to play. This is
+    // how a file whose only track is HEVC behaves when the external backend
+    // was not built.
+    if (video_codec_ == VideoCodec::None && audio_track_infos_.empty()) {
+        last_error_ = video_info_.codec_name.empty()
+                          ? "no playable audio or video track"
+                          : video_info_.codec_name +
+                                " video has no decoder and the file has no audio";
+        error = last_error_;
+        log::addf(log::Level::Error, "%s", last_error_.c_str());
         return false;
     }
     demuxer_ = std::move(demuxer);

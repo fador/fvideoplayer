@@ -15,5 +15,8 @@
 - Build: `cmake --build build-x64 --target player_tests --config RelWithDebInfo`
 - Tests: `build-x64\tests\RelWithDebInfo\player_tests.exe` (add
   `--gtest_filter=...` to narrow).
+- The external kvzdec HEVC backend is optional. Check the no-kvzdec path with
+  a scratch build dir: `-DPLAYER_ENABLE_KVZDEC=OFF` (the test suite must pass
+  in both configurations).
 - Decoders are verified against ffmpeg: decode the same input with the
   built-in reference path and compute correlation / max sample difference.
