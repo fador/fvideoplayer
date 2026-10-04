@@ -68,6 +68,7 @@ target_compile_definitions(player_subtitle PRIVATE _CRT_SECURE_NO_WARNINGS)
 
 # --- player demux (no GUI dependencies) --------------------------------------
 add_library(player_demux STATIC
+    src/demux/Ac3Demuxer.cpp
     src/demux/AviDemuxer.cpp
     src/demux/Demuxer.cpp
     src/demux/Esds.cpp
@@ -106,6 +107,8 @@ add_library(player_audio STATIC
     src/audio/PcmGain.cpp
     src/audio/Simd.cpp
     src/audio/SimdAvx2.cpp
+    src/audio/ac3/Ac3Decoder.cpp
+    src/audio/ac3/Ac3Tables.cpp
     src/audio/aac/AacConfig.cpp
     src/audio/aac/AacDecoder.cpp
     src/audio/aac/AacFilterbank.cpp

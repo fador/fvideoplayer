@@ -14,6 +14,7 @@ namespace {
 
 // 'mp4a': AAC audio in MP4/Matroska/AVI containers. 'Opus': Opus audio.
 constexpr uint32_t kMp4aFourcc = 0x6D703461;
+constexpr uint32_t kAc3Fourcc = 0x61632D33;  // 'ac-3'
 constexpr uint32_t kOpusFourcc = 0x4F707573;
 constexpr uint32_t kMp2Fourcc = 0x6D703220;  // 'mp2 '
 constexpr uint32_t kMp3Fourcc = 0x6D703320;  // 'mp3 '
@@ -743,6 +744,17 @@ void PlaybackEngine::configureAudioDecoder(const demux::AudioTrackInfo& track) {
         rate = aac_decoder_.config().sample_rate;
         channels = aac_decoder_.config().channel_count;
         audio_frame_ms_ = rate > 0 ? static_cast<int>(1024ull * 1000 / rate) : 21;
+    } else if (track.codec_fourcc == kAc3Fourcc) {
+        // AC-3 has no extradata; the frame headers state the format.
+        if (!ac3_decoder_.configure(nullptr, 0, error)) {
+            log::addf(log::Level::Warning, "AC-3 decoder rejected the track config: %s",
+                      error.c_str());
+            return;
+        }
+        audio_codec_ = AudioCodec::Ac3;
+        rate = track.sample_rate;
+        channels = track.channels;
+        audio_frame_ms_ = rate > 0 ? static_cast<int>(1536ull * 1000 / rate) : 32;
     } else if (track.codec_fourcc == kOpusFourcc) {
         if (!opus_decoder_.configure(track.extradata.data(), track.extradata.size(), error)) {
             log::addf(log::Level::Warning, "Opus decoder rejected the track config: %s",
@@ -809,6 +821,8 @@ const char* PlaybackEngine::audioCodecName() const {
     switch (audio_codec_) {
         case AudioCodec::Aac:
             return "AAC";
+        case AudioCodec::Ac3:
+            return "AC-3";
         case AudioCodec::Opus:
             return "Opus";
         case AudioCodec::Mp2:
@@ -834,6 +848,13 @@ void PlaybackEngine::decodeAudioSample(const demux::Sample& sample) {
                 aac_decoder_.decode(sample.data.data(), sample.data.size(), audio_pcm_, error);
             ok = status == audio::aac::Status::Ok;
             unsupported = status == audio::aac::Status::Unsupported;
+            break;
+        }
+        case AudioCodec::Ac3: {
+            const audio::ac3::Status status =
+                ac3_decoder_.decode(sample.data.data(), sample.data.size(), audio_pcm_, error);
+            ok = status == audio::ac3::Status::Ok;
+            unsupported = status == audio::ac3::Status::Unsupported;
             break;
         }
         case AudioCodec::Opus: {
@@ -876,6 +897,7 @@ void PlaybackEngine::decodeAudioSample(const demux::Sample& sample) {
 
 void PlaybackEngine::flushAudioDecoder() {
     aac_decoder_.flush();
+    ac3_decoder_.flush();
     opus_decoder_.flush();
     mp2_decoder_.flush();
     mp3_decoder_.flush();
@@ -884,6 +906,7 @@ void PlaybackEngine::flushAudioDecoder() {
 
 void PlaybackEngine::resetAudioDecoder() {
     aac_decoder_.reset();
+    ac3_decoder_.reset();
     opus_decoder_.reset();
     mp2_decoder_.reset();
     mp3_decoder_.reset();

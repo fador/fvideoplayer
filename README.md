@@ -26,10 +26,10 @@ MPEG-1 decoder.
   switchable on the fly; external files next to the video are discovered
   automatically
 - **Audio**: container audio tracks are listed and selectable from the Audio
-menu. AAC-LC, Opus (SILK/CELT/hybrid), MP3 and FLAC are decoded by
+menu. AAC-LC, Opus (SILK/CELT/hybrid), MP3, FLAC and AC-3 are decoded by
   from-scratch decoders (no external codec libraries) and played through an
-  SDL3 float sink with software volume and mute; audio-only MP3 and FLAC files
-  play directly.
+  SDL3 float sink with software volume and mute; audio-only MP3, FLAC and AC-3
+  files play directly.
   See [Audio decoding](#audio-decoding) for details
 
 ## Building
@@ -126,7 +126,8 @@ src/
 packet loss concealment; mp3/: frame parsing, bit reservoir,
             Huffman, IMDCT and the synthesis filterbank; flac/: STREAMINFO,
             frame headers, constant/verbatim/fixed/LPC subframes, Rice
-            residuals)
+            residuals; ac3/: syncframe syntax, coupling, bit allocation,
+            mantissas, KBD-window IMDCT)
 ```
 
 `decode::Frame` is the single currency between a decoder and everything
@@ -503,6 +504,28 @@ sample-accurate seeking. Seven reference-encoded streams (16/24-bit, mono to
 6 channels, 32-96 kHz, noise and stereo decorrelation) decode bit-exactly,
 and an end-to-end test plays a file through the engine.
 
+### AC-3
+
+The AC-3 (Dolby Digital) decoder follows ATSC A/52 and is written from
+scratch. Implemented:
+
+- Syncframe header parsing (bit rates, all sample rates, bitstream id 1-10,
+  dual mono, `bsid`-dependent rates); E-AC-3 is rejected as unsupported
+- All channel modes from mono to 5.1 with LFE, WAVE-order output
+- Coupling (coupled channels, coupling coordinates and phase flags), stereo
+  rematrixing, dynamic range and the alternative bitstream syntax
+- Exponent strategies (D15/D25/D45) and absolute exponent decoding, standard
+  bit allocation (PSD integration, excitation/masking curves, delta bit
+  allocation, the bap tables), all mantissa quantisers and the bap=0 dither
+- Both inverse transforms (512/256-point, per-block switch) with the KBD
+  window and overlap-add
+
+Raw `.ac3` files play directly; the demuxer indexes every syncframe for
+seeking, and AVI and Matroska files map their AC-3 tracks to it. The decoder
+is verified against the reference decoder for mono, stereo without coupling,
+stereo with coupling and 5.1: all four decode with correlation 1, with
+differences limited to float rounding and the non-normative dither sequence.
+
 ### MP4 audio and subtitles
 
 The MP4 demuxer reads every track the player can act on, not just the video:
@@ -531,9 +554,10 @@ AVI audio streams are read from the same chunk tables as the video, using
 `idx1` when the file has one and scanning the `movi` list otherwise:
 
 - Codec, channel count and sample rate come from the WAVEFORMATEX in `strf`.
-  MPEG audio and AAC map to the decoders that already exist; Opus is recognised
-  by its format tag and takes the WAVEFORMATEX trailing bytes as its
-  OpusHead. PCM is listed with its raw tag and reported as having no decoder.
+  MPEG audio, AAC and AC-3 (`0x2000`) map to the decoders that already exist;
+  Opus is recognised by its format tag and takes the WAVEFORMATEX trailing
+  bytes as its OpusHead. PCM is listed with its raw tag and reported as having
+  no decoder.
 - AVI stores no timestamp per chunk, so presentation times accumulate from the
   `strh` scale and rate, which describe one chunk.
 - Each audio track keeps its own cursor and `seek()` moves them along with the

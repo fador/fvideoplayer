@@ -6,6 +6,7 @@
 #include "audio/Pcm.hpp"
 #include "audio/PcmGain.hpp"
 #include "audio/aac/AacDecoder.hpp"
+#include "audio/ac3/Ac3Decoder.hpp"
 #include "audio/flac/FlacDecoder.hpp"
 #include "audio/mp2/Mp2Decoder.hpp"
 #include "audio/mp3/Mp3Decoder.hpp"
@@ -121,6 +122,7 @@ private:
     enum class AudioCodec {
         None,
         Aac,
+        Ac3,
         Opus,
         Mp2,
         Mp3,
@@ -199,6 +201,7 @@ private:
     audio::NullAudioSink null_sink_;
     AudioCodec audio_codec_ = AudioCodec::None;
     audio::aac::Decoder aac_decoder_;
+    audio::ac3::Decoder ac3_decoder_;
     audio::opus::Decoder opus_decoder_;
     audio::mp2::Decoder mp2_decoder_;
     audio::mp3::Decoder mp3_decoder_;

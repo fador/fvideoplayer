@@ -1,4 +1,5 @@
 add_executable(player_tests
+    test_ac3.cpp
     test_audio.cpp
     test_flac.cpp
     test_mp2.cpp

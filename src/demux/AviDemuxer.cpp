@@ -288,6 +288,8 @@ uint32_t audioFourcc(uint16_t format_tag) {
             return 0x6D703320;  // MPEG audio -> 'mp3 '
         case 0x00FF:
             return 0x6D703461;  // AAC -> 'mp4a'
+        case 0x2000:
+            return 0x61632D33;  // AC-3 -> 'ac-3'
         case 0x704F:
             return 0x4F707573;  // Opus -> 'Opus'
         case 0x0001:            // integer PCM
