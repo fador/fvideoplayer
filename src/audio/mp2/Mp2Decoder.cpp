@@ -104,6 +104,9 @@ const Inverses& inverses() {
 // Flat allocation table 1 (also used for index 1): a row per subband,
 // 1 << width entries long. Entry 0 is the width, the rest map an
 // allocation code to a quantisation index.
+// Flat allocation table 1 (also used for index 1): one row per subband,
+// 1 << width entries long, thirty rows in all. Entry 0 of a row is the
+// width; the rest map an allocation code to a quantisation index.
 const uint8_t kAllocTable1[] = {
     4, 0, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
     4, 0, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
@@ -115,6 +118,8 @@ const uint8_t kAllocTable1[] = {
     4, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16,
     4, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16,
     4, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16,
+    4, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16,
+    3, 0, 1, 2, 3, 4, 5, 16, 3, 0, 1, 2, 3, 4, 5, 16,
     3, 0, 1, 2, 3, 4, 5, 16, 3, 0, 1, 2, 3, 4, 5, 16,
     3, 0, 1, 2, 3, 4, 5, 16, 3, 0, 1, 2, 3, 4, 5, 16,
     3, 0, 1, 2, 3, 4, 5, 16, 3, 0, 1, 2, 3, 4, 5, 16,
@@ -124,7 +129,6 @@ const uint8_t kAllocTable1[] = {
     2, 0, 1, 16, 2, 0, 1, 16, 2, 0, 1, 16,
 };
 
-// Flat allocation table 3 (also used for index 3).
 const uint8_t kAllocTable3[] = {
     4, 0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     4, 0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
@@ -474,7 +478,7 @@ Status Decoder::decode(const uint8_t* data, size_t size, PcmBuffer& pcm, std::st
         j += 1 << width;
     }
 
-    // Scalefactor selection information: two bits per coded subband.
+    // Scalefactor selection information: two bits for every coded subband.
     for (int i = 0; i < sblimit; ++i) {
         for (int ch = 0; ch < channels; ++ch) {
             if (bit_alloc[ch][i] != 0) {
@@ -537,7 +541,7 @@ Status Decoder::decode(const uint8_t* data, size_t size, PcmBuffer& pcm, std::st
                     if (bits < 0) {
                         const int v = static_cast<int>(take(static_cast<unsigned>(-bits)));
                         const int steps = kQuantSteps[qindex];
-                        const float step_scale = scale * inv.value[qindex == 0 ? 2 : 4];
+                        const float step_scale = scale / static_cast<float>(steps - 1);
                         int remainder = v;
                         for (int m = 0; m < 3; ++m) {
                             const int code = remainder % steps;
@@ -552,7 +556,7 @@ Status Decoder::decode(const uint8_t* data, size_t size, PcmBuffer& pcm, std::st
                             const int code = static_cast<int>(take(static_cast<unsigned>(bits)));
                             subband[ch][k * 12 + l + m][i] =
                                 (static_cast<float>(code) -
-                                 static_cast<float>(1 << (bits - 1))) *
+                                 static_cast<float>((1 << (bits - 1)) - 1)) *
                                 step_scale;
                         }
                     }
@@ -574,7 +578,7 @@ Status Decoder::decode(const uint8_t* data, size_t size, PcmBuffer& pcm, std::st
                 if (bits < 0) {
                     const int v = static_cast<int>(take(static_cast<unsigned>(-bits)));
                     const int steps = kQuantSteps[qindex];
-                    const float f = inv.value[qindex == 0 ? 2 : 4];
+                    const float f = 1.0f / static_cast<float>(steps - 1);
                     int remainder = v;
                     for (int m = 0; m < 3; ++m) {
                         const int code = remainder % steps;
@@ -588,8 +592,8 @@ Status Decoder::decode(const uint8_t* data, size_t size, PcmBuffer& pcm, std::st
                     const float f = inv.value[bits];
                     for (int m = 0; m < 3; ++m) {
                         const int code = static_cast<int>(take(static_cast<unsigned>(bits)));
-                        const float centered =
-                            static_cast<float>(code) - static_cast<float>(1 << (bits - 1));
+                        const float centered = static_cast<float>(code) -
+                                               static_cast<float>((1 << (bits - 1)) - 1);
                         subband[0][k * 12 + l + m][i] = centered * scale0 * f;
                         subband[1][k * 12 + l + m][i] = centered * scale1 * f;
                     }
@@ -618,6 +622,11 @@ Status Decoder::decode(const uint8_t* data, size_t size, PcmBuffer& pcm, std::st
         synthGranule(qmf_state_, granule[0], kGranuleSamples, channels,
                      pcm.samples.data() + static_cast<size_t>(half) * samples_per_granule * channels,
                      lins);
+    }
+    // The synthesis filterbank works in the 16-bit PCM scale, exactly as it
+    // does for Layer III, so bring it back to unit range.
+    for (float& sample : pcm.samples) {
+        sample *= 1.0f / 32768.0f;
     }
     pcm.sample_rate = sample_rate_;
     pcm.channels = channels_;
