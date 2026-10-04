@@ -379,6 +379,9 @@ bool PlaybackEngine::update() {
         (!audio_enabled_.load() ||
          (audio_eos_.load() && audio_buffer_.empty() && sink().queuedMs() < kAudioLateMs))) {
         clock_.pause();
+        // The stream is over: stop the audio device too, or it keeps pulling
+        // from a buffer that will never be filled again.
+        sink().pause();
         state_ = State::Ended;
         stats_.setPlaying(false);
     }
