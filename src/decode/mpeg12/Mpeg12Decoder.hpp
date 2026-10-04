@@ -206,6 +206,9 @@ private:
     std::deque<Frame> pending_b_;
     std::vector<DecodedFrame> ready_;
     std::vector<uint8_t> pending_;
+    // Byte offset in pending_ of each pushed sample, with its presentation
+    // time, so a picture can be given the time of the sample that carried it.
+    std::deque<std::pair<size_t, int64_t>> pts_marks_;
     size_t cursor_ = 0;
     bool in_picture_ = false;
     bool picture_started_ = false;

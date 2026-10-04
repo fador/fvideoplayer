@@ -86,6 +86,7 @@ void Decoder::reset() {
     pending_b_.clear();
     ready_.clear();
     pending_.clear();
+    pts_marks_.clear();
     cursor_ = 0;
     in_picture_ = false;
     picture_damaged_ = false;
@@ -143,8 +144,11 @@ void Decoder::pushSample(const uint8_t* data, size_t size, int64_t pts) {
     if (data == nullptr || size == 0) {
         return;
     }
+    // Remember where this sample landed so the picture it carries can be given
+    // its presentation time. The samples are buffered and parsed together, so
+    // the association has to be made by position.
+    pts_marks_.push_back({pending_.size(), pts});
     pending_.insert(pending_.end(), data, data + size);
-    (void)pts;
     drain(false);
 }
 
@@ -163,6 +167,14 @@ void Decoder::drain(bool at_end) {
         const size_t drop = std::min(cursor_, pending_.size() - keep);
         pending_.erase(pending_.begin(), pending_.begin() + static_cast<ptrdiff_t>(drop));
         cursor_ = 0;
+        // Keep the newest mark at or before the new start, so a picture that
+        // straddles the discarded prefix still finds its sample's time.
+        while (pts_marks_.size() > 1 && pts_marks_[1].first <= drop) {
+            pts_marks_.pop_front();
+        }
+        for (auto& mark : pts_marks_) {
+            mark.first = mark.first > drop ? mark.first - drop : 0;
+        }
     };
 
     StartCode sc;
@@ -233,9 +245,17 @@ void Decoder::drain(bool at_end) {
             case kStartGop:
                 reader.skip(25);
                 break;
-            case kStartPicture:
-                in_picture_ = parsePictureHeader(reader, picture_pts_);
+            case kStartPicture: {
+                // The picture takes the time of the sample it started in.
+                int64_t pts = picture_pts_;
+                for (const auto& mark : pts_marks_) {
+                    if (mark.first <= static_cast<size_t>(sc.header)) {
+                        pts = mark.second;
+                    }
+                }
+                in_picture_ = parsePictureHeader(reader, pts);
                 break;
+            }
             default:
                 break;
         }
