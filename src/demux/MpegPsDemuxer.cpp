@@ -182,11 +182,6 @@ bool readWholeFile(const std::filesystem::path& path, std::vector<uint8_t>& out,
     return true;
 }
 
-struct PtsMark {
-    size_t es_offset = 0;
-    int64_t pts = -1;
-};
-
 }  // namespace
 
 bool MpegPsDemuxer::open(const std::filesystem::path& path, std::string& error) {
@@ -196,8 +191,11 @@ bool MpegPsDemuxer::open(const std::filesystem::path& path, std::string& error) 
     }
 
     std::vector<PtsMark> marks;
+    std::vector<PtsMark> audio_marks;
     size_t pos = 0;
     bool saw_pack = false;
+    // Only one audio stream is kept: the first one seen.
+    int audio_stream_id = -1;
 
     while (pos + 4 <= file.size()) {
         MpegStartCode sc;
@@ -271,6 +269,11 @@ bool MpegPsDemuxer::open(const std::filesystem::path& path, std::string& error) 
                 marks.push_back({video_es_.size(), pts});
                 video_es_.insert(video_es_.end(), file.begin() + static_cast<ptrdiff_t>(payload_start),
                               file.begin() + static_cast<ptrdiff_t>(payload_start + count));
+            } else if (audio_stream_id < 0 || code == audio_stream_id) {
+                audio_stream_id = code;
+                audio_marks.push_back({audio_es_.size(), pts});
+                audio_es_.insert(audio_es_.end(), file.begin() + static_cast<ptrdiff_t>(payload_start),
+                                 file.begin() + static_cast<ptrdiff_t>(payload_start + count));
             }
             pos = payload_start + count;
             continue;
@@ -361,6 +364,8 @@ bool MpegPsDemuxer::open(const std::filesystem::path& path, std::string& error) 
         }
     }
 
+    scanAudioTrack(audio_marks);
+
     video_ = VideoTrackInfo{};
     video_.codec = info.mpeg2 ? Codec::Mpeg2 : Codec::Mpeg1;
     video_.width = info.width;
@@ -409,6 +414,133 @@ bool MpegPsDemuxer::readSample(Sample& sample) {
     sample.keyframe = picture.type == 1;
     sample.track = TrackType::Video;
     ++next_picture_;
+    return true;
+}
+
+void MpegPsDemuxer::scanAudioTrack(const std::vector<PtsMark>& marks) {
+    audio_frames_.clear();
+    if (audio_es_.empty()) {
+        return;
+    }
+    static const uint32_t kBitrateMpeg1[15] = {0,   32,  48,  56,  64,  80,  96, 112,
+                                               128, 160, 192, 224, 256, 320, 384};
+    static const uint32_t kBitrateMpeg2[15] = {0,  8,  16, 24, 32,  40,  48,  56,
+                                               64, 80, 96, 112, 128, 144, 160};
+    static const uint32_t kRates[3][3] = {
+        {44100, 48000, 32000}, {22050, 24000, 16000}, {11025, 12000, 8000}};
+
+    size_t at = 0;
+    int layer = 0;
+    uint32_t rate = 0;
+    int channels = 0;
+    int samples_per_frame = 1152;
+    while (at + 4 <= audio_es_.size()) {
+        const uint8_t* h = audio_es_.data() + at;
+        if (h[0] != 0xFF || (h[1] & 0xE0) != 0xE0) {
+            ++at;
+            continue;
+        }
+        const int version_bits = (h[1] >> 3) & 3;
+        const int layer_bits = (h[1] >> 1) & 3;
+        const int bitrate_index = (h[2] >> 4) & 0x0F;
+        const int rate_index = (h[2] >> 2) & 3;
+        if (version_bits == 1 || layer_bits == 0 || bitrate_index == 0 ||
+            bitrate_index == 15 || rate_index == 3) {
+            ++at;
+            continue;
+        }
+        const int version = version_bits == 3 ? 0 : (version_bits == 2 ? 1 : 2);
+        const uint32_t bitrate =
+            (version == 0 ? kBitrateMpeg1 : kBitrateMpeg2)[bitrate_index] * 1000u;
+        const uint32_t frame_rate = kRates[version][rate_index];
+        const int padding = (h[2] >> 1) & 1;
+        // Layers II and III carry 1152 samples per frame in MPEG-1 and 576 in
+        // MPEG-2 and 2.5.
+        const int samples = version == 0 ? 1152 : 576;
+        const int64_t frame_bytes =
+            static_cast<int64_t>(samples / 8) * bitrate / frame_rate + padding;
+        if (frame_bytes <= 4 || at + static_cast<size_t>(frame_bytes) > audio_es_.size()) {
+            ++at;
+            continue;
+        }
+        if (audio_frames_.empty()) {
+            layer = layer_bits;
+            rate = frame_rate;
+            samples_per_frame = samples;
+            channels = ((h[3] >> 6) & 3) == 3 ? 1 : 2;
+        }
+        audio_frames_.push_back({static_cast<int64_t>(at), frame_bytes, 0});
+        at += static_cast<size_t>(frame_bytes);
+    }
+    if (audio_frames_.empty() || layer == 0 || rate == 0) {
+        return;
+    }
+
+    audio_ = AudioTrackInfo{};
+    audio_.present = true;
+    audio_.default_track = true;
+    audio_.channels = static_cast<uint32_t>(channels);
+    audio_.sample_rate = rate;
+    if (layer == 2) {
+        audio_.codec = "mp2";
+        audio_.codec_fourcc = 0x6D703220;  // 'mp2 '
+    } else {
+        audio_.codec = "mp3";
+        audio_.codec_fourcc = 0x6D703320;  // 'mp3 '
+    }
+
+    // Place the frames on a frame-rate timeline anchored to the first time the
+    // stream states. Only some PES packets carry a PTS, and stepping the frame
+    // duration keeps the times monotonic where inheriting one would not.
+    const double frame_ms = static_cast<double>(samples_per_frame) * 1000.0 / rate;
+    int64_t anchor_ms = 0;
+    int64_t anchor_index = 0;
+    bool have_anchor = false;
+    for (size_t i = 0; i < audio_frames_.size() && !have_anchor; ++i) {
+        for (const PtsMark& mark : marks) {
+            if (mark.pts >= 0 && mark.es_offset <= static_cast<size_t>(audio_frames_[i].offset)) {
+                anchor_ms = mark.pts / 90;  // PTS is in 90 kHz units
+                anchor_index = static_cast<int64_t>(i);
+                have_anchor = true;
+            }
+        }
+    }
+    for (size_t i = 0; i < audio_frames_.size(); ++i) {
+        audio_frames_[i].pts_ms =
+            anchor_ms + static_cast<int64_t>(std::llround(
+                            static_cast<double>(static_cast<int64_t>(i) - anchor_index) * frame_ms));
+    }
+}
+
+std::vector<AudioTrackInfo> MpegPsDemuxer::audioTracks() const {
+    std::vector<AudioTrackInfo> tracks;
+    if (audio_.present) {
+        tracks.push_back(audio_);
+    }
+    return tracks;
+}
+
+bool MpegPsDemuxer::selectAudioTrack(size_t index) {
+    return audio_.present && index == 0;
+}
+
+bool MpegPsDemuxer::readAudioSample(Sample& sample) {
+    if (!audio_.present || next_audio_ >= audio_frames_.size()) {
+        return false;
+    }
+    const AudioFrame& frame = audio_frames_[next_audio_];
+    const size_t offset = static_cast<size_t>(frame.offset);
+    const size_t size = static_cast<size_t>(frame.size);
+    if (offset + size > audio_es_.size()) {
+        return false;
+    }
+    sample.data.assign(audio_es_.begin() + static_cast<ptrdiff_t>(offset),
+                       audio_es_.begin() + static_cast<ptrdiff_t>(offset + size));
+    sample.pts = frame.pts_ms;
+    sample.dts = frame.pts_ms;
+    sample.keyframe = true;
+    sample.track = TrackType::Audio;
+    ++next_audio_;
     return true;
 }
 

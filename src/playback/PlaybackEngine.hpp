@@ -7,6 +7,7 @@
 #include "audio/PcmGain.hpp"
 #include "audio/aac/AacDecoder.hpp"
 #include "audio/flac/FlacDecoder.hpp"
+#include "audio/mp2/Mp2Decoder.hpp"
 #include "audio/mp3/Mp3Decoder.hpp"
 #include "audio/opus/OpusDecoder.hpp"
 #include "decode/KvzdecDecoder.hpp"
@@ -109,6 +110,7 @@ private:
         None,
         Aac,
         Opus,
+        Mp2,
         Mp3,
         Flac,
     };
@@ -177,6 +179,7 @@ private:
     AudioCodec audio_codec_ = AudioCodec::None;
     audio::aac::Decoder aac_decoder_;
     audio::opus::Decoder opus_decoder_;
+    audio::mp2::Decoder mp2_decoder_;
     audio::mp3::Decoder mp3_decoder_;
     audio::flac::Decoder flac_decoder_;
     audio::AudioBuffer audio_buffer_{kAudioBufferMs};
