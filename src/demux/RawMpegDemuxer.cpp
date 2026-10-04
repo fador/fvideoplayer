@@ -113,8 +113,11 @@ bool RawMpegDemuxer::readSample(Sample& sample) {
         return false;
     }
 
-    const int64_t pts =
-        static_cast<int64_t>(std::llround(static_cast<double>(next_picture_) * 1000.0 / fps_));
+    // Step the timeline through display order, not decode order: the pictures
+    // are stored in decode order and their display times are not monotonic
+    // there.
+    const int64_t pts = static_cast<int64_t>(
+        std::llround(static_cast<double>(picture.display_index) * 1000.0 / fps_));
     sample.pts = pts;
     sample.dts = pts;
     sample.keyframe = picture.type == 1;

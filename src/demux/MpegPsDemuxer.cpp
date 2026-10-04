@@ -300,10 +300,14 @@ bool MpegPsDemuxer::open(const std::filesystem::path& path, std::string& error) 
         return false;
     }
 
-    // Attach each picture to the PTS of the PES packet it started in.
+    // A picture takes the PTS of the PES packet it started in. The packet's
+    // time must not be inherited by a later picture whose own packet carries
+    // none: that puts an early time on a later picture and the display order
+    // stops being monotonic. A picture without its own PTS is marked as such
+    // and placed on the timeline below.
     for (MpegEsPicture& picture : pictures_) {
         for (const PtsMark& mark : marks) {
-            if (static_cast<int64_t>(mark.es_offset) <= picture.offset && mark.pts >= 0) {
+            if (static_cast<int64_t>(mark.es_offset) == picture.offset && mark.pts >= 0) {
                 picture.pts_ms = mark.pts / 90;  // PTS is in 90 kHz units
                 picture.has_pts = true;
             }
@@ -322,6 +326,38 @@ bool MpegPsDemuxer::open(const std::filesystem::path& path, std::string& error) 
                     break;
                 }
             }
+        }
+    }
+
+    // Place every picture on a frame-rate timeline indexed by display order,
+    // anchored to the first time the stream states. Only some PES packets carry
+    // a PTS, and the display order is what makes the timeline monotonic. A
+    // stream that states a time for every picture keeps them as they are.
+    bool every_picture_has_pts = !pictures_.empty();
+    for (const MpegEsPicture& picture : pictures_) {
+        if (!picture.has_pts) {
+            every_picture_has_pts = false;
+            break;
+        }
+    }
+    if (!every_picture_has_pts) {
+        const double frame_ms = 1000.0 / (fps_ > 0.0 ? fps_ : 25.0);
+        int64_t anchor_ms = 0;
+        int anchor_index = 0;
+        for (const MpegEsPicture& picture : pictures_) {
+            if (picture.has_pts) {
+                anchor_ms = picture.pts_ms;
+                anchor_index = picture.display_index;
+                break;
+            }
+        }
+        for (MpegEsPicture& picture : pictures_) {
+            picture.pts_ms =
+                anchor_ms +
+                static_cast<int64_t>(
+                    std::llround(static_cast<double>(picture.display_index - anchor_index) *
+                                 frame_ms));
+            picture.has_pts = true;
         }
     }
 

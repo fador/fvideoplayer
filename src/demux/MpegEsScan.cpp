@@ -1,5 +1,7 @@
 #include "demux/MpegEsScan.hpp"
 
+#include <algorithm>
+
 namespace player::demux {
 namespace {
 
@@ -69,6 +71,16 @@ uint8_t parseMpegPictureType(const std::vector<uint8_t>& buffer, int64_t offset,
     return type >= 1 && type <= 3 ? type : 1;
 }
 
+// temporal_reference, the picture's display position inside its group.
+int parseMpegTemporalReference(const std::vector<uint8_t>& buffer, int64_t offset, int64_t limit) {
+    if (offset + 2 > limit) {
+        return 0;
+    }
+    const uint32_t bits = (static_cast<uint32_t>(buffer[static_cast<size_t>(offset)]) << 8) |
+                          static_cast<uint32_t>(buffer[static_cast<size_t>(offset) + 1]);
+    return static_cast<int>(bits >> 6);
+}
+
 void scanMpegPictures(const std::vector<uint8_t>& buffer, int64_t file_size,
                       std::vector<MpegEsPicture>& pictures, MpegEsInfo& info) {
     MpegStartCode sc;
@@ -80,7 +92,10 @@ void scanMpegPictures(const std::vector<uint8_t>& buffer, int64_t file_size,
     // Start of the sequence or group header block that has not been emitted yet.
     int64_t header_start = -1;
     int type = 1;
+    int picture_gop = 0;
+    int picture_tr = 0;
     bool awaiting_extension = false;
+    int gop = 0;
 
     for (;;) {
         const int64_t body = sc.body;
@@ -92,11 +107,13 @@ void scanMpegPictures(const std::vector<uint8_t>& buffer, int64_t file_size,
             // the next one. Folding it into the following picture is what lets
             // a decoder start at any sample.
             if (picture_start >= 0) {
-                pictures.push_back({picture_start, sc.header - picture_start, type, 0, false});
+                pictures.push_back({picture_start, sc.header - picture_start, type, 0, false,
+                                    picture_gop, picture_tr, 0});
                 picture_start = -1;
             }
             header_start = header_start >= 0 ? header_start : sc.header;
             awaiting_extension = code == kStartSequence;
+            ++gop;
 
             if (code == kStartSequence && body + 4 <= static_cast<int64_t>(buffer.size())) {
                 // The first four bytes carry horizontal_size, vertical_size,
@@ -121,15 +138,19 @@ void scanMpegPictures(const std::vector<uint8_t>& buffer, int64_t file_size,
         } else if (code == kStartPicture) {
             awaiting_extension = false;
             if (picture_start >= 0) {
-                pictures.push_back({picture_start, sc.header - picture_start, type, 0, false});
+                pictures.push_back({picture_start, sc.header - picture_start, type, 0, false,
+                                    picture_gop, picture_tr, 0});
             }
             // Carry any not-yet-emitted sequence or group header along.
             picture_start = header_start >= 0 ? header_start : sc.header;
             type = parseMpegPictureType(buffer, body, file_size);
+            picture_gop = gop;
+            picture_tr = parseMpegTemporalReference(buffer, body, file_size);
             header_start = -1;
         } else if (code == kStartSequenceEnd) {
             if (picture_start >= 0) {
-                pictures.push_back({picture_start, sc.header - picture_start, type, 0, false});
+                pictures.push_back({picture_start, sc.header - picture_start, type, 0, false,
+                                    picture_gop, picture_tr, 0});
             }
             picture_start = -1;
             break;
@@ -143,9 +164,28 @@ void scanMpegPictures(const std::vector<uint8_t>& buffer, int64_t file_size,
     }
 
     if (picture_start >= 0 && file_size > picture_start) {
-        pictures.push_back({picture_start, file_size - picture_start, type, 0, false});
+        pictures.push_back({picture_start, file_size - picture_start, type, 0, false, picture_gop,
+                            picture_tr, 0});
     }
     info.pictures = static_cast<int>(pictures.size());
+
+    // The pictures are in decode order. Display order is the group order, then
+    // the temporal reference; a stable sort keeps the decode order for ties,
+    // which is what a stream with a constant temporal reference needs.
+    std::vector<int> order(pictures.size());
+    for (size_t i = 0; i < order.size(); ++i) {
+        order[i] = static_cast<int>(i);
+    }
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+        if (pictures[static_cast<size_t>(a)].gop != pictures[static_cast<size_t>(b)].gop) {
+            return pictures[static_cast<size_t>(a)].gop < pictures[static_cast<size_t>(b)].gop;
+        }
+        return pictures[static_cast<size_t>(a)].temporal_reference <
+               pictures[static_cast<size_t>(b)].temporal_reference;
+    });
+    for (size_t rank = 0; rank < order.size(); ++rank) {
+        pictures[static_cast<size_t>(order[rank])].display_index = static_cast<int>(rank);
+    }
 }
 
 }  // namespace player::demux

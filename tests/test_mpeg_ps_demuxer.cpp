@@ -444,3 +444,40 @@ TEST(MpegPsDemuxer, ConsumesABarePesHeaderByte) {
     }
     std::filesystem::remove(path);
 }
+
+TEST(MpegPsDemuxer, BuildsAMonotonicTimelineWhenSomePacketsHaveNoPts) {
+    // Only the first PES packet carries a PTS. The other pictures must still
+    // land on the frame-rate timeline: letting them inherit the first
+    // picture's time makes them due immediately and drops them.
+    std::vector<uint8_t> out;
+    appendPackHeader(out);
+    appendSystemHeader(out);
+    appendPes(out, 90000, buildElementaryPicture(0, 1));  // 1 s
+    for (int i = 0; i < 3; ++i) {
+        const std::vector<uint8_t> payload = buildElementaryPicture(0, 1);
+        startCode(out, 0xE0);
+        putBe16(out, static_cast<uint32_t>(3 + payload.size()));
+        out.push_back(0x80);  // '10', no scrambling, aligned
+        out.push_back(0x00);  // no PTS
+        out.push_back(0x00);  // no optional fields
+        append(out, payload);
+    }
+    startCode(out, 0xB9);
+
+    const std::filesystem::path path = writeBytes(out, "player_ps_timeline.mpg");
+    {
+        MpegPsDemuxer demuxer;
+        std::string error;
+        ASSERT_TRUE(demuxer.open(path, error)) << error;
+        Sample sample;
+        int64_t previous = -1;
+        int count = 0;
+        while (demuxer.readSample(sample)) {
+            EXPECT_GT(sample.pts, previous);
+            previous = sample.pts;
+            ++count;
+        }
+        EXPECT_EQ(count, 4);
+    }
+    std::filesystem::remove(path);
+}

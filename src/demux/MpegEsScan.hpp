@@ -16,6 +16,15 @@ struct MpegEsPicture {
     int type = 0;      // picture_coding_type, 1 = I
     int64_t pts_ms = 0;
     bool has_pts = false;
+    // Group index and temporal_reference, the picture's display position
+    // inside that group.
+    int gop = 0;
+    int temporal_reference = 0;
+    // Position in display order, counted from the start of the stream. The
+    // pictures themselves are stored in decode order, so a timeline built by
+    // stepping this through the frame rate stays monotonic where one built
+    // from the decode order would not.
+    int display_index = 0;
 };
 
 struct MpegEsInfo {
