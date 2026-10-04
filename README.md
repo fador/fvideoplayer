@@ -127,5 +127,6 @@ hevc_player [options] [file]
 
 ## License
 
-The player sources are provided as-is. Third-party components keep their own
-licenses: kvzdec (3-clause BSD), SDL3 (zlib), Dear ImGui and ImPlot (MIT).
+The player sources are released under the MIT License; see [LICENSE](LICENSE).
+Third-party components keep their own licenses: kvzdec (3-clause BSD), SDL3
+(zlib), Dear ImGui and ImPlot (MIT).
