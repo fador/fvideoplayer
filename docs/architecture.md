@@ -2,7 +2,8 @@
 
 ```
 src/
-  app/        SDL3 + ImGui application shell and UI
+  app/        SDL3 + ImGui application shell and UI, plus the Win98 theme
+              (palette, 3D bevels, gradient captions, classic controls)
   demux/      container demuxers (MP4, MKV, AVI, FLV, MPEG program streams,
               raw HEVC, raw MPEG-1/2, raw MP3, raw FLAC, raw AC-3) + hvcC
               and esds parsers

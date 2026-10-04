@@ -12,9 +12,13 @@
 // does not add borders of its own, which applyStyle() takes care of.
 namespace player::win98 {
 
-// The Win98 system palette, i.e. GetSysColor() of a default scheme.
+// The Win98 system palette, i.e. GetSysColor() of a default scheme. The two
+// captions also have a right-hand end colour: Win98 draws title bars as a
+// horizontal gradient from the caption colour to a lighter blue.
 constexpr ImU32 kActiveCaption      = IM_COL32(0x00, 0x00, 0x80, 0xFF);
+constexpr ImU32 kActiveCaptionEnd   = IM_COL32(0x10, 0x84, 0xD0, 0xFF);
 constexpr ImU32 kInactiveCaption    = IM_COL32(0x80, 0x80, 0x80, 0xFF);
+constexpr ImU32 kInactiveCaptionEnd = IM_COL32(0xB5, 0xB5, 0xB5, 0xFF);
 constexpr ImU32 kMenu               = IM_COL32(0xC0, 0xC0, 0xC0, 0xFF);
 constexpr ImU32 kWindow             = IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
 constexpr ImU32 kWindowText         = IM_COL32(0x00, 0x00, 0x00, 0xFF);
@@ -62,6 +66,8 @@ void sunkenBorder(const ImVec2& min, const ImVec2& max);
 // Widgets. Each one submits the matching ImGui item and repaints it.
 bool button(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f));
 bool checkbox(const char* label, bool* value);
+bool inputText(const char* label, char* buffer, size_t buffer_size,
+               ImGuiInputTextFlags flags = 0);
 bool sliderFloat(const char* label, float* value, float min, float max,
                  ImGuiSliderFlags flags = 0);
 bool sliderInt(const char* label, int* value, int min, int max, ImGuiSliderFlags flags = 0);
@@ -70,11 +76,15 @@ bool collapsingHeader(const char* label,
                       ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen);
 
 // Menus. The highlighting is drawn over the item because ImGui only offers one
-// colour for the text of a menu item, and Win98 draws it white on navy.
+// colour for the text of a menu item, and Win98 draws it white on navy. The
+// radio form marks the selected item with a bullet instead of a check, the way
+// Win98 groups mutually exclusive entries.
 bool beginMenu(const char* label);
 void endMenu();
 bool menuItem(const char* label, const char* shortcut = nullptr, bool selected = false,
               bool enabled = true);
+bool menuItemRadio(const char* label, const char* shortcut = nullptr, bool selected = false,
+                   bool enabled = true);
 bool menuItemToggle(const char* label, const char* shortcut, bool* selected);
 
 // Draws the bottom edge of the main menu bar. Call after ImGui::EndMainMenuBar().

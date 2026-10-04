@@ -476,8 +476,19 @@ void Application::drawMenuBar() {
             win98::menuItemToggle("Statistics", "S", &show_stats_);
             win98::menuItemToggle("Log", "L", &show_log_);
             win98::separator();
-            win98::menuItemToggle("BT.709 color", nullptr, &color_.bt709);
-            win98::menuItemToggle("Full range", nullptr, &color_.full_range);
+            if (win98::menuItemRadio("BT.601 color", nullptr, !color_.bt709)) {
+                color_.bt709 = false;
+            }
+            if (win98::menuItemRadio("BT.709 color", nullptr, color_.bt709)) {
+                color_.bt709 = true;
+            }
+            win98::separator();
+            if (win98::menuItemRadio("Limited range", nullptr, !color_.full_range)) {
+                color_.full_range = false;
+            }
+            if (win98::menuItemRadio("Full range", nullptr, color_.full_range)) {
+                color_.full_range = true;
+            }
             win98::endMenu();
         }
         if (win98::beginMenu("Help")) {
@@ -506,6 +517,11 @@ void Application::drawVideoArea() {
     ImVec2 video_size(available.x, std::max(1.0f, available.y - transport_height));
 
     const ImVec2 cursor = ImGui::GetCursorScreenPos();
+    // The video area is a black well in the grey chrome, as in Media Player
+    // Classic; the transport row below stays on the window face.
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        cursor, ImVec2(cursor.x + video_size.x, cursor.y + video_size.y),
+        IM_COL32(0x00, 0x00, 0x00, 0xFF));
     if (video_texture_ != 0 && renderer_.hasFrame()) {
         const float video_w = static_cast<float>(renderer_.videoWidth());
         const float video_h = static_cast<float>(renderer_.videoHeight());
@@ -532,7 +548,9 @@ void Application::drawVideoArea() {
         const ImVec2 text_size = ImGui::CalcTextSize(message.c_str());
         ImGui::SetCursorScreenPos(ImVec2(cursor.x + (video_size.x - text_size.x) * 0.5f,
                                          cursor.y + (video_size.y - text_size.y) * 0.5f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.85f, 1.0f));
         ImGui::TextUnformatted(message.c_str());
+        ImGui::PopStyleColor();
         ImGui::SetCursorScreenPos(cursor);
     }
 
@@ -827,7 +845,7 @@ void Application::drawFiltersWindow() {
 
     ImGui::TextUnformatted("Video graph");
     ImGui::SetNextItemWidth(-190.0f);
-    const bool video_enter = ImGui::InputText("##video_filters", video_filter_input_.data(),
+    const bool video_enter = win98::inputText("##video_filters", video_filter_input_.data(),
                                               video_filter_input_.size(),
                                               ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
@@ -854,7 +872,7 @@ void Application::drawFiltersWindow() {
     win98::separator();
     ImGui::TextUnformatted("Audio graph");
     ImGui::SetNextItemWidth(-190.0f);
-    const bool audio_enter = ImGui::InputText("##audio_filters", audio_filter_input_.data(),
+    const bool audio_enter = win98::inputText("##audio_filters", audio_filter_input_.data(),
                                               audio_filter_input_.size(),
                                               ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();

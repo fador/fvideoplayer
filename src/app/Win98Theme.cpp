@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <unordered_map>
 
 namespace player::win98 {
 namespace {
@@ -74,8 +75,28 @@ ImRect menuRow(const ImRect& item) {
                   item.Max.x + style.WindowPadding.x, item.Max.y + (style.ItemSpacing.y - upper));
 }
 
+// The mark column of a menu row: a check for a toggle, a bullet for a radio
+// group. The colour follows the row text so the mark stays visible on the
+// navy highlight.
+void drawMark(ImDrawList* draw_list, const ImRect& box, ImU32 color, bool radio) {
+    const ImRect bb = snapr(box);
+    if (radio) {
+        const float radius = std::max(1.0f, snapf(bb.GetHeight() * 0.20f));
+        draw_list->AddCircleFilled(bb.GetCenter(), radius, color);
+        return;
+    }
+    const ImVec2 elbow(bb.Min.x + bb.GetWidth() * 0.40f, bb.Min.y + bb.GetHeight() * 0.72f);
+    const float thickness = std::max(1.0f, snapf(bb.GetWidth() / 6.0f));
+    draw_list->AddLine(ImVec2(bb.Min.x + bb.GetWidth() * 0.16f, bb.Min.y + bb.GetHeight() * 0.54f),
+                       elbow, color, thickness);
+    draw_list->AddLine(elbow,
+                       ImVec2(bb.Min.x + bb.GetWidth() * 0.84f, bb.Min.y + bb.GetHeight() * 0.24f),
+                       color, thickness);
+}
+
 void menuItemChrome(ImDrawList* draw_list, const ImRect& row, const ImVec2& text_pos,
-                    const char* label, const char* shortcut, bool selected, bool enabled) {
+                    const char* label, const char* shortcut, bool selected, bool enabled,
+                    bool radio) {
     const ImGuiStyle& style = ImGui::GetStyle();
     const ImRect bb = snapr(row);
     const ImU32 text_color = enabled ? kCaptionText : kGrayText;
@@ -85,7 +106,7 @@ void menuItemChrome(ImDrawList* draw_list, const ImRect& row, const ImVec2& text
     // the text to white, so ImGui's own text has to be painted over.
     fillRect(draw_list, bb.Min.x, bb.Min.y, bb.Max.x, bb.Max.y, kActiveCaption);
 
-    draw_list->AddText(text_pos, text_color, label);
+    draw_list->AddText(text_pos, text_color, label, renderedTextEnd(label));
     if (shortcut != nullptr && shortcut[0] != '\0') {
         const ImVec2 size = ImGui::CalcTextSize(shortcut);
         const float x = bb.Max.x - style.FramePadding.x - size.x - (selected ? mark_width : 0.0f);
@@ -95,9 +116,42 @@ void menuItemChrome(ImDrawList* draw_list, const ImRect& row, const ImVec2& text
         const float side = bb.GetHeight() * 0.55f;
         const float cx = bb.Max.x - mark_width * 0.5f;
         const float cy = bb.GetCenter().y;
-        checkMark(draw_list, ImVec2(cx - side * 0.5f, cy - side * 0.5f),
-                  ImVec2(cx + side * 0.5f, cy + side * 0.5f), true);
+        drawMark(draw_list,
+                 ImRect(ImVec2(cx - side * 0.5f, cy - side * 0.5f),
+                        ImVec2(cx + side * 0.5f, cy + side * 0.5f)),
+                 text_color, radio);
     }
+}
+
+bool menuItemImpl(const char* label, const char* shortcut, bool selected, bool enabled,
+                  bool radio) {
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    const ImVec2 pos = window->DC.CursorPos;
+    const float text_y = pos.y + window->DC.CurrLineTextBaseOffset;
+    const float label_x = pos.x + window->DC.MenuColumns.OffsetLabel;
+
+    // The mark is drawn here rather than by ImGui so a radio group can use a
+    // bullet; ImGui only knows the check mark form.
+    const bool pressed = ImGui::MenuItem(label, shortcut, nullptr, enabled);
+    if (!ImGui::IsItemVisible()) {
+        return pressed;
+    }
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    const ImRect item(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+    if (enabled && ImGui::IsItemHovered()) {
+        menuItemChrome(draw_list, menuRow(item), ImVec2(label_x, text_y), label, shortcut,
+                       selected, enabled, radio);
+    } else if (selected) {
+        const float mark_width = ImGui::GetFontSize() * 1.20f;
+        const float side = item.GetHeight() * 0.55f;
+        const float cx = item.Max.x - mark_width * 0.5f;
+        const float cy = item.GetCenter().y;
+        drawMark(draw_list,
+                 ImRect(ImVec2(cx - side * 0.5f, cy - side * 0.5f),
+                        ImVec2(cx + side * 0.5f, cy + side * 0.5f)),
+                 kWindowText, radio);
+    }
+    return pressed;
 }
 
 // A menu opened from the menu bar is a popup of its own parent, so IsPopupOpen()
@@ -158,6 +212,56 @@ void drawTrackbarItem(const ImRect& frame, float value, float min, float max) {
     if (ImGui::IsItemVisible()) {
         drawTrackbar(frame, position, held, disabled);
     }
+}
+
+// The rectangle a maximized window restores to. ImGui has no maximize of its
+// own, so the state lives here, keyed by the window id.
+struct RestoreRect {
+    ImVec2 pos = ImVec2(0.0f, 0.0f);
+    ImVec2 size = ImVec2(0.0f, 0.0f);
+    bool maximized = false;
+};
+
+RestoreRect& restoreRect(ImGuiID id) {
+    static std::unordered_map<ImGuiID, RestoreRect> rects;
+    return rects[id];
+}
+
+// kind: 0 minimize, 1 maximize or restore, 2 close.
+void captionGlyph(ImDrawList* draw_list, const ImRect& box, int kind, bool held, bool maximized) {
+    const float offset = held ? 1.0f : 0.0f;
+    const float cx = snapf(box.GetCenter().x) + offset;
+    const float cy = snapf(box.GetCenter().y) + offset;
+    if (kind == 0) {
+        fillRect(draw_list, cx - 3.0f, cy + 2.0f, cx + 4.0f, cy + 3.0f, kWindowText);
+        return;
+    }
+    if (kind == 2) {
+        draw_list->AddLine(ImVec2(cx - 3.0f, cy - 3.0f), ImVec2(cx + 4.0f, cy + 4.0f), kWindowText,
+                           2.0f);
+        draw_list->AddLine(ImVec2(cx - 3.0f, cy + 4.0f), ImVec2(cx + 4.0f, cy - 3.0f), kWindowText,
+                           2.0f);
+        return;
+    }
+    const float x0 = cx - 4.0f;
+    const float y0 = cy - 4.0f;
+    const float x1 = cx + 4.0f;
+    const float y1 = cy + 3.0f;
+    if (!maximized) {
+        // A frame with a thicker title bar.
+        fillRect(draw_list, x0, y0, x1, y0 + 2.0f, kWindowText);
+        fillRect(draw_list, x0, y0, x0 + 1.0f, y1, kWindowText);
+        fillRect(draw_list, x1 - 1.0f, y0, x1, y1, kWindowText);
+        fillRect(draw_list, x0, y1 - 1.0f, x1, y1, kWindowText);
+        return;
+    }
+    // Two overlapping frames, the back one peeking out at the top right.
+    fillRect(draw_list, x0 + 3.0f, y0 - 2.0f, x1, y0 - 1.0f, kWindowText);
+    fillRect(draw_list, x1 - 1.0f, y0 - 2.0f, x1, y0 + 1.0f, kWindowText);
+    fillRect(draw_list, x0, y0, x1 - 2.0f, y0 + 1.0f, kWindowText);
+    fillRect(draw_list, x0, y0, x0 + 1.0f, y1, kWindowText);
+    fillRect(draw_list, x1 - 3.0f, y0, x1 - 2.0f, y1, kWindowText);
+    fillRect(draw_list, x0, y1 - 1.0f, x1 - 2.0f, y1, kWindowText);
 }
 
 }  // namespace
@@ -365,12 +469,14 @@ void etchedLine(ImDrawList* draw_list, float x0, float x1, float y) {
 
 void sizeGrip(ImDrawList* draw_list, const ImVec2& min, const ImVec2& max) {
     const ImRect bb = snapr(ImRect(min, max));
-    const float ox = bb.Max.x - kWindowFrame;
-    const float oy = bb.Max.y - kWindowFrame;
+    const float ox = bb.Max.x - kWindowFrame - 2.0f;
+    const float oy = bb.Max.y - kWindowFrame - 2.0f;
+    // Three short diagonals stepping towards the corner, each with a shadow
+    // one pixel below and right.
     for (int i = 0; i < 3; ++i) {
         const float off = static_cast<float>(i) * 4.0f;
-        const ImVec2 from(ox - off - 14.0f, oy - off - 14.0f);
-        const ImVec2 to(ox - off, oy - off);
+        const ImVec2 from(ox - off - 4.0f, oy - off);
+        const ImVec2 to(ox - off, oy - off - 4.0f);
         draw_list->AddLine(ImVec2(from.x + 1.0f, from.y + 1.0f), ImVec2(to.x + 1.0f, to.y + 1.0f),
                            kShadow);
         draw_list->AddLine(from, to, kHighlight);
@@ -381,14 +487,7 @@ void checkMark(ImDrawList* draw_list, const ImVec2& min, const ImVec2& max, bool
     if (!checked) {
         return;
     }
-    const ImRect bb = snapr(ImRect(min, max));
-    const ImVec2 elbow(bb.Min.x + bb.GetWidth() * 0.40f, bb.Min.y + bb.GetHeight() * 0.72f);
-    const float thickness = std::max(1.0f, snapf(bb.GetWidth() / 6.0f));
-    draw_list->AddLine(ImVec2(bb.Min.x + bb.GetWidth() * 0.16f, bb.Min.y + bb.GetHeight() * 0.54f),
-                       elbow, kWindowText, thickness);
-    draw_list->AddLine(elbow,
-                       ImVec2(bb.Min.x + bb.GetWidth() * 0.84f, bb.Min.y + bb.GetHeight() * 0.24f),
-                       kWindowText, thickness);
+    drawMark(draw_list, ImRect(min, max), kWindowText, false);
 }
 
 void plusMinus(ImDrawList* draw_list, const ImVec2& min, const ImVec2& max, bool open) {
@@ -420,12 +519,14 @@ bool button(const char* label, const ImVec2& size) {
 
     // Win98 keeps the face colour and sinks the button instead; the label moves
     // along with it. A disabled button keeps its bevel and greys the label,
-    // where Win98 would dither it.
+    // where Win98 would dither it. Everything from a "##" marker on is the
+    // item id and is not part of the label.
+    const char* label_end = renderedTextEnd(label);
     const float offset = held ? 1.0f : 0.0f;
-    const ImVec2 text_size = ImGui::CalcTextSize(label);
+    const ImVec2 text_size = ImGui::CalcTextSize(label, label_end, false);
     draw_list->AddText(ImVec2(snapf(bb.Min.x + (bb.GetWidth() - text_size.x) * 0.5f) + offset,
                               snapf(bb.Min.y + (bb.GetHeight() - text_size.y) * 0.5f) + offset),
-                       disabled ? kGrayText : kWindowText, label);
+                       disabled ? kGrayText : kWindowText, label, label_end);
     return pressed;
 }
 
@@ -446,6 +547,22 @@ bool checkbox(const char* label, bool* value) {
     fillRect(draw_list, bb.Min.x, bb.Min.y, bb.Min.x + side, bb.Min.y + side, kWindow);
     bevel(draw_list, bb.Min, ImVec2(bb.Min.x + side, bb.Min.y + side), false, false, 1.0f);
     checkMark(draw_list, bb.Min, ImVec2(bb.Min.x + side, bb.Min.y + side), *value);
+    return changed;
+}
+
+bool inputText(const char* label, char* buffer, size_t buffer_size, ImGuiInputTextFlags flags) {
+    // Win98 text fields are a white sunken well; ImGui's frame background is
+    // the window colour, so it is repainted around the call.
+    const ImVec4 white = rgba(kWindow);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, white);
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, white);
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, white);
+    const bool changed = ImGui::InputText(label, buffer, buffer_size, flags);
+    ImGui::PopStyleColor(3);
+    if (ImGui::IsItemVisible()) {
+        const ImRect bb(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+        bevel(ImGui::GetWindowDrawList(), bb.Min, bb.Max, false, false, 1.0f);
+    }
     return changed;
 }
 
@@ -511,18 +628,26 @@ bool beginMenu(const char* label) {
     const ImGuiID id = bar->GetID(label);
 
     const bool open = ImGui::BeginMenu(label);
+    const bool highlighted = open && menuPopupOpen(id);
+    const float text_x = snapf(pos.x) + IM_TRUNC(ImGui::GetStyle().ItemSpacing.x * 0.5f);
 
     // Win98 only highlights a menu bar entry while its menu is open.
-    if (open && menuPopupOpen(id)) {
+    if (highlighted) {
         ImDrawList* draw_list = bar->DrawList;
         const float left = snapf(pos.x) + 2.0f;
         const ImRect row(left, snapf(pos.y), left + label_size.x + 6.0f,
                          snapf(pos.y) + ImGui::GetFrameHeight());
         fillRect(draw_list, row.Min.x, row.Min.y, row.Max.x, row.Max.y, kActiveCaption);
-        draw_list->AddText(
-            ImVec2(snapf(pos.x) + IM_TRUNC(ImGui::GetStyle().ItemSpacing.x * 0.5f), text_y),
-            kCaptionText, label);
+        draw_list->AddText(ImVec2(text_x, text_y), kCaptionText, label, renderedTextEnd(label));
     }
+
+    // Win98 underlines the accelerator key of every menu bar entry. There is
+    // no keyboard navigation to attach here, so the first character stands in
+    // for it, which is the letter Windows would underline for these menus.
+    const float first_width = ImGui::CalcTextSize(label, label + 1, false).x;
+    const float underline_y = snapf(text_y) + ImGui::GetFontSize() - 1.0f;
+    bar->DrawList->AddLine(ImVec2(text_x, underline_y), ImVec2(text_x + first_width, underline_y),
+                           highlighted ? kCaptionText : kWindowText, 1.0f);
     return open;
 }
 
@@ -531,23 +656,11 @@ void endMenu() {
 }
 
 bool menuItem(const char* label, const char* shortcut, bool selected, bool enabled) {
-    ImGuiWindow* window = ImGui::GetCurrentWindow();
-    const ImVec2 pos = window->DC.CursorPos;
-    const float text_y = pos.y + window->DC.CurrLineTextBaseOffset;
-    const float label_x = pos.x + window->DC.MenuColumns.OffsetLabel;
+    return menuItemImpl(label, shortcut, selected, enabled, false);
+}
 
-    const bool pressed = ImGui::MenuItem(label, shortcut, selected, enabled);
-    if (!ImGui::IsItemVisible()) {
-        return pressed;
-    }
-        // Win98 only highlights the row under the mouse; a check mark alone marks
-    // the selected entries, and ImGui has already drawn that one.
-    if (enabled && ImGui::IsItemHovered()) {
-        menuItemChrome(ImGui::GetWindowDrawList(),
-                       menuRow(ImRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax())),
-                       ImVec2(label_x, text_y), label, shortcut, selected, enabled);
-    }
-    return pressed;
+bool menuItemRadio(const char* label, const char* shortcut, bool selected, bool enabled) {
+    return menuItemImpl(label, shortcut, selected, enabled, true);
 }
 
 bool menuItemToggle(const char* label, const char* shortcut, bool* selected) {
@@ -588,7 +701,6 @@ void windowFrame(const char* window_name, bool* open) {
                         (highlighted != nullptr &&
                          window->RootWindowForTitleBarHighlight ==
                              highlighted->RootWindowForTitleBarHighlight);
-    const ImU32 caption = active ? kActiveCaption : kInactiveCaption;
 
     bevel(draw_list, bb.Min, bb.Max, true, false, kWindowFrame);
 
@@ -600,9 +712,15 @@ void windowFrame(const char* window_name, bool* open) {
 
         // ImGui painted the caption in the system colour but its title text in
         // the body colour, which is unreadable on it. Repaint the strip that
-        // holds the text, then draw the title the way Win98 does.
+        // holds the text with the Win98 gradient, then draw the title the way
+        // Win98 does.
         const float text_x = bb.Min.x + inset;
-        fillRect(draw_list, text_x, title_top, snapf(bb.Max.x) - inset, title_bottom, caption);
+        draw_list->AddRectFilledMultiColor(ImVec2(text_x, title_top),
+                                           ImVec2(snapf(bb.Max.x) - inset, title_bottom),
+                                           active ? kActiveCaption : kInactiveCaption,
+                                           active ? kActiveCaptionEnd : kInactiveCaptionEnd,
+                                           active ? kActiveCaptionEnd : kInactiveCaptionEnd,
+                                           active ? kActiveCaption : kInactiveCaption);
         const char* label_end = renderedTextEnd(window->Name);
         if (label_end != window->Name) {
             const ImVec2 size = ImGui::CalcTextSize(window->Name, label_end, false);
@@ -628,26 +746,50 @@ void windowFrame(const char* window_name, bool* open) {
         fillRect(draw_list, gx, gy + 4.0f, gx + 7.0f, gy + 5.0f, kWindowText);
 
         if (open != nullptr) {
-            // The caption buttons are not items of the window, so their state
-            // comes straight from the mouse. A click closes the window.
-            const ImRect box = snapr(ImRect(ImVec2(bb.Max.x - inset - 2.0f - kCaptionButtonWidth,
-                                                   top),
-                                            ImVec2(bb.Max.x - inset - 2.0f,
-                                                   top + kCaptionButtonHeight)));
-            const bool hovered = ImGui::IsMouseHoveringRect(box.Min, box.Max, false);
-            const bool held = hovered && ImGui::IsMouseDown(ImGuiMouseButton_Left);
-            if (held && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                *open = false;
-            }
-            bevel(draw_list, box.Min, box.Max, !held, true, kBevel);
+            // The three caption buttons of a Win98 window, laid out from the
+            // right edge: minimize, maximize/restore and close. They are not
+            // items of the window, so their state comes straight from the
+            // mouse.
+            const float right = snapf(bb.Max.x) - inset - 2.0f;
+            const ImRect close_box(right - kCaptionButtonWidth, top, right,
+                                   top + kCaptionButtonHeight);
+            const ImRect maximize_box(close_box.Min.x - 2.0f - kCaptionButtonWidth, top,
+                                      close_box.Min.x - 2.0f, top + kCaptionButtonHeight);
+            const ImRect minimize_box(maximize_box.Min.x - 2.0f - kCaptionButtonWidth, top,
+                                      maximize_box.Min.x - 2.0f, top + kCaptionButtonHeight);
 
-            const float offset = held ? 1.0f : 0.0f;
-            const float x0 = snapf(box.Min.x) + 4.0f + offset;
-            const float y0 = snapf(box.Min.y) + 3.0f + offset;
-            const float x1 = snapf(box.Max.x) - 4.0f + offset;
-            const float y1 = snapf(box.Max.y) - 3.0f + offset;
-            draw_list->AddLine(ImVec2(x0, y0), ImVec2(x1, y1), kWindowText, 2.0f);
-            draw_list->AddLine(ImVec2(x0, y1), ImVec2(x1, y0), kWindowText, 2.0f);
+            RestoreRect& restore = restoreRect(window->ID);
+            const ImRect boxes[3] = {minimize_box, maximize_box, close_box};
+            for (int i = 0; i < 3; ++i) {
+                const ImRect box = snapr(boxes[i]);
+                const bool hovered = ImGui::IsMouseHoveringRect(box.Min, box.Max, false);
+                const bool held = hovered && ImGui::IsMouseDown(ImGuiMouseButton_Left);
+                const bool clicked = held && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+                bevel(draw_list, box.Min, box.Max, !held, true, kBevel);
+                captionGlyph(draw_list, box, i, held, restore.maximized);
+                if (!clicked) {
+                    continue;
+                }
+                if (i == 0) {
+                    ImGui::SetWindowCollapsed(window_name, true);
+                } else if (i == 1) {
+                    ImGui::SetWindowCollapsed(window_name, false);
+                    if (restore.maximized) {
+                        ImGui::SetWindowPos(window_name, restore.pos, ImGuiCond_Always);
+                        ImGui::SetWindowSize(window_name, restore.size, ImGuiCond_Always);
+                        restore.maximized = false;
+                    } else {
+                        const ImGuiViewport* viewport = ImGui::GetMainViewport();
+                        restore.pos = window->Pos;
+                        restore.size = window->Size;
+                        ImGui::SetWindowPos(window_name, viewport->WorkPos, ImGuiCond_Always);
+                        ImGui::SetWindowSize(window_name, viewport->WorkSize, ImGuiCond_Always);
+                        restore.maximized = true;
+                    }
+                } else {
+                    *open = false;
+                }
+            }
         }
     }
 
