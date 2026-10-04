@@ -22,6 +22,8 @@ const char* videoCodecName(player::demux::Codec codec) {
             return "MPEG-1";
         case player::demux::Codec::Mpeg2:
             return "MPEG-2";
+        case player::demux::Codec::Flv1:
+            return "FLV1";
         default:
             return "none";
     }

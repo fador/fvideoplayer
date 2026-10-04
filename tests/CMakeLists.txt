@@ -21,6 +21,8 @@ add_executable(player_tests
     test_silk_stereo_resampler.cpp
     test_avi_demuxer.cpp
     test_filters.cpp
+    test_flv1.cpp
+    test_flv_demuxer.cpp
     test_hvcc.cpp
     test_log.cpp
     test_mkv_demuxer.cpp

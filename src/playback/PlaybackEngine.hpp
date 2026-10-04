@@ -11,6 +11,7 @@
 #include "audio/mp3/Mp3Decoder.hpp"
 #include "audio/opus/OpusDecoder.hpp"
 #include "decode/KvzdecDecoder.hpp"
+#include "decode/flv1/Flv1Decoder.hpp"
 #include "decode/mpeg12/Mpeg12Decoder.hpp"
 #include "demux/Demuxer.hpp"
 #include "filters/Filter.hpp"
@@ -132,6 +133,7 @@ private:
         Hevc,
         Mpeg1,
         Mpeg2,
+        Flv1,
     };
 
     //    Video: one sample is fed to the backend selected by the container and
@@ -192,6 +194,7 @@ private:
     VideoCodec video_codec_ = VideoCodec::None;
     decode::KvzdecDecoder decoder_;
     decode::mpeg12::Decoder mpeg12_decoder_;
+    decode::flv1::Decoder flv1_decoder_;
     audio::IAudioSink* audio_sink_ = nullptr;
     audio::NullAudioSink null_sink_;
     AudioCodec audio_codec_ = AudioCodec::None;

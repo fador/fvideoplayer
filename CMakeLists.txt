@@ -72,6 +72,7 @@ add_library(player_demux STATIC
     src/demux/Demuxer.cpp
     src/demux/Esds.cpp
     src/demux/FlacDemuxer.cpp
+    src/demux/FlvDemuxer.cpp
     src/demux/HvcC.cpp
     src/demux/MkvDemuxer.cpp
     src/demux/Mp3Demuxer.cpp
@@ -88,6 +89,8 @@ add_library(player_decode STATIC
     src/decode/DecodeDump.cpp
     src/decode/KvzdecDecoder.cpp
     src/decode/NalUnits.cpp
+    src/decode/flv1/Flv1Decoder.cpp
+    src/decode/flv1/Flv1Tables.cpp
     src/decode/mpeg12/Mpeg12Decoder.cpp
     src/decode/mpeg12/Mpeg12Idct.cpp
     src/decode/mpeg12/Mpeg12Motion.cpp

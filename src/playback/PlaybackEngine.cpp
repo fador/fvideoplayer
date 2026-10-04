@@ -45,6 +45,8 @@ const char* PlaybackEngine::videoCodecName(demux::Codec codec) {
             return "MPEG-1";
         case demux::Codec::Mpeg2:
             return "MPEG-2";
+        case demux::Codec::Flv1:
+            return "FLV1";
         default:
             return "audio only";
     }
@@ -68,6 +70,10 @@ bool PlaybackEngine::configureVideoDecoder(std::string& error) {
         case demux::Codec::Mpeg2:
             video_codec_ = VideoCodec::Mpeg1;
             mpeg12_decoder_.reset();
+            break;
+        case demux::Codec::Flv1:
+            video_codec_ = VideoCodec::Flv1;
+            flv1_decoder_.reset();
             break;
         default:
             // Audio-only files carry no video track, which is not an error.
@@ -99,6 +105,9 @@ void PlaybackEngine::resetVideoDecoder() {
             // The reference pictures have to go, so the decoder is rebuilt.
             mpeg12_decoder_.reset();
             break;
+        case VideoCodec::Flv1:
+            flv1_decoder_.reset();
+            break;
         case VideoCodec::None:
             break;
     }
@@ -113,6 +122,9 @@ bool PlaybackEngine::pushVideoSample(const demux::Sample& sample) {
         case VideoCodec::Mpeg1:
             mpeg12_decoder_.pushSample(sample.data.data(), sample.data.size(), sample.pts);
             return true;
+        case VideoCodec::Flv1:
+            flv1_decoder_.pushSample(sample.data.data(), sample.data.size(), sample.pts);
+            return true;
         case VideoCodec::None:
             return false;
     }
@@ -125,6 +137,8 @@ int PlaybackEngine::pullVideoFrames(std::vector<decode::DecodedFrame>& out) {
             return decoder_.pullFrames(out);
         case VideoCodec::Mpeg1:
             return mpeg12_decoder_.pullFrames(out);
+        case VideoCodec::Flv1:
+            return flv1_decoder_.pullFrames(out);
         case VideoCodec::None:
             return 0;
     }
@@ -137,6 +151,8 @@ int PlaybackEngine::flushVideoDecoder(std::vector<decode::DecodedFrame>& out) {
             return decoder_.flush(out);
         case VideoCodec::Mpeg1:
             return mpeg12_decoder_.flush(out);
+        case VideoCodec::Flv1:
+            return flv1_decoder_.flush(out);
         case VideoCodec::None:
             return 0;
     }

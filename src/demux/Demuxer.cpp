@@ -2,6 +2,7 @@
 
 #include "demux/AviDemuxer.hpp"
 #include "demux/FlacDemuxer.hpp"
+#include "demux/FlvDemuxer.hpp"
 #include "demux/MkvDemuxer.hpp"
 #include "demux/Mp3Demuxer.hpp"
 #include "demux/Mp4Demuxer.hpp"
@@ -22,6 +23,7 @@ enum class Container {
     Mp4,
     Mkv,
     Avi,
+    Flv,
     RawHevc,
     RawMpeg,
     MpegPs,
@@ -60,6 +62,9 @@ Container detectContainer(const std::filesystem::path& path) {
     }
     if (count >= 12 && std::memcmp(magic, "RIFF", 4) == 0 && std::memcmp(magic + 8, "AVI ", 4) == 0) {
         return Container::Avi;
+    }
+    if (count >= 3 && std::memcmp(magic, "FLV", 3) == 0) {
+        return Container::Flv;
     }
     if (count >= 4 && ((magic[0] == 0 && magic[1] == 0 && magic[2] == 1) ||
                        (magic[0] == 0 && magic[1] == 0 && magic[2] == 0 && magic[3] == 1))) {
@@ -102,6 +107,9 @@ if (count >= 4 && std::memcmp(magic, "fLaC", 4) == 0) {
     }
     if (ext == ".flac") {
         return Container::Flac;
+    }
+    if (ext == ".flv") {
+        return Container::Flv;
     }
     return Container::Unknown;
 }
@@ -147,6 +155,13 @@ std::unique_ptr<IDemuxer> createDemuxer(const std::filesystem::path& path, std::
         }
         case Container::Avi: {
             auto demuxer = std::make_unique<AviDemuxer>();
+            if (!demuxer->open(path, error)) {
+                return nullptr;
+            }
+            return demuxer;
+        }
+        case Container::Flv: {
+            auto demuxer = std::make_unique<FlvDemuxer>();
             if (!demuxer->open(path, error)) {
                 return nullptr;
             }

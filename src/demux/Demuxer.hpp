@@ -15,6 +15,7 @@ enum class Codec {
     Hevc,
     Mpeg1,
     Mpeg2,
+    Flv1,
 };
 
 enum class TrackType {

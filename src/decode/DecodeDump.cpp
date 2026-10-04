@@ -1,6 +1,7 @@
 #include "decode/DecodeDump.hpp"
 
 #include "decode/KvzdecDecoder.hpp"
+#include "decode/flv1/Flv1Decoder.hpp"
 #include "decode/mpeg12/Mpeg12Decoder.hpp"
 #include "demux/Demuxer.hpp"
 
@@ -17,8 +18,10 @@ bool writePicture(FILE* out, const Frame& frame) {
     for (int plane = 0; plane < plane_count; ++plane) {
         const int shift_w = (plane > 0 && frame.format() != ChromaFormat::C444) ? 1 : 0;
         const int shift_h = (plane > 0 && frame.format() == ChromaFormat::C420) ? 1 : 0;
-        const int width = (frame.displayWidth()) >> shift_w;
-        const int height = (frame.displayHeight()) >> shift_h;
+        // Planar 4:2:0 rounds the chroma plane up, so an odd display height
+        // keeps its last half row in the dump.
+        const int width = (frame.displayWidth() + ((1 << shift_w) - 1)) >> shift_w;
+        const int height = (frame.displayHeight() + ((1 << shift_h) - 1)) >> shift_h;
         const int stride = frame.planeStride(plane);
         const uint8_t* source =
             frame.plane(plane) +
@@ -59,10 +62,15 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
 
     KvzdecDecoder decoder;
     mpeg12::Decoder mpeg12_decoder;
+    flv1::Decoder flv1_decoder;
     const demux::Codec codec = demuxer->video().codec;
+    const bool is_mpeg = codec == demux::Codec::Mpeg1 || codec == demux::Codec::Mpeg2;
+    const bool is_flv1 = codec == demux::Codec::Flv1;
 
-    if (codec == demux::Codec::Mpeg1 || codec == demux::Codec::Mpeg2) {
+    if (is_mpeg) {
         mpeg12_decoder.reset();
+    } else if (is_flv1) {
+        flv1_decoder.reset();
     } else {
         const int threads = std::getenv("HEVC_PLAYER_THREADS")
                                 ? std::atoi(std::getenv("HEVC_PLAYER_THREADS"))
@@ -88,9 +96,13 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
 
     // Feeds one sample to the selected backend and drains its pictures.
     const auto pushSample = [&](const demux::Sample& sample, std::vector<DecodedFrame>& frames) {
-        if (codec == demux::Codec::Mpeg1 || codec == demux::Codec::Mpeg2) {
+        if (is_mpeg) {
             mpeg12_decoder.pushSample(sample.data.data(), sample.data.size(), sample.pts);
             return mpeg12_decoder.pullFrames(frames);
+        }
+        if (is_flv1) {
+            flv1_decoder.pushSample(sample.data.data(), sample.data.size(), sample.pts);
+            return flv1_decoder.pullFrames(frames);
         }
         if (!decoder.pushSample(sample.data.data(), sample.data.size(), sample.pts,
                                 demuxer->video().format.annexb,
@@ -100,7 +112,13 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
         return decoder.pullFrames(frames);
     };
     const auto flushDecoder = [&](std::vector<DecodedFrame>& frames) {
-        return (codec == demux::Codec::Mpeg1 || codec == demux::Codec::Mpeg2) ? mpeg12_decoder.flush(frames) : decoder.flush(frames);
+        if (is_mpeg) {
+            return mpeg12_decoder.flush(frames);
+        }
+        if (is_flv1) {
+            return flv1_decoder.flush(frames);
+        }
+        return decoder.flush(frames);
     };
 
     const auto start = std::chrono::steady_clock::now();
@@ -136,8 +154,7 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
     while (demuxer->readSample(sample)) {
         local_stats.bytes += static_cast<int64_t>(sample.data.size());
         frames.clear();
-        if (pushSample(sample, frames) == 0 && !sample.data.empty() &&
-            codec != demux::Codec::Mpeg1 && codec != demux::Codec::Mpeg2) {
+        if (pushSample(sample, frames) == 0 && !sample.data.empty() && !is_mpeg && !is_flv1) {
             local_error = "decoder rejected a sample";
             ok = false;
             break;
@@ -161,12 +178,14 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
 
     local_stats.seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    if (codec == demux::Codec::Mpeg1 || codec == demux::Codec::Mpeg2) {
+    if (is_mpeg) {
         local_stats.damaged = static_cast<int64_t>(mpeg12_decoder.damagedPictures());
         local_stats.damage_mb_x = mpeg12_decoder.damageMbX();
         local_stats.damage_mb_y = mpeg12_decoder.damageMbY();
         local_stats.damage_bit = mpeg12_decoder.damageBit();
         local_stats.damage_reason = mpeg12_decoder.damageReason();
+    } else if (is_flv1) {
+        local_stats.damaged = flv1_decoder.damaged() ? 1 : 0;
     }
     std::fclose(out);
 
