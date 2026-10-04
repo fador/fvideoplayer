@@ -379,10 +379,10 @@ TEST(Mpeg1Vlc, AcCoefficientCarriesRunLevelAndSign) {
     BitReader reader(bytes.data(), bytes.size());
     int index = 0;
     int level = 0;
-    ASSERT_TRUE(readAcCoefficient(reader, AcTable::Mpeg1, index, level));
+    ASSERT_TRUE(readAcCoefficient(reader, AcTable::Mpeg1, false, index, level));
     EXPECT_EQ(index, 1);
     EXPECT_EQ(level, -1);
-    EXPECT_FALSE(readAcCoefficient(reader, AcTable::Mpeg1, index, level));
+    EXPECT_FALSE(readAcCoefficient(reader, AcTable::Mpeg1, false, index, level));
     EXPECT_FALSE(reader.error());
 }
 
@@ -397,7 +397,7 @@ TEST(Mpeg1Vlc, AcEscapeCarriesRunAndWideLevel) {
     BitReader reader(bytes.data(), bytes.size());
     int index = -1;
     int level = 0;
-    ASSERT_TRUE(readAcCoefficient(reader, AcTable::Mpeg1, index, level));
+    ASSERT_TRUE(readAcCoefficient(reader, AcTable::Mpeg1, false, index, level));
     // The escape adds run + 1 to a position that starts before the DC.
     EXPECT_EQ(index, 4);
     EXPECT_EQ(level, -1);

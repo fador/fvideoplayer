@@ -305,7 +305,7 @@ void Decoder::markDamaged(const char* reason) {
         damage_mb_y_ = mb_y_;
         damage_bit_ = active_reader_ != nullptr ? active_reader_->bitPosition() : 0;
         damage_reason_ = reason;
-            }
+    }
     picture_damaged_ = true;
 }
 
@@ -1014,7 +1014,7 @@ void Decoder::decodeBlockIntra(BitReader& reader, int block_index, int component
     int index = 0;
     for (;;) {
         int level = 0;
-        if (!readAcCoefficient(reader, table, index, level)) {
+        if (!readAcCoefficient(reader, table, standard_ == Standard::Mpeg2, index, level)) {
             break;
         }
         const int position = scan_order[index];
@@ -1055,7 +1055,7 @@ void Decoder::decodeBlockInter(BitReader& reader, int block_index, int quant_sca
         index = 0;
     } else {
         int level = 0;
-        more = readAcCoefficient(reader, AcTable::Mpeg1, index, level);
+        more = readAcCoefficient(reader, AcTable::Mpeg1, mpeg2, index, level);
         if (more && index >= 0) {
             const int position = scan_order[index];
             const int value = inverseQuantize(level, quant_scale, matrix[position], false, !mpeg2);
@@ -1066,7 +1066,7 @@ void Decoder::decodeBlockInter(BitReader& reader, int block_index, int quant_sca
 
     while (more) {
         int level = 0;
-        more = readAcCoefficient(reader, AcTable::Mpeg1, index, level);
+        more = readAcCoefficient(reader, AcTable::Mpeg1, mpeg2, index, level);
         if (more) {
             const int position = scan_order[index];
             const int value = inverseQuantize(level, quant_scale, matrix[position], false, !mpeg2);

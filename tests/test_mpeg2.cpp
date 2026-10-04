@@ -4,9 +4,11 @@
 // synthetic streams whose expected output can be computed by hand.
 
 #include "decode/Frame.hpp"
+#include "decode/mpeg12/Mpeg12BitReader.hpp"
 #include "decode/mpeg12/Mpeg12Decoder.hpp"
 #include "decode/mpeg12/Mpeg12Idct.hpp"
 #include "decode/mpeg12/Mpeg12Tables.hpp"
+#include "decode/mpeg12/Mpeg12Vlc.hpp"
 
 #include <gtest/gtest.h>
 
@@ -354,4 +356,46 @@ TEST(Mpeg2Idct, Mpeg2DoesNotForceCoefficientsOdd) {
     // Non-intra: ((2 * 1 + 1) * 32 * 16) >> 5 is 48.
     EXPECT_EQ(inverseQuantize(1, 32, 16, false, true), 47);
     EXPECT_EQ(inverseQuantize(1, 32, 16, false, false), 48);
+}
+
+TEST(Mpeg2Vlc, EscapeLevelIsTwelveBitsForMpeg2) {
+    // The escape form follows the standard, not intra_vlc_format: an MPEG-2
+    // stream codes a 12-bit signed level even when it uses the MPEG-1 table.
+    Bits bits;
+    bits.putCode(0x1, 6);  // escape, MPEG-1 run/level table
+    bits.put(0, 6);        // run 0
+    bits.put(0xFFF, 12);   // -1 in two's complement
+    const std::vector<uint8_t> data = bits.bytes();
+
+    BitReader reader(data.data(), data.size());
+    int index = 0;
+    int level = 0;
+    ASSERT_TRUE(readAcCoefficient(reader, AcTable::Mpeg1, true, index, level));
+    EXPECT_EQ(index, 1);
+    EXPECT_EQ(level, -1);
+    EXPECT_EQ(reader.bitPosition(), 6u + 6u + 12u);
+}
+
+TEST(Mpeg2Vlc, RunPastTheBlockEndDoesNotConsumeASign) {
+    // A coefficient whose run leaves the block ends it, and the encoder puts
+    // the next block's data right after the codeword: no sign bit follows, so
+    // reading one would misalign everything that comes after.
+    Bits bits;
+    bits.putCode(0x1, 6);  // escape
+    bits.put(62, 6);       // run 62 puts the coefficient at index 63
+    bits.put(0x001, 12);   // level +1
+    bits.putCode(0x3, 2);  // "11": run 0, level 1, which would be index 64
+    bits.put(0, 16);       // padding that must not be read as a sign
+    const std::vector<uint8_t> data = bits.bytes();
+
+    BitReader reader(data.data(), data.size());
+    int index = 0;
+    int level = 0;
+    ASSERT_TRUE(readAcCoefficient(reader, AcTable::Mpeg1, true, index, level));
+    EXPECT_EQ(index, 63);
+    EXPECT_EQ(level, 1);
+
+    const size_t before = reader.bitPosition();
+    EXPECT_FALSE(readAcCoefficient(reader, AcTable::Mpeg1, true, index, level));
+    EXPECT_EQ(reader.bitPosition() - before, 2u);
 }

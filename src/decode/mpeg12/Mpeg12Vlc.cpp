@@ -147,7 +147,8 @@ int readIntraDcDifference(BitReader& reader, int component) {
     return static_cast<int>(raw) - static_cast<int>((1u << size) - 1u);
 }
 
-bool readAcCoefficient(BitReader& reader, AcTable table, int& coefficient_index, int& level) {
+bool readAcCoefficient(BitReader& reader, AcTable table, bool mpeg2, int& coefficient_index,
+                       int& level) {
     const VlcEntry* entries = table == AcTable::Mpeg2 ? kMpeg2RunLevel : kRunLevel;
     const int symbol = readVlc(reader, entries, kRunLevelCount + 2, 16);
     if (symbol < 0) {
@@ -160,9 +161,10 @@ bool readAcCoefficient(BitReader& reader, AcTable table, int& coefficient_index,
 
     if (symbol == kRunLevelEscape) {
         // After the escape code both tables carry 6 bits of run and a signed
-        // level: 8 bits with an 8-bit widening for MPEG-1, 12 bits for MPEG-2.
+        // level. MPEG-2 codes 12 bits; MPEG-1 codes 8 bits that widen by
+        // another 8 bits at the extremes.
         coefficient_index += static_cast<int>(reader.read(6)) + 1;
-        if (table == AcTable::Mpeg2) {
+        if (mpeg2) {
             level = reader.readSigned(12);
         } else {
             int value = reader.readSigned(8);
@@ -177,12 +179,18 @@ bool readAcCoefficient(BitReader& reader, AcTable table, int& coefficient_index,
     }
 
     coefficient_index += kRunLevelRun[symbol] + 1;
+    if (coefficient_index > 63) {
+        // A run that leaves the block ends it. The encoder writes the
+        // end-of-block code next, without the sign bit this coefficient would
+        // otherwise carry, so the sign must not be consumed here.
+        return false;
+    }
     int magnitude = kRunLevelLevel[symbol];
     if (reader.read(1) != 0) {
         magnitude = -magnitude;
     }
     level = magnitude;
-    return coefficient_index <= 63;
+    return true;
 }
 
 }  // namespace player::decode::mpeg12

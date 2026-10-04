@@ -128,3 +128,8 @@ checks that every code table is prefix free and free of duplicate codewords,
 that the zig-zag table is a permutation, and that the decoder reproduces a
 hand-computed flat-grey intra picture pixel for pixel - including when the
 stream is fed one byte at a time, which splits every header.
+
+Real MPEG-2 streams are verified against ffmpeg (about 47-49 dB luma PSNR on
+a 640x480 encode and a 240 frame capture, the float-versus-integer IDCT
+rounding); see [verification.md](verification.md) for the block syntax bugs
+that comparison uncovered.

@@ -50,8 +50,11 @@ enum class AcTable {
 
 // One AC (run, level) pair of a block. `coefficient_index` is advanced past
 // the run and points at the coefficient the level belongs to; it is -1 before
-// the DC of a non-intra block. Returns false at end_of_block.
-bool readAcCoefficient(BitReader& reader, AcTable table, int& coefficient_index, int& level);
+// the DC of a non-intra block. Returns false at end_of_block. The escape form
+// follows the standard, not the table: MPEG-2 codes a 12-bit signed level,
+// MPEG-1 an 8-bit one that widens by another 8 bits at the extremes.
+bool readAcCoefficient(BitReader& reader, AcTable table, bool mpeg2, int& coefficient_index,
+                       int& level);
 
 }  // namespace player::decode::mpeg12
 
