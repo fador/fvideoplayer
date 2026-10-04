@@ -20,6 +20,7 @@ add_executable(player_tests
     test_silk_parameters.cpp
     test_silk_stereo_resampler.cpp
     test_avi_demuxer.cpp
+    test_filters.cpp
     test_hvcc.cpp
     test_log.cpp
     test_mkv_demuxer.cpp
@@ -36,6 +37,7 @@ target_link_libraries(player_tests PRIVATE
     player_audio_sdl
     player_demux
     player_decode
+    player_filters
     player_playback
     player_subtitle
     player_util

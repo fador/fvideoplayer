@@ -8,6 +8,7 @@
 #include <SDL3/SDL.h>
 #include <imgui.h>
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
@@ -38,6 +39,8 @@ public:
     void selectAudio(int track) { engine_.selectAudioTrack(static_cast<size_t>(track)); }
     void setVolume(float volume) { engine_.setVolume(volume); }
     void setMuted(audio::Mute mute) { engine_.setMuted(mute); }
+    bool setVideoFilters(const std::string& spec, std::string& error);
+    bool setAudioFilters(const std::string& spec, std::string& error);
 
 private:
     void drawUI();
@@ -47,6 +50,7 @@ private:
     void drawAudioControls();
     void drawStatsWindow();
     void drawLogWindow();
+    void drawFiltersWindow();
     void handleShortcuts();
     void openFileDialog();
     void openSubtitleDialog();
@@ -92,6 +96,10 @@ private:
 
     bool show_stats_ = true;
     bool show_log_ = false;
+    bool show_filters_ = false;
+    std::array<char, 512> video_filter_input_{};
+    std::array<char, 512> audio_filter_input_{};
+    std::string filter_error_;
     bool log_autoscroll_ = true;
     uint64_t log_version_ = 0;
     std::vector<log::Entry> log_cache_;

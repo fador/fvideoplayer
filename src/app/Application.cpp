@@ -335,6 +335,7 @@ void Application::drawUI() {
     drawVideoArea();
     drawStatsWindow();
     drawLogWindow();
+    drawFiltersWindow();
     // Menus are popup windows of ImGui, which only exist once everything else
     // has been submitted.
     win98::decoratePopups();
@@ -432,6 +433,38 @@ void Application::drawMenuBar() {
             }
             if (tracks.empty()) {
                 win98::menuItem("(no audio tracks found)", nullptr, false, false);
+            }
+            win98::endMenu();
+        }
+        if (win98::beginMenu("Filters")) {
+            if (win98::menuItem("Video filters...", nullptr, false, true)) {
+                show_filters_ = true;
+            }
+            if (win98::menuItem("Audio filters...", nullptr, false, true)) {
+                show_filters_ = true;
+            }
+            win98::separator();
+            const std::vector<std::string> video_names = engine_.videoFilterNames();
+            const std::vector<std::string> audio_names = engine_.audioFilterNames();
+            if (video_names.empty() && audio_names.empty()) {
+                win98::menuItem("(no active filters)", nullptr, false, false);
+            } else {
+                for (const std::string& name : video_names) {
+                    win98::menuItem(("Video: " + name).c_str(), nullptr, false, false);
+                }
+                for (const std::string& name : audio_names) {
+                    win98::menuItem(("Audio: " + name).c_str(), nullptr, false, false);
+                }
+            }
+            win98::separator();
+            std::string clear_error;
+            if (win98::menuItem("Clear video filters", nullptr, false, !video_names.empty())) {
+                engine_.setVideoFilters("", clear_error);
+                video_filter_input_[0] = '\0';
+            }
+            if (win98::menuItem("Clear audio filters", nullptr, false, !audio_names.empty())) {
+                engine_.setAudioFilters("", clear_error);
+                audio_filter_input_[0] = '\0';
             }
             win98::endMenu();
         }
@@ -743,6 +776,108 @@ void Application::drawLogWindow() {
     ImGui::PopStyleColor();
     ImGui::End();
     win98::windowFrame("Log", &show_log_);
+}
+
+bool Application::setVideoFilters(const std::string& spec, std::string& error) {
+    if (!engine_.setVideoFilters(spec, error)) {
+        return false;
+    }
+    std::snprintf(video_filter_input_.data(), video_filter_input_.size(), "%s", spec.c_str());
+    return true;
+}
+
+bool Application::setAudioFilters(const std::string& spec, std::string& error) {
+    if (!engine_.setAudioFilters(spec, error)) {
+        return false;
+    }
+    std::snprintf(audio_filter_input_.data(), audio_filter_input_.size(), "%s", spec.c_str());
+    return true;
+}
+
+void Application::drawFiltersWindow() {
+    if (!show_filters_) {
+        return;
+    }
+    ImGui::SetNextWindowSize(ImVec2(640.0f, 300.0f), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Filters", nullptr);
+
+    ImGui::TextUnformatted("Post-decode filter graphs in ffmpeg syntax, applied on the pipeline thread.");
+    ImGui::TextDisabled(
+        "video: scale=W:H  crop=W:H:X:Y  flip=h|v|hv  grayscale  eq=brightness:contrast:saturation");
+    ImGui::TextDisabled("audio: volume=GAIN|NDB  resample=RATE  channels=1|2  equalizer=bass:mid:treble");
+    win98::separator();
+
+    const auto activeNames = [](const std::vector<std::string>& names) {
+        std::string text;
+        for (size_t i = 0; i < names.size(); ++i) {
+            if (i > 0) {
+                text += ", ";
+            }
+            text += names[i];
+        }
+        return text.empty() ? std::string("(none)") : text;
+    };
+
+    ImGui::TextUnformatted("Video graph");
+    ImGui::SetNextItemWidth(-190.0f);
+    const bool video_enter = ImGui::InputText("##video_filters", video_filter_input_.data(),
+                                              video_filter_input_.size(),
+                                              ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    if (win98::button("Apply##video") || video_enter) {
+        std::string error;
+        if (engine_.setVideoFilters(video_filter_input_.data(), error)) {
+            filter_error_.clear();
+        } else {
+            filter_error_ = "Video: " + error;
+        }
+    }
+    ImGui::SameLine();
+    if (win98::button("Clear##video")) {
+        std::string error;
+        if (engine_.setVideoFilters("", error)) {
+            video_filter_input_[0] = '\0';
+            filter_error_.clear();
+        } else {
+            filter_error_ = "Video: " + error;
+        }
+    }
+    ImGui::Text("Active: %s", activeNames(engine_.videoFilterNames()).c_str());
+
+    win98::separator();
+    ImGui::TextUnformatted("Audio graph");
+    ImGui::SetNextItemWidth(-190.0f);
+    const bool audio_enter = ImGui::InputText("##audio_filters", audio_filter_input_.data(),
+                                              audio_filter_input_.size(),
+                                              ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    if (win98::button("Apply##audio") || audio_enter) {
+        std::string error;
+        if (engine_.setAudioFilters(audio_filter_input_.data(), error)) {
+            filter_error_.clear();
+        } else {
+            filter_error_ = "Audio: " + error;
+        }
+    }
+    ImGui::SameLine();
+    if (win98::button("Clear##audio")) {
+        std::string error;
+        if (engine_.setAudioFilters("", error)) {
+            audio_filter_input_[0] = '\0';
+            filter_error_.clear();
+        } else {
+            filter_error_ = "Audio: " + error;
+        }
+    }
+    ImGui::Text("Active: %s", activeNames(engine_.audioFilterNames()).c_str());
+
+    if (!filter_error_.empty()) {
+        win98::separator();
+        ImGui::TextColored(ImVec4(0.65f, 0.0f, 0.0f, 1.0f), "%s", filter_error_.c_str());
+    }
+
+    ImGui::End();
+    win98::windowFrame("Filters", &show_filters_);
 }
 
 void Application::handleShortcuts() {

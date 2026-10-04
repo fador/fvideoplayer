@@ -156,6 +156,15 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(src/audio/SimdAvx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2")
 endif()
 
+# --- player filters (post-decode video/audio chains, no GUI dependencies) ----
+add_library(player_filters STATIC
+    src/filters/AudioFilters.cpp
+    src/filters/Filter.cpp
+    src/filters/FilterSpec.cpp
+    src/filters/VideoFilters.cpp)
+target_include_directories(player_filters PUBLIC src)
+target_link_libraries(player_filters PUBLIC player_audio)
+
 # --- SDL3 audio output driver (kept separate so tests can link it) ----------
 add_library(player_audio_sdl STATIC
     src/audio/SdlAudioSink.cpp)
@@ -167,7 +176,7 @@ add_library(player_playback STATIC
     src/playback/PlaybackEngine.cpp
     src/stats/StatsCollector.cpp)
 target_include_directories(player_playback PUBLIC src)
-target_link_libraries(player_playback PUBLIC player_audio player_decode player_demux player_util Threads::Threads)
+target_link_libraries(player_playback PUBLIC player_audio player_decode player_demux player_filters player_util Threads::Threads)
 
 # --- player -----------------------------------------------------------------
 add_library(player_core STATIC

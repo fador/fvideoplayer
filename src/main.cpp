@@ -53,6 +53,10 @@ void printUsage(const char* program) {
     std::printf("  --audio N           select audio track N\n");
     std::printf("  --volume X          set volume 0.0..1.0\n");
     std::printf("  --mute              start muted\n");
+    std::printf("  --vf SPEC           post-decode video filter graph, e.g.\n");
+    std::printf("                      \"scale=1280:720,flip=h,eq=contrast=1.2\"\n");
+    std::printf("  --af SPEC           post-decode audio filter graph, e.g.\n");
+    std::printf("                      \"volume=1.5,equalizer=bass=6,resample=48000\"\n");
     std::printf("  -h, --help          show this help\n");
 }
 
@@ -126,6 +130,8 @@ int main(int argc, char** argv) {
     int audio_track = -1;      // -1 unset
     double volume = -1.0;      // < 0 unset
     bool mute = false;
+    std::string video_filters;
+    std::string audio_filters;
     bool help_requested = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -154,6 +160,10 @@ int main(int argc, char** argv) {
             volume = std::atof(argv[++i]);
         } else if (arg == "--mute") {
             mute = true;
+        } else if ((arg == "--vf" || arg == "--video-filter") && i + 1 < argc) {
+            video_filters = argv[++i];
+        } else if ((arg == "--af" || arg == "--audio-filter") && i + 1 < argc) {
+            audio_filters = argv[++i];
         } else if (arg == "--info") {
             info_mode = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -219,6 +229,20 @@ int main(int argc, char** argv) {
     }
     if (mute) {
         app.setMuted(player::audio::Mute::On);
+    }
+    if (!video_filters.empty()) {
+        std::string error;
+        if (!app.setVideoFilters(video_filters, error)) {
+            std::fprintf(stderr, "invalid --vf: %s\n", error.c_str());
+            return EXIT_FAILURE;
+        }
+    }
+    if (!audio_filters.empty()) {
+        std::string error;
+        if (!app.setAudioFilters(audio_filters, error)) {
+            std::fprintf(stderr, "invalid --af: %s\n", error.c_str());
+            return EXIT_FAILURE;
+        }
     }
     if (!input.empty()) {
         app.openFile(input);

@@ -1,6 +1,7 @@
 #include "playback/PlaybackEngine.hpp"
 
 #include "demux/HvcC.hpp"
+#include "filters/FilterSpec.hpp"
 #include "utils/Log.hpp"
 
 #include <algorithm>
@@ -142,6 +143,176 @@ int PlaybackEngine::flushVideoDecoder(std::vector<decode::DecodedFrame>& out) {
     return 0;
 }
 
+bool PlaybackEngine::setVideoFilters(const std::string& spec, std::string& error) {
+    error.clear();
+    std::shared_ptr<filters::VideoFilterChain> chain =
+        filters::parseVideoFilterSpec(spec, error);
+    if (!chain) {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(filter_mutex_);
+        video_filter_spec_ = spec;
+        video_filters_ = std::move(chain);
+    }
+    video_filter_warned_ = false;
+    if (spec.empty()) {
+        log::add(log::Level::Info, "Video filters cleared");
+    } else {
+        log::addf(log::Level::Info, "Video filters: %s", spec.c_str());
+    }
+    return true;
+}
+
+bool PlaybackEngine::setAudioFilters(const std::string& spec, std::string& error) {
+    error.clear();
+    std::shared_ptr<filters::AudioFilterChain> chain =
+        filters::parseAudioFilterSpec(spec, error);
+    if (!chain) {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(filter_mutex_);
+        audio_filter_spec_ = spec;
+        audio_filters_ = std::move(chain);
+    }
+    audio_filter_warned_ = false;
+    // Existing buffered PCM came out of the old graph, and a format change
+    // (resampler or remix) must not mix into the sink.
+    {
+        std::lock_guard<std::mutex> audio_lock(audio_mutex_);
+        audio_buffer_.clear();
+        sink().flush();
+    }
+    if (spec.empty()) {
+        log::add(log::Level::Info, "Audio filters cleared");
+    } else {
+        log::addf(log::Level::Info, "Audio filters: %s", spec.c_str());
+    }
+    return true;
+}
+
+std::string PlaybackEngine::videoFilterSpec() const {
+    std::lock_guard<std::mutex> lock(filter_mutex_);
+    return video_filter_spec_;
+}
+
+std::string PlaybackEngine::audioFilterSpec() const {
+    std::lock_guard<std::mutex> lock(filter_mutex_);
+    return audio_filter_spec_;
+}
+
+std::vector<std::string> PlaybackEngine::videoFilterNames() const {
+    std::shared_ptr<filters::VideoFilterChain> chain;
+    {
+        std::lock_guard<std::mutex> lock(filter_mutex_);
+        chain = video_filters_;
+    }
+    return chain ? chain->names() : std::vector<std::string>{};
+}
+
+std::vector<std::string> PlaybackEngine::audioFilterNames() const {
+    std::shared_ptr<filters::AudioFilterChain> chain;
+    {
+        std::lock_guard<std::mutex> lock(filter_mutex_);
+        chain = audio_filters_;
+    }
+    return chain ? chain->names() : std::vector<std::string>{};
+}
+
+void PlaybackEngine::rebuildFilters() {
+    std::string video_error;
+    std::string audio_error;
+    {
+        std::lock_guard<std::mutex> lock(filter_mutex_);
+        std::shared_ptr<filters::VideoFilterChain> video =
+            filters::parseVideoFilterSpec(video_filter_spec_, video_error);
+        std::shared_ptr<filters::AudioFilterChain> audio =
+            filters::parseAudioFilterSpec(audio_filter_spec_, audio_error);
+        if (video) {
+            video_filters_ = std::move(video);
+        }
+        if (audio) {
+            audio_filters_ = std::move(audio);
+        }
+    }
+    if (!video_error.empty()) {
+        log::addf(log::Level::Warning, "Video filter graph rejected: %s", video_error.c_str());
+    }
+    if (!audio_error.empty()) {
+        log::addf(log::Level::Warning, "Audio filter graph rejected: %s", audio_error.c_str());
+    }
+    video_filter_warned_ = false;
+    audio_filter_warned_ = false;
+}
+
+bool PlaybackEngine::applyVideoFilters(decode::DecodedFrame& frame) {
+    std::shared_ptr<filters::VideoFilterChain> chain;
+    {
+        std::lock_guard<std::mutex> lock(filter_mutex_);
+        chain = video_filters_;
+    }
+    if (!chain || chain->empty() || !frame.image.valid()) {
+        return true;
+    }
+    std::string error;
+    if (!chain->process(frame.image, error)) {
+        if (!video_filter_warned_) {
+            log::addf(log::Level::Warning, "Video filter failed: %s", error.c_str());
+            video_filter_warned_ = true;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool PlaybackEngine::applyAudioFilters(audio::PcmBuffer& chunk) {
+    std::shared_ptr<filters::AudioFilterChain> chain;
+    {
+        std::lock_guard<std::mutex> lock(filter_mutex_);
+        chain = audio_filters_;
+    }
+    if (!chain || chain->empty()) {
+        return true;
+    }
+    std::string error;
+    if (!chain->process(chunk, error)) {
+        if (!audio_filter_warned_) {
+            log::addf(log::Level::Warning, "Audio filter failed: %s", error.c_str());
+            audio_filter_warned_ = true;
+        }
+        return false;
+    }
+    if (chunk.sample_rate != audio_out_rate_ || chunk.channels != audio_out_channels_) {
+        audio_out_rate_ = chunk.sample_rate;
+        audio_out_channels_ = chunk.channels;
+        audio::AudioFormat format;
+        format.codec_fourcc = audio_out_fourcc_;
+        format.channels = chunk.channels;
+        format.sample_rate = chunk.sample_rate;
+        sink().configure(format);
+        log::addf(log::Level::Info, "Audio filter output: %u Hz, %u channel(s)",
+                  chunk.sample_rate, chunk.channels);
+    }
+    return true;
+}
+
+void PlaybackEngine::resetFilterState() {
+    std::shared_ptr<filters::VideoFilterChain> video;
+    std::shared_ptr<filters::AudioFilterChain> audio;
+    {
+        std::lock_guard<std::mutex> lock(filter_mutex_);
+        video = video_filters_;
+        audio = audio_filters_;
+    }
+    if (video) {
+        video->reset();
+    }
+    if (audio) {
+        audio->reset();
+    }
+}
+
 bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error) {
     close();
 
@@ -203,6 +374,7 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
     audio_late_drops_ = 0;
     audio_eos_ = false;
     audio_buffer_.clear();
+    rebuildFilters();
     configureAudioDecoder(audio_info_);
 
     quit_ = false;
@@ -245,6 +417,7 @@ void PlaybackEngine::close() {
     queue_.setCapacity(16);
     decoder_.close();
     demuxer_.reset();
+    resetFilterState();
     current_.reset();
     if (audio_info_.present && audio_decoding_.load() && sink().framesConsumed() > 0) {
         log::addf(log::Level::Info, "Audio: %llu frames played, %llu dropped, %llu late, %llu stale, %llu underruns",
@@ -460,6 +633,9 @@ void PlaybackEngine::pipelineLoop() {
                 std::vector<decode::DecodedFrame> frames;
                 flushVideoDecoder(frames);
                 for (decode::DecodedFrame& frame : frames) {
+                    if (!applyVideoFilters(frame)) {
+                        continue;
+                    }
                     stats_.onFrameDecoded(frame, 0.0);
                     if (!queue_.push(std::move(frame), [this] { return quit_.load(); })) {
                         break;
@@ -487,6 +663,9 @@ void PlaybackEngine::pipelineLoop() {
                 const double per_frame_ms =
                     frames.empty() ? elapsed_ms : elapsed_ms / static_cast<double>(frames.size());
                 for (decode::DecodedFrame& frame : frames) {
+                    if (!applyVideoFilters(frame)) {
+                        continue;
+                    }
                     frame.sample_bytes = sample.data.size();
                     stats_.onFrameDecoded(frame, per_frame_ms);
                     if (!queue_.push(std::move(frame), [this] { return quit_.load(); })) {
@@ -513,6 +692,7 @@ void PlaybackEngine::performSeek(double seconds) {
     const auto start = std::chrono::steady_clock::now();
     queue_.clear();
     resetVideoDecoder();
+    resetFilterState();
     demuxer_->seek(seconds);
     resetAudioState();
     eos_ = false;
@@ -527,6 +707,9 @@ void PlaybackEngine::configureAudioDecoder(const demux::AudioTrackInfo& track) {
     audio_codec_ = AudioCodec::None;
     audio_decoding_ = false;
     audio_frame_ms_ = 21;
+    audio_out_rate_ = 0;
+    audio_out_channels_ = 0;
+    audio_out_fourcc_ = 0;
     if (!track.present) {
         return;
     }
@@ -595,11 +778,15 @@ void PlaybackEngine::configureAudioDecoder(const demux::AudioTrackInfo& track) {
     }
 
     audio_decoding_ = true;
+    audio_out_rate_ = rate;
+    audio_out_channels_ = channels;
+    audio_out_fourcc_ = track.codec_fourcc;
     audio::AudioFormat format;
     format.codec_fourcc = track.codec_fourcc;
     format.channels = channels;
     format.sample_rate = rate;
     sink().configure(format);
+    resetFilterState();
 }
 
 const char* PlaybackEngine::audioCodecName() const {
@@ -708,6 +895,9 @@ void PlaybackEngine::pumpAudio() {
         decodeAudioSample(sample);
         if (audio_pcm_.samples.empty()) {
             continue;  // decoder rejected or does not implement this packet
+        }
+        if (!applyAudioFilters(audio_pcm_)) {
+            continue;  // filter failed; the frame is dropped and reported once
         }
         const int64_t duration_ms =
             audio_pcm_.sample_rate > 0

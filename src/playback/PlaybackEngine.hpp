@@ -13,6 +13,7 @@
 #include "decode/KvzdecDecoder.hpp"
 #include "decode/mpeg12/Mpeg12Decoder.hpp"
 #include "demux/Demuxer.hpp"
+#include "filters/Filter.hpp"
 #include "playback/FrameQueue.hpp"
 #include "playback/MediaClock.hpp"
 #include "stats/StatsCollector.hpp"
@@ -102,6 +103,16 @@ public:
     // Name of the codec the audio decoder is configured for.
     const char* audioCodecName() const;
 
+    // Post-decode filter graphs in ffmpeg-style syntax, e.g.
+    // "scale=1280:720,flip=h" and "volume=1.5,equalizer=bass=6". An invalid
+    // spec is rejected and the current graph stays in place.
+    bool setVideoFilters(const std::string& spec, std::string& error);
+    bool setAudioFilters(const std::string& spec, std::string& error);
+    std::string videoFilterSpec() const;
+    std::string audioFilterSpec() const;
+    std::vector<std::string> videoFilterNames() const;
+    std::vector<std::string> audioFilterNames() const;
+
     const std::string& lastError() const { return last_error_; }
     stats::StatsCollector& stats() { return stats_; }
 
@@ -140,6 +151,13 @@ private:
     static constexpr int kAudioBufferMs = 2000;
     static constexpr int kAudioSinkLeadMs = 400;
     static constexpr int kAudioLateMs = 120;
+
+    // Post-decode filter graph. The chains run on the pipeline thread; the
+    // UI thread only ever swaps the shared_ptr under filter_mutex_.
+    bool applyVideoFilters(decode::DecodedFrame& frame);
+    bool applyAudioFilters(audio::PcmBuffer& chunk);
+    void rebuildFilters();
+    void resetFilterState();
 
     void pipelineLoop();
     void performSeek(double seconds);
@@ -184,6 +202,16 @@ private:
     audio::flac::Decoder flac_decoder_;
     audio::AudioBuffer audio_buffer_{kAudioBufferMs};
     audio::PcmBuffer audio_pcm_;
+    mutable std::mutex filter_mutex_;
+    std::string video_filter_spec_;
+    std::string audio_filter_spec_;
+    std::shared_ptr<filters::VideoFilterChain> video_filters_;
+    std::shared_ptr<filters::AudioFilterChain> audio_filters_;
+    std::atomic<bool> video_filter_warned_{false};
+    std::atomic<bool> audio_filter_warned_{false};
+    uint32_t audio_out_rate_ = 0;
+    uint32_t audio_out_channels_ = 0;
+    uint32_t audio_out_fourcc_ = 0;
     std::atomic<float> volume_{1.0f};
     std::atomic<bool> muted_{false};
     std::atomic<bool> audio_decoding_{false};
