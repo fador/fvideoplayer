@@ -131,9 +131,10 @@ bool parsePesHeader(const std::vector<uint8_t>& buffer, size_t& p, int64_t packe
         p = header_start + header_length;
         remaining -= header_length;
     } else {
-        // A bare header with no optional fields.
-        --p;
-        ++remaining;
+        // No optional fields follow, but the byte still belongs to the header:
+        // the reference implementation consumes it rather than handing it to
+        // the decoder as the first payload byte. Real MPEG-1 streams do use
+        // this form, and keeping the byte shifts the whole elementary stream.
     }
 
     if (packet_length == 0) {

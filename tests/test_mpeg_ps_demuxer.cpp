@@ -408,3 +408,39 @@ TEST(MpegPsDemuxer, Mpeg1PesHeaderIsParsed) {
     }
     std::filesystem::remove(path);
 }
+
+TEST(MpegPsDemuxer, ConsumesABarePesHeaderByte) {
+    // An MPEG-1 PES packet whose header is stuffing followed by a byte that is
+    // not a recognised marker. That byte still belongs to the header: treating
+    // it as payload inserts a byte into the elementary stream and shifts every
+    // picture after it.
+    const std::vector<uint8_t> payload = buildElementaryPicture(0, 1);
+    std::vector<uint8_t> out;
+    appendPackHeader(out);
+    appendSystemHeader(out);
+    startCode(out, 0xE0);
+    const size_t header = 2 + 1;  // two stuffing bytes and the bare byte
+    putBe16(out, static_cast<uint32_t>(header + payload.size()));
+    out.push_back(0xFF);
+    out.push_back(0xFF);
+    out.push_back(0x0F);
+    append(out, payload);
+    startCode(out, 0xB9);
+
+    const std::filesystem::path path = writeBytes(out, "player_ps_bare.mpg");
+    {
+        MpegPsDemuxer demuxer;
+        std::string error;
+        ASSERT_TRUE(demuxer.open(path, error)) << error;
+        Sample sample;
+        ASSERT_TRUE(demuxer.readSample(sample));
+        // The sample must start with the sequence header, not the header byte.
+        ASSERT_GE(sample.data.size(), 4u);
+        EXPECT_EQ(sample.data[0], 0x00);
+        EXPECT_EQ(sample.data[1], 0x00);
+        EXPECT_EQ(sample.data[2], 0x01);
+        EXPECT_EQ(sample.data[3], 0xB3);
+        EXPECT_EQ(sample.data.size(), payload.size());
+    }
+    std::filesystem::remove(path);
+}
