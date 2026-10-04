@@ -1,6 +1,7 @@
 add_executable(player_tests
     test_audio.cpp
     test_flac.cpp
+    test_mp2.cpp
     test_mp3.cpp
     test_celt_bands.cpp
     test_celt_filter.cpp

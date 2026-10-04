@@ -112,6 +112,7 @@ add_library(player_audio STATIC
     src/audio/aac/Mdct.cpp
     src/audio/aac/Window.cpp
     src/audio/flac/FlacDecoder.cpp
+    src/audio/mp2/Mp2Decoder.cpp
     src/audio/mp3/Mp3Decoder.cpp
     src/audio/mp3/Mp3Tables.cpp
     src/audio/opus/CeltAlloc.cpp
