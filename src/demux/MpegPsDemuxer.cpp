@@ -309,14 +309,17 @@ bool MpegPsDemuxer::open(const std::filesystem::path& path, std::string& error) 
         }
     }
 
-    // Derive the frame rate from the PTS spacing when the stream provides it.
-    fps_ = 25.0;
-    for (size_t i = 1; i < pictures_.size(); ++i) {
-        if (pictures_[i].has_pts && pictures_[i - 1].has_pts) {
-            const int64_t delta = pictures_[i].pts_ms - pictures_[i - 1].pts_ms;
-            if (delta > 0 && delta <= 5000) {
-                fps_ = 1000.0 / static_cast<double>(delta);
-                break;
+    // The sequence header states the frame rate; the PTS spacing is only a
+    // fallback for streams whose header is missing or reserved.
+    fps_ = info.fps > 0.0 ? info.fps : 25.0;
+    if (info.fps <= 0.0) {
+        for (size_t i = 1; i < pictures_.size(); ++i) {
+            if (pictures_[i].has_pts && pictures_[i - 1].has_pts) {
+                const int64_t delta = pictures_[i].pts_ms - pictures_[i - 1].pts_ms;
+                if (delta > 0 && delta <= 5000) {
+                    fps_ = 1000.0 / static_cast<double>(delta);
+                    break;
+                }
             }
         }
     }

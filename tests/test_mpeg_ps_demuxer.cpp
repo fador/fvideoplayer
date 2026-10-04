@@ -118,7 +118,8 @@ void appendPes(std::vector<uint8_t>& out, int64_t pts, const std::vector<uint8_t
 }
 
 // An MPEG-2 elementary stream holding one I picture with `slices` slices.
-std::vector<uint8_t> buildElementaryPicture(int temporal_reference, int slices) {
+std::vector<uint8_t> buildElementaryPicture(int temporal_reference, int slices,
+                                            uint32_t frame_rate_code = 3) {
     std::vector<uint8_t> out;
 
     startCode(out, 0xB3);
@@ -127,7 +128,7 @@ std::vector<uint8_t> buildElementaryPicture(int temporal_reference, int slices) 
         bits.put(16, 12);
         bits.put(16, 12);
         bits.put(1, 4);
-        bits.put(3, 4);
+        bits.put(frame_rate_code, 4);
         bits.put(0x3FFFF, 18);
         bits.put(1, 1);
         bits.put(0, 10);
@@ -214,13 +215,15 @@ std::vector<uint8_t> buildElementaryPicture(int temporal_reference, int slices) 
     return out;
 }
 
-// Two pictures, each in its own PES packet, with a PTS on each.
-std::vector<uint8_t> buildProgramStream() {
+// Two pictures, each in its own PES packet, with a PTS on each. The sequence
+// header states `frame_rate_code`, which is what the demuxer prefers; pass a
+// reserved value to leave it to the timestamps.
+std::vector<uint8_t> buildProgramStream(uint32_t frame_rate_code = 3) {
     std::vector<uint8_t> out;
     appendPackHeader(out);
     appendSystemHeader(out);
-    appendPes(out, 90000 * 1, buildElementaryPicture(0, 1));   // 1 s
-    appendPes(out, 90000 * 2, buildElementaryPicture(1, 1));   // 2 s
+    appendPes(out, 90000 * 1, buildElementaryPicture(0, 1, frame_rate_code));  // 1 s
+    appendPes(out, 90000 * 2, buildElementaryPicture(1, 1, frame_rate_code));  // 2 s
     startCode(out, 0xB9);  // program end
     return out;
 }
@@ -276,9 +279,23 @@ TEST(MpegPsDemuxer, ReassemblesPicturesFromTheirPesPackets) {
     std::filesystem::remove(path);
 }
 
-TEST(MpegPsDemuxer, DerivesTheFrameRateFromTheTimestamps) {
-    // The two PTS values are one second apart, so the frame rate is 1 fps.
-    const std::filesystem::path path = writeBytes(buildProgramStream(), "player_ps_fps.mpg");
+TEST(MpegPsDemuxer, PrefersTheSequenceHeaderFrameRate) {
+    // The header says 25 fps, so the one-second PTS spacing must not override
+    // it: trusting the timestamps here would play the stream four times slow.
+    const std::filesystem::path path = writeBytes(buildProgramStream(3), "player_ps_fps_hdr.mpg");
+    {
+        MpegPsDemuxer demuxer;
+        std::string error;
+        ASSERT_TRUE(demuxer.open(path, error)) << error;
+        EXPECT_DOUBLE_EQ(demuxer.video().fps, 25.0);
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(MpegPsDemuxer, DerivesTheFrameRateFromTheTimestampsWhenTheHeaderIsReserved) {
+    // frame_rate_code 0 is forbidden, so the two PTS values one second apart
+    // are all that is left to go on.
+    const std::filesystem::path path = writeBytes(buildProgramStream(0), "player_ps_fps.mpg");
     {
         MpegPsDemuxer demuxer;
         std::string error;

@@ -79,6 +79,11 @@ bool RawMpegDemuxer::open(const std::filesystem::path& path, std::string& error)
     video_.codec = info.mpeg2 ? Codec::Mpeg2 : Codec::Mpeg1;
     video_.width = info.width;
     video_.height = info.height;
+    // The sequence header knows the real frame rate; only fall back to the
+    // constructor's guess when the stream never carried one.
+    if (info.fps > 0.0) {
+        fps_ = info.fps;
+    }
     video_.fps = fps_;
     video_.timescale = 1000;
     // The payload is a start-code prefixed elementary stream.

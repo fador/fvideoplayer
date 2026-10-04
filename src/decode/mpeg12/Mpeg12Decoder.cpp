@@ -285,7 +285,7 @@ void Decoder::markDamaged(const char* reason) {
         damage_mb_y_ = mb_y_;
         damage_bit_ = active_reader_ != nullptr ? active_reader_->bitPosition() : 0;
         damage_reason_ = reason;
-    }
+            }
     picture_damaged_ = true;
 }
 

@@ -23,6 +23,9 @@ struct MpegEsInfo {
     uint32_t height = 0;
     bool mpeg2 = false;
     int pictures = 0;
+    // Frame rate from the sequence header's frame_rate_code, scaled by the
+    // sequence extension when there is one. 0 when no sequence header was seen.
+    double fps = 0.0;
 };
 
 struct MpegStartCode {

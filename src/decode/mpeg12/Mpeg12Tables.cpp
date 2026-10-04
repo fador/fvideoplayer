@@ -119,13 +119,14 @@ const uint8_t kRunLevelLevel[kRunLevelCount] = {
 
 const MbTypeP kMbTypeP[kMbTypePCount] = {
     // bits, code, intra, forward, pattern, quant_type
-    {5, 0x3, 1, 0, 0, 0},   // 00011
-    {2, 0x1, 0, 1, 1, 0},   // 01     forward, CBP, vectors are all zero
-    {3, 0x1, 0, 1, 0, 0},   // 001
-    {1, 0x1, 0, 1, 1, 0},   // 1
-    {6, 0x1, 1, 0, 0, 1},   // 000001
-    {5, 0x1, 0, 1, 1, 1},   // 00001
-    {5, 0x2, 0, 1, 0, 1},   // 00100
+    {5, 0x3, 1, 0, 0, 0},   // 00011  intra
+    {2, 0x1, 0, 1, 1, 0},   // 01     pattern only: no vectors are coded, so
+                            //        the prediction is taken at zero offset
+    {3, 0x1, 0, 1, 0, 0},   // 001    forward, no pattern
+    {1, 0x1, 0, 1, 1, 0},   // 1      forward, pattern
+    {6, 0x1, 1, 0, 0, 1},   // 000001 quant, intra
+    {5, 0x1, 0, 1, 1, 1},   // 00001  quant, pattern only, zero offset
+    {5, 0x2, 0, 1, 1, 1},   // 00010  quant, forward, pattern
 };
 
 const MbTypeB kMbTypeB[kMbTypeBCount] = {

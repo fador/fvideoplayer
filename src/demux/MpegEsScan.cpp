@@ -10,6 +10,32 @@ constexpr uint8_t kStartUserData = 0xB2;
 constexpr uint8_t kStartSequenceEnd = 0xB7;
 constexpr uint8_t kStartPicture = 0x00;
 
+// frame_rate_code (ISO/IEC 11172-2 table 2-4) to frames per second. Index 0
+// and 9..15 are forbidden or reserved, and report 0 so the caller can fall
+// back to something else.
+double frameRateFromCode(uint32_t code) {
+    switch (code) {
+        case 1:
+            return 24000.0 / 1001.0;
+        case 2:
+            return 24.0;
+        case 3:
+            return 25.0;
+        case 4:
+            return 30000.0 / 1001.0;
+        case 5:
+            return 30.0;
+        case 6:
+            return 50.0;
+        case 7:
+            return 60000.0 / 1001.0;
+        case 8:
+            return 60.0;
+        default:
+            return 0.0;
+    }
+}
+
 }  // namespace
 
 bool findMpegStartCode(const std::vector<uint8_t>& buffer, size_t from, MpegStartCode& out) {
@@ -83,6 +109,7 @@ void scanMpegPictures(const std::vector<uint8_t>& buffer, int64_t file_size,
                     static_cast<uint32_t>(buffer[at + 3]);
                 info.width = (bits >> 20) & 0x0FFF;
                 info.height = (bits >> 8) & 0x0FFF;
+                info.fps = frameRateFromCode(bits & 0x0F);
             }
         } else if (code == kStartExtension && awaiting_extension) {
             // A sequence extension (extension id 1) is what makes it MPEG-2.
