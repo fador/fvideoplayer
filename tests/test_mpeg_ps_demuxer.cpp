@@ -215,6 +215,32 @@ std::vector<uint8_t> buildElementaryPicture(int temporal_reference, int slices,
     return out;
 }
 
+// An MPEG-2 PES packet carrying `payload` on audio stream 0xC0.
+void appendAudioPes(std::vector<uint8_t>& out, int64_t pts,
+                    const std::vector<uint8_t>& payload) {
+    startCode(out, 0xC0);
+    const size_t header_length = 5;  // just the PTS
+    putBe16(out, static_cast<uint32_t>(3 + header_length + payload.size()));
+    out.push_back(0x80);  // '10', no scrambling, no priority, aligned
+    out.push_back(0x80);  // PTS only
+    out.push_back(static_cast<uint8_t>(header_length));
+    putPts(out, pts, false);
+    append(out, payload);
+}
+
+// One 192 kbps 48 kHz MPEG-1 Layer II frame: 144 * 192000 / 48000 = 576 bytes.
+std::vector<uint8_t> buildMp2Frame() {
+    std::vector<uint8_t> frame = {0xFF, 0xFD, 0xA4, 0x00};
+    frame.resize(576, 0);
+    return frame;
+}
+
+// H.264 Annex B NAL units, which the MPEG picture scanner cannot parse.
+std::vector<uint8_t> buildH264Elementary() {
+    return {0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1E,
+            0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x00};
+}
+
 // Two pictures, each in its own PES packet, with a PTS on each. The sequence
 // header states `frame_rate_code`, which is what the demuxer prefers; pass a
 // reserved value to leave it to the timestamps.
@@ -224,6 +250,18 @@ std::vector<uint8_t> buildProgramStream(uint32_t frame_rate_code = 3) {
     appendSystemHeader(out);
     appendPes(out, 90000 * 1, buildElementaryPicture(0, 1, frame_rate_code));  // 1 s
     appendPes(out, 90000 * 2, buildElementaryPicture(1, 1, frame_rate_code));  // 2 s
+    startCode(out, 0xB9);  // program end
+    return out;
+}
+
+// A program stream whose video is H.264, next to a decodable MPEG audio track.
+std::vector<uint8_t> buildH264ProgramStream() {
+    std::vector<uint8_t> out;
+    appendPackHeader(out);
+    appendSystemHeader(out);
+    appendPes(out, 90000 * 1, buildH264Elementary());  // 1 s
+    appendAudioPes(out, 90000 * 1, buildMp2Frame());
+    appendAudioPes(out, 90000 * 1 + 1152 * 90000 / 48000, buildMp2Frame());
     startCode(out, 0xB9);  // program end
     return out;
 }
@@ -275,6 +313,30 @@ TEST(MpegPsDemuxer, ReassemblesPicturesFromTheirPesPackets) {
             }
         }
         EXPECT_EQ(picture_headers, 1u);
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(MpegPsDemuxer, PlaysAudioWhenTheVideoIsNotMpeg) {
+    const std::filesystem::path path =
+        writeBytes(buildH264ProgramStream(), "player_ps_h264.mpg");
+    {
+        MpegPsDemuxer demuxer;
+        std::string error;
+        ASSERT_TRUE(demuxer.open(path, error)) << error;
+
+        EXPECT_EQ(demuxer.video().codec, Codec::Unknown);
+        EXPECT_EQ(demuxer.video().codec_name, "H.264");
+        ASSERT_TRUE(demuxer.audio().present);
+        EXPECT_EQ(demuxer.audio().codec, "mp2");
+        EXPECT_GT(demuxer.duration(), 1.0);
+
+        Sample sample;
+        EXPECT_FALSE(demuxer.readSample(sample));
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
+        EXPECT_EQ(sample.track, TrackType::Audio);
+        EXPECT_TRUE(demuxer.seek(0.01));
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
     }
     std::filesystem::remove(path);
 }

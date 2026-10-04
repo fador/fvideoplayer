@@ -29,7 +29,8 @@ MPEG-1 decoder.
 menu. AAC-LC, Opus (SILK/CELT/hybrid), MP3, FLAC and AC-3 are decoded by
   from-scratch decoders (no external codec libraries) and played through an
   SDL3 float sink with software volume and mute; audio-only MP3, FLAC and AC-3
-  files play directly.
+  files play directly. A file whose video codec has no decoder (H.264 in
+  Matroska, say) still plays its audio, with the video area naming the codec.
   See [Audio decoding](#audio-decoding) for details
 
 ## Building
@@ -264,9 +265,10 @@ MPEG-2 adds the following, all of which are implemented:
 - **MPEG-2 features deliberately absent**: there are no flat/non-flat quantiser
   matrix tests and no `q_scale_type` interaction with the DC predictor beyond
   what the standard specifies.
-- **Program stream audio**: a program stream's audio PES packets are skipped,
-  so a `.vob` or `.mpg` plays video only. MPEG audio, AC-3 and the rest would
-  each need their own elementary stream framing.
+- **Program stream audio formats**: the first audio PES stream is reassembled
+  and split into MPEG-1/2 Layer II or Layer III frames, so `.vob` and `.mpg`
+  files play with MP2 or MP3 audio. Other audio codecs (AC-3, DTS) would each
+  need their own elementary stream framing.
 
 ### Containers
 
@@ -298,8 +300,21 @@ PTS spacing when the stream provides one. Both the MPEG-1 (`01` marker with a
 STD buffer field) and MPEG-2 (`10` marker with flags and a header length) PES
 header forms are parsed.
 
-`mp4v` with an object type of `0x20` (MPEG-4 Visual) or `0x21` (H.264) is
-rejected with a clear message rather than decoded incorrectly.
+`mp4v` with an object type of `0x20` (MPEG-4 Visual) or `0x21` (H.264) is kept
+as an unsupported video track: it is named in the UI and the log, no video
+samples are indexed, and the audio plays. A video codec with no decoder is
+never fed to a decoder that cannot handle it.
+
+The same fallback applies to every container. When the first video track is not
+one of HEVC, MPEG-1, MPEG-2 or Sorenson Spark, the demuxer keeps the track
+description (its codec id, size and, when the container has one, the codec
+name), indexes no video samples, and exposes the audio tracks as usual. The
+engine then logs `Video codec X has no decoder; playing audio only`, the
+stats show the codec name, and the transport and seeking follow the audio
+timeline. A file with an unsupported video track and no audio is rejected with
+a message naming the codec. Verified with ffmpeg-produced H.264 files in
+Matroska, MP4, AVI, FLV and MPEG-PS: all five open, report the codec, and play
+their AAC, MP3 or MP2 audio end to end with no dropped or late packets.
 
 ### Verification
 
@@ -321,9 +336,9 @@ payload is read for `duration`, `width`, `height` and `framerate`. Video tags
 are Sorenson Spark (FLV1) and audio tags are MP3 or AAC. A tag's one-byte FLV
 header is stripped before the sample reaches the decoder, and an AAC sequence
 header is kept as the track's AudioSpecificConfig rather than played as a
-sample. H.264 (AVC), On2 VP6 and Screen Video files are rejected with a message
-naming the codec instead of being demuxed into a decoder that cannot handle
-them.
+sample. H.264 (AVC), On2 VP6 and Screen Video tracks are named but not
+indexed: the audio tags still play, and a file with neither a decodable video
+track nor audio is rejected with a message naming the codec.
 
 The Sorenson Spark decoder (`src/decode/flv1/`) is written from scratch. FLV1
 is H.263 baseline with a 17-bit picture start code, its own picture header and
@@ -351,7 +366,8 @@ between the floating-point inverse DCT here and ffmpeg's integer one, so the
 bitstream is consumed identically. Unit tests cover the code tables
 (prefix-free, correct markers), the header forms and flat intra and skipped P
 pictures built from synthesised bitstreams, and the demuxer (synthetic FLV
-files with metadata, MP3 and AAC audio, seeking and codec rejection).
+files with metadata, MP3 and AAC audio, seeking, and H.264 tracks that play
+their audio instead of being rejected).
 
 ## Audio decoding
 

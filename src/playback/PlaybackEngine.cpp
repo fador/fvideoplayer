@@ -77,12 +77,19 @@ bool PlaybackEngine::configureVideoDecoder(std::string& error) {
             flv1_decoder_.reset();
             break;
         default:
-            // Audio-only files carry no video track, which is not an error.
+            // Audio-only files carry no video track, and a video track whose
+            // codec has no decoder plays as audio only. Neither is an error.
             video_codec_ = VideoCodec::None;
+            if (!video_info_.codec_name.empty()) {
+                log::addf(log::Level::Warning, "Video codec %s has no decoder; playing audio only",
+                          video_info_.codec_name.c_str());
+            }
             break;
     }
     if (video_codec_ == VideoCodec::None) {
-        log::add(log::Level::Info, "No video track");
+        if (video_info_.codec_name.empty()) {
+            log::add(log::Level::Info, "No video track");
+        }
         return true;
     }
     log::addf(log::Level::Info, "Video decoder: %s %ux%u @ %.3f fps", videoCodecName(video_info_.codec),
@@ -371,7 +378,9 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
     stats_.reset();
     stats::StreamInfo info;
     info.container = containerName(path);
-    info.codec = videoCodecName(video_info_.codec);
+    info.codec = video_info_.codec == demux::Codec::Unknown && !video_info_.codec_name.empty()
+                     ? video_info_.codec_name
+                     : videoCodecName(video_info_.codec);
     info.width = video_info_.width;
     info.height = video_info_.height;
     info.fps = video_info_.fps;

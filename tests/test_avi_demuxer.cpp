@@ -111,10 +111,10 @@ Bytes avih() {
     return chunk(kFourcc("avih"), payload);
 }
 
-Bytes strh() {
+Bytes strh(uint32_t fourcc = kFourcc("HEVC")) {
     Bytes payload;
     putU32(payload, kFourcc("vids"));
-    putU32(payload, kFourcc("HEVC"));
+    putU32(payload, fourcc);
     putU32Le(payload, 0);  // dwFlags
     putU16Le(payload, 0);  // wPriority
     putU16Le(payload, 0);  // wLanguage
@@ -131,24 +131,26 @@ Bytes strh() {
     return chunk(kFourcc("strh"), payload);
 }
 
-Bytes strfVideo(bool annexb) {
+Bytes strfVideo(bool annexb, uint32_t fourcc = kFourcc("HEVC")) {
     Bytes payload;
     putU32Le(payload, 40);  // biSize
     putU32Le(payload, 1280);
     putU32Le(payload, 720);
     putU16Le(payload, 1);   // biPlanes
     putU16Le(payload, 24);  // biBitCount
-    putU32(payload, kFourcc("HEVC"));
+    putU32(payload, fourcc);
     putU32Le(payload, 0);
     putU32Le(payload, 0);
     putU32Le(payload, 0);
     putU32Le(payload, 0);
     putU32Le(payload, 0);
-    if (annexb) {
-        const Bytes extradata = {0, 0, 0, 1, 0x40, 0x01, 0x0C};
-        append(payload, extradata);
-    } else {
-        append(payload, makeHvcc());
+    if (fourcc == kFourcc("HEVC")) {
+        if (annexb) {
+            const Bytes extradata = {0, 0, 0, 1, 0x40, 0x01, 0x0C};
+            append(payload, extradata);
+        } else {
+            append(payload, makeHvcc());
+        }
     }
     return chunk(kFourcc("strf"), payload);
 }
@@ -212,6 +214,7 @@ struct AviSpec {
     bool annexb = false;
     bool with_audio = false;
     bool aac = false;  // MP3 by default, AAC with the AudioSpecificConfig extra
+    uint32_t video_fourcc = 0;  // 0 = HEVC
 };
 
 AviSpec audioSpec() {
@@ -246,12 +249,14 @@ AviSpec annexbSpec() {
     return spec;
 }
 
-Bytes buildAvi(AviSpec spec) {    const bool with_idx1 = spec.with_idx1;
+Bytes buildAvi(AviSpec spec) {
+    const bool with_idx1 = spec.with_idx1;
     const bool annexb = spec.annexb;
+    const uint32_t video_fourcc = spec.video_fourcc != 0 ? spec.video_fourcc : kFourcc("HEVC");
 
     Bytes hdrl_payload = avih();
-    Bytes strl_payload = strh();
-    append(strl_payload, strfVideo(annexb));
+    Bytes strl_payload = strh(video_fourcc);
+    append(strl_payload, strfVideo(annexb, video_fourcc));
     append(hdrl_payload, listChunk("strl", strl_payload));
 
     Bytes audio_strl;
@@ -360,6 +365,34 @@ TEST(AviDemuxer, ParsesVideoTrackAndSamples) {
         EXPECT_FALSE(sample.keyframe);
 
         EXPECT_FALSE(demuxer.readSample(sample));
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(AviDemuxer, KeepsUnsupportedVideoAndPlaysAudio) {
+    AviSpec spec = audioSpec();
+    spec.video_fourcc = kFourcc("H264");
+    const std::filesystem::path path = writeAvi(buildAvi(spec), "hevc_player_avi_h264.avi");
+    {
+        player::demux::AviDemuxer demuxer;
+        std::string error;
+        ASSERT_TRUE(demuxer.open(path, error)) << error;
+
+        EXPECT_EQ(demuxer.video().codec, player::demux::Codec::Unknown);
+        EXPECT_EQ(demuxer.video().codec_name, "H.264");
+        EXPECT_EQ(demuxer.video().width, 1280u);
+        EXPECT_EQ(demuxer.video().height, 720u);
+        EXPECT_TRUE(demuxer.audio().present);
+        // Packet times are whole milliseconds, so three 1152-sample chunks at
+        // 44.1 kHz end at 78 ms.
+        EXPECT_NEAR(demuxer.duration(), 0.078, 1e-6);
+
+        player::demux::Sample sample;
+        EXPECT_FALSE(demuxer.readSample(sample));
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
+        EXPECT_EQ(sample.track, player::demux::TrackType::Audio);
+        EXPECT_TRUE(demuxer.seek(0.05));
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
     }
     std::filesystem::remove(path);
 }

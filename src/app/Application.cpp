@@ -514,18 +514,21 @@ void Application::drawVideoArea() {
         ImGui::SetCursorScreenPos(cursor);
         drawSubtitles(draw_pos, draw_size);
     } else {
-        const char* message = "No file open";
+        std::string message = "No file open";
         if (engine_.hasFile()) {
-            if (engine_.videoInfo().codec == player::demux::Codec::Unknown) {
-                message = "Audio only";
+            const player::demux::VideoTrackInfo& video = engine_.videoInfo();
+            if (video.codec == player::demux::Codec::Unknown) {
+                message = video.codec_name.empty()
+                              ? "Audio only"
+                              : "Audio only (" + video.codec_name + " video not supported)";
             } else {
                 message = engine_.buffering() ? "Buffering..." : "No frame";
             }
         }
-        const ImVec2 text_size = ImGui::CalcTextSize(message);
+        const ImVec2 text_size = ImGui::CalcTextSize(message.c_str());
         ImGui::SetCursorScreenPos(ImVec2(cursor.x + (video_size.x - text_size.x) * 0.5f,
                                          cursor.y + (video_size.y - text_size.y) * 0.5f));
-        ImGui::TextUnformatted(message);
+        ImGui::TextUnformatted(message.c_str());
         ImGui::SetCursorScreenPos(cursor);
     }
 

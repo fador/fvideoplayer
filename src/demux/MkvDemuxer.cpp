@@ -330,6 +330,20 @@ bool parseTrackEntry(const uint8_t* data, size_t size, MkvTrack& track) {
     return true;
 }
 
+std::string videoCodecName(const std::string& codec_id) {
+    if (codec_id == "V_MPEGH/ISO/HEVC") return "HEVC";
+    if (codec_id == "V_MPEG2") return "MPEG-2";
+    if (codec_id == "V_MPEG1") return "MPEG-1";
+    if (codec_id == "V_MPEG4/ISO/AVC") return "H.264";
+    if (codec_id.rfind("V_MPEG4/ISO/", 0) == 0) return "MPEG-4 Visual";
+    if (codec_id == "V_VP8") return "VP8";
+    if (codec_id == "V_VP9") return "VP9";
+    if (codec_id == "V_AV1") return "AV1";
+    if (codec_id == "V_THEORA") return "Theora";
+    if (codec_id == "V_MS/VFW/FOURCC") return "VFW";
+    return codec_id;
+}
+
 uint32_t codecFourcc(const std::string& codec_id) {
     if (codec_id == "A_AAC") return 0x6D703461;      // 'mp4a'
     if (codec_id.rfind("A_OPUS", 0) == 0) return 0x4F707573;  // 'Opus', incl. A_OPUS/EXPERIMENTAL
@@ -647,13 +661,16 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
                 video_codec = Codec::Mpeg2;
             } else if (track.codec == "V_MPEG1") {
                 video_codec = Codec::Mpeg1;
-            } else {
-                continue;
             }
             video_track = std::move(track);
             video_track_number = video_track.number;
-            track_map[video_track_number] = {0, 0};
             have_video = true;
+            // A video codec without a decoder keeps its track description but
+            // no sample table, so its blocks are skipped and only the audio
+            // plays. The same goes for a track the player cannot decode.
+            if (video_codec != Codec::Unknown) {
+                track_map[video_track_number] = {0, 0};
+            }
         } else if (track.type == 2) {
             AudioTrackInfo info;
             info.index = audio_tracks_.size();
@@ -683,8 +700,8 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
             subtitle_samples_.emplace_back();
         }
     }
-    if (!have_video) {
-        error = "no HEVC video track found in Matroska file";
+    if (!have_video && audio_tracks_.empty()) {
+        error = "no playable audio or video track found in Matroska file";
         return false;
     }
     if (!audio_tracks_.empty()) {
@@ -825,7 +842,7 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
         }
     }
 
-    if (samples_.empty()) {
+    if (samples_.empty() && audio_tracks_.empty()) {
         error = "no video samples found in Matroska clusters";
         return false;
     }
@@ -835,9 +852,12 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
     video_.timescale = 1000;  // milliseconds
     video_.format.annexb = false;
     video_.format.nal_length_size = 4;
-    video_.width = video_track.width;
-    video_.height = video_track.height;
-    video_.hvcc = video_track.codec_private;
+    if (have_video) {
+        video_.codec_name = videoCodecName(video_track.codec);
+        video_.width = video_track.width;
+        video_.height = video_track.height;
+        video_.hvcc = video_track.codec_private;
+    }
     if (!video_.hvcc.empty()) {
         HvccInfo hvcc;
         std::string hvcc_error;
@@ -874,8 +894,10 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
 
     if (duration_ticks > 0.0) {
         duration_ = duration_ticks * static_cast<double>(timestamp_scale) / 1e9;
-    } else {
+    } else if (!samples_.empty()) {
         duration_ = static_cast<double>(samples_.back().pts - samples_.front().pts) / 1000.0;
+    } else {
+        duration_ = -1.0;
     }
     if (video_track.default_duration_ns > 0) {
         video_.fps = 1e9 / static_cast<double>(video_track.default_duration_ns);
@@ -995,7 +1017,7 @@ bool MkvDemuxer::readSubtitleTrack(size_t index, std::vector<subtitle::SubtitleB
 }
 
 bool MkvDemuxer::seek(double seconds) {
-    if (samples_.empty()) {
+    if (samples_.empty() && audio_samples_.empty()) {
         return false;
     }
     if (seconds < 0.0) {
@@ -1003,16 +1025,20 @@ bool MkvDemuxer::seek(double seconds) {
     }
     const int64_t target = static_cast<int64_t>(seconds * video_.timescale);
 
-    size_t index = 0;
-    const auto it = std::upper_bound(
-        keyframes_.begin(), keyframes_.end(), target,
-        [](int64_t value, const std::pair<int64_t, size_t>& entry) { return value < entry.first; });
-    if (it != keyframes_.begin()) {
-        index = std::prev(it)->second;
-    } else if (!keyframes_.empty()) {
-        index = keyframes_.front().second;
+    if (!samples_.empty()) {
+        size_t index = 0;
+        const auto it = std::upper_bound(
+            keyframes_.begin(), keyframes_.end(), target,
+            [](int64_t value, const std::pair<int64_t, size_t>& entry) {
+                return value < entry.first;
+            });
+        if (it != keyframes_.begin()) {
+            index = std::prev(it)->second;
+        } else if (!keyframes_.empty()) {
+            index = keyframes_.front().second;
+        }
+        next_sample_ = index;
     }
-    next_sample_ = index;
 
     // Every track keeps its own cursor, so the audio ones have to move as well.
     // A cursor left ahead of the new playhead hands the player packets from the

@@ -32,6 +32,32 @@ bool isAudioStreamId(uint8_t id) {
     return (id >= 0xC0 && id <= 0xDF) || id == kPrivateStream1;
 }
 
+// Names a video elementary stream that produced no MPEG pictures, for the
+// "audio only" message. H.264 is recognised by its Annex B NAL units.
+std::string detectVideoCodecName(const std::vector<uint8_t>& es) {
+    for (size_t i = 0; i + 4 < es.size(); ++i) {
+        if (es[i] != 0 || es[i + 1] != 0) {
+            continue;
+        }
+        size_t nal = 0;
+        if (es[i + 2] == 1) {
+            nal = i + 3;
+        } else if (es[i + 2] == 0 && es[i + 3] == 1) {
+            nal = i + 4;
+        } else {
+            continue;
+        }
+        if (nal >= es.size()) {
+            break;
+        }
+        const uint8_t type = es[nal] & 0x1F;
+        if (type == 1 || type == 5 || type == 7 || type == 8 || type == 9) {
+            return "H.264";
+        }
+    }
+    return "unsupported video";
+}
+
 uint32_t readBe16(const std::vector<uint8_t>& buffer, size_t at) {
     return (static_cast<uint32_t>(buffer[at]) << 8) | buffer[at + 1];
 }
@@ -291,16 +317,28 @@ bool MpegPsDemuxer::open(const std::filesystem::path& path, std::string& error) 
         error = "no pack header found in program stream";
         return false;
     }
-    if (video_es_.empty()) {
+
+    scanAudioTrack(audio_marks);
+    if (video_es_.empty() && !audio_.present) {
         error = "no video stream found in program stream";
         return false;
     }
 
     MpegEsInfo info;
-    scanMpegPictures(video_es_, static_cast<int64_t>(video_es_.size()), pictures_, info);
+    if (!video_es_.empty()) {
+        scanMpegPictures(video_es_, static_cast<int64_t>(video_es_.size()), pictures_, info);
+    }
     if (pictures_.empty()) {
-        error = "no MPEG pictures found in program stream";
-        return false;
+        // The video is not MPEG-1/2 (H.264 in a program stream, for example):
+        // keep the track description and play the audio.
+        if (!audio_.present) {
+            error = "no MPEG pictures found in program stream";
+            return false;
+        }
+        video_ = VideoTrackInfo{};
+        video_.codec_name = video_es_.empty() ? "" : detectVideoCodecName(video_es_);
+        next_picture_ = 0;
+        return true;
     }
 
     // A picture takes the PTS of the PES packet it started in. The packet's
@@ -364,10 +402,9 @@ bool MpegPsDemuxer::open(const std::filesystem::path& path, std::string& error) 
         }
     }
 
-    scanAudioTrack(audio_marks);
-
     video_ = VideoTrackInfo{};
     video_.codec = info.mpeg2 ? Codec::Mpeg2 : Codec::Mpeg1;
+    video_.codec_name = info.mpeg2 ? "MPEG-2" : "MPEG-1";
     video_.width = info.width;
     video_.height = info.height;
     video_.fps = fps_;
@@ -379,7 +416,7 @@ bool MpegPsDemuxer::open(const std::filesystem::path& path, std::string& error) 
 
 double MpegPsDemuxer::duration() const {
     if (pictures_.empty()) {
-        return -1.0;
+        return audio_duration_ms_ > 0.0 ? audio_duration_ms_ / 1000.0 : -1.0;
     }
     if (pictures_.back().has_pts && pictures_.front().has_pts) {
         const double span =
@@ -510,6 +547,8 @@ void MpegPsDemuxer::scanAudioTrack(const std::vector<PtsMark>& marks) {
             anchor_ms + static_cast<int64_t>(std::llround(
                             static_cast<double>(static_cast<int64_t>(i) - anchor_index) * frame_ms));
     }
+    audio_duration_ms_ =
+        static_cast<double>(audio_frames_.back().pts_ms) + frame_ms;
 }
 
 std::vector<AudioTrackInfo> MpegPsDemuxer::audioTracks() const {
@@ -546,7 +585,22 @@ bool MpegPsDemuxer::readAudioSample(Sample& sample) {
 
 bool MpegPsDemuxer::seek(double seconds) {
     if (pictures_.empty()) {
-        return false;
+        if (audio_frames_.empty()) {
+            return false;
+        }
+        if (seconds < 0.0) {
+            seconds = 0.0;
+        }
+        const int64_t target_ms = static_cast<int64_t>(seconds * 1000.0);
+        size_t index = 0;
+        for (size_t i = 0; i < audio_frames_.size(); ++i) {
+            if (audio_frames_[i].pts_ms > target_ms) {
+                break;
+            }
+            index = i;
+        }
+        next_audio_ = index;
+        return true;
     }
     if (seconds < 0.0) {
         seconds = 0.0;

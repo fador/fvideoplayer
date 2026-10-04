@@ -31,6 +31,10 @@ struct SampleFormat {
 
 struct VideoTrackInfo {
     Codec codec = Codec::Unknown;
+    // Container codec id of the video track, e.g. "H.264", "VP9" or
+    // "V_MPEG4/ISO/AVC". Empty when the file has no video track; when it is
+    // set but codec is Unknown the track exists but has no decoder.
+    std::string codec_name;
     uint32_t width = 0;
     uint32_t height = 0;
     double fps = 0.0;          // nominal/average frame rate, 0 if unknown

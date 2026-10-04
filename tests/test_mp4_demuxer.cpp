@@ -89,7 +89,7 @@ Bytes makeHvcc() {
     return out;
 }
 
-Bytes visualSampleEntry() {
+Bytes visualSampleEntry(uint32_t format = kFourcc("hvc1")) {
     Bytes payload;
     for (int i = 0; i < 6; ++i) {
         payload.push_back(0);
@@ -109,8 +109,10 @@ Bytes visualSampleEntry() {
     }
     putU16(payload, 0x0018);
     putU16(payload, 0xFFFF);
-    append(payload, box(kFourcc("hvcC"), makeHvcc()));
-    return box(kFourcc("hvc1"), payload);
+    if (format == kFourcc("hvc1") || format == kFourcc("hev1")) {
+        append(payload, box(kFourcc("hvcC"), makeHvcc()));
+    }
+    return box(format, payload);
 }
 
 // AudioSampleEntry fixed fields, shared by every audio entry below.
@@ -271,6 +273,7 @@ struct Mp4Spec {
     std::vector<int64_t> ctts;      // empty for no ctts box
     uint32_t timescale = 30000;
     uint32_t frame_delta = 1000;
+    uint32_t video_format = 0;  // 0 = hvc1
     bool with_audio = false;
     bool with_opus = false;
     bool with_subtitles = false;
@@ -310,7 +313,8 @@ Bytes videoTrack(const Mp4Spec& spec, uint64_t first_sample_offset, uint32_t dur
 
     Bytes stsd_payload;
     putU32(stsd_payload, 1);  // entry count
-    append(stsd_payload, visualSampleEntry());
+    append(stsd_payload,
+           visualSampleEntry(spec.video_format != 0 ? spec.video_format : kFourcc("hvc1")));
     append(stbl_children, fullBox(kFourcc("stsd"), 0, 0, stsd_payload));
 
     Bytes stts_payload;
@@ -577,6 +581,32 @@ TEST(Mp4Demuxer, ParsesVideoAndAudioTrack) {
         EXPECT_EQ(demuxer.audio().channels, 1u);
         EXPECT_EQ(demuxer.audio().sample_rate, 48000u);
         EXPECT_EQ(demuxer.audio().language, "eng");
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(Mp4Demuxer, KeepsUnsupportedVideoAndPlaysAudio) {
+    Mp4Spec spec = simpleSpec();
+    spec.video_format = kFourcc("avc1");
+    const std::filesystem::path path =
+        writeMp4(buildMp4(spec), "hevc_player_mp4_avc.mp4");
+    {
+        player::demux::Mp4Demuxer demuxer;
+        std::string error;
+        ASSERT_TRUE(demuxer.open(path, error)) << error;
+
+        EXPECT_EQ(demuxer.video().codec, player::demux::Codec::Unknown);
+        EXPECT_EQ(demuxer.video().codec_name, "H.264");
+        EXPECT_EQ(demuxer.video().width, 1280u);
+        EXPECT_EQ(demuxer.video().height, 720u);
+        EXPECT_TRUE(demuxer.audio().present);
+
+        player::demux::Sample sample;
+        EXPECT_FALSE(demuxer.readSample(sample));
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
+        EXPECT_EQ(sample.track, player::demux::TrackType::Audio);
+        EXPECT_TRUE(demuxer.seek(0.05));
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
     }
     std::filesystem::remove(path);
 }

@@ -446,26 +446,27 @@ bool FlvDemuxer::scanTags(std::string& error) {
                 have_video = true;
                 if (codec_id == 2) {
                     video_.codec = Codec::Flv1;
+                    video_.codec_name = "FLV1";
                 } else if (codec_id == 7) {
-                    error = "FLV: H.264 (AVC) video is not supported";
-                    return false;
+                    video_.codec_name = "H.264";
                 } else if (codec_id == 4 || codec_id == 5) {
-                    error = "FLV: On2 VP6 video is not supported";
-                    return false;
+                    video_.codec_name = "On2 VP6";
                 } else if (codec_id == 3 || codec_id == 6) {
-                    error = "FLV: Screen video is not supported";
-                    return false;
+                    video_.codec_name = "Screen video";
                 } else {
-                    error = "FLV: unknown video codec id " + std::to_string(codec_id);
-                    return false;
+                    video_.codec_name = "unknown codec id " + std::to_string(codec_id);
                 }
             }
-            TagInfo info;
-            info.offset = pos;
-            info.size = size;
-            info.pts_ms = timestamp;
-            info.keyframe = keyframe;
-            video_tags_.push_back(info);
+            // A video codec without a decoder is not indexed: the file still
+            // plays its audio.
+            if (video_.codec == Codec::Flv1) {
+                TagInfo info;
+                info.offset = pos;
+                info.size = size;
+                info.pts_ms = timestamp;
+                info.keyframe = keyframe;
+                video_tags_.push_back(info);
+            }
         } else if (type == 8 && size >= 1) {
             uint8_t first = 0;
             if (!readAt(data_offset_tag, &first, 1)) {
@@ -516,8 +517,8 @@ bool FlvDemuxer::scanTags(std::string& error) {
         error = "FLV file has no audio or video tags";
         return false;
     }
-    if (have_video && video_.codec == Codec::Unknown) {
-        error = "FLV file has no usable video track";
+    if (have_video && video_.codec == Codec::Unknown && !have_audio) {
+        error = "FLV: " + video_.codec_name + " video is not supported";
         return false;
     }
 
@@ -675,12 +676,15 @@ bool FlvDemuxer::seek(double seconds) {
     }
     next_video_ = video_index;
 
-    const auto it = std::upper_bound(audio_tags_.begin(), audio_tags_.end(), target_ms,
-                                     [](int64_t value, const TagInfo& tag) {
-                                         return value < tag.pts_ms;
+    const auto it = std::lower_bound(audio_tags_.begin(), audio_tags_.end(), target_ms,
+                                     [](const TagInfo& tag, int64_t value) {
+                                         return tag.pts_ms < value;
                                      });
-    next_audio_ = static_cast<size_t>(it - audio_tags_.begin());
-    return found || it != audio_tags_.end();
+    // Step back to the packet that covers the target for a short lead.
+    next_audio_ = it == audio_tags_.begin()
+                      ? 0
+                      : static_cast<size_t>(std::prev(it) - audio_tags_.begin());
+    return found || !audio_tags_.empty();
 }
 
 }  // namespace player::demux

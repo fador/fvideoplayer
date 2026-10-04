@@ -317,6 +317,42 @@ std::string fourccText(uint32_t value) {
     return text;
 }
 
+std::string aviVideoCodecName(const AviStream& stream) {
+    const uint32_t handler = stream.fcc_handler != 0 ? stream.fcc_handler : stream.compression;
+    switch (handler) {
+        case fourcc('H', '2', '6', '4'):
+        case fourcc('h', '2', '6', '4'):
+        case fourcc('a', 'v', 'c', '1'):
+        case fourcc('A', 'V', 'C', '1'):
+        case fourcc('X', '2', '6', '4'):
+        case fourcc('x', '2', '6', '4'):
+        case fourcc('V', 'S', 'S', 'H'):
+        case fourcc('v', 's', 's', 'h'):
+            return "H.264";
+        case fourcc('V', 'P', '8', '0'):
+            return "VP8";
+        case fourcc('V', 'P', '9', '0'):
+            return "VP9";
+        case fourcc('A', 'V', '0', '1'):
+            return "AV1";
+        case fourcc('M', 'P', '4', '3'):
+        case fourcc('D', 'I', 'V', 'X'):
+        case fourcc('D', 'I', 'V', '3'):
+        case fourcc('X', 'V', 'I', 'D'):
+        case fourcc('d', 'i', 'v', 'x'):
+            return "MPEG-4 Visual";
+        case fourcc('W', 'M', 'V', '1'):
+        case fourcc('W', 'M', 'V', '2'):
+        case fourcc('W', 'M', 'V', '3'):
+            return "Windows Media Video";
+        case fourcc('V', 'C', '-', '1'):
+            return "VC-1";
+        default:
+            break;
+    }
+    return fourccText(handler);
+}
+
 }  // namespace
 
 AviDemuxer::AviDemuxer() = default;
@@ -390,8 +426,11 @@ bool AviDemuxer::open(const std::filesystem::path& path, std::string& error) {
         return false;
     }
 
-    // Select the first HEVC, MPEG-2 or MPEG-1 video stream.
+    // Select the first HEVC, MPEG-2 or MPEG-1 video stream. An unsupported
+    // video track is still described by name, but no samples are indexed, so
+    // a file with usable audio plays as audio only.
     int video_stream_index = -1;
+    int unsupported_video_index = -1;
     Codec video_codec = Codec::Unknown;
     for (size_t i = 0; i < streams.size(); ++i) {
         const AviStream& stream = streams[i];
@@ -420,38 +459,62 @@ bool AviDemuxer::open(const std::filesystem::path& path, std::string& error) {
             video_codec = Codec::Mpeg1;
             break;
         }
+        if (unsupported_video_index < 0) {
+            unsupported_video_index = static_cast<int>(i);
+        }
     }
-    if (video_stream_index < 0) {
+    bool have_audio_stream = false;
+    for (const AviStream& stream : streams) {
+        if (stream.fcc_type == fourcc('a', 'u', 'd', 's')) {
+            have_audio_stream = true;
+            break;
+        }
+    }
+    if (video_stream_index < 0 && !have_audio_stream) {
         error = "no HEVC, MPEG-2 or MPEG-1 video stream found in AVI";
         return false;
     }
-    const AviStream& video_stream = streams[static_cast<size_t>(video_stream_index)];
-
-    video_ = VideoTrackInfo{};
-    video_.codec = video_codec;
-    video_.timescale = 1000;
-    video_.width = video_stream.width;
-    video_.height = video_stream.height;
 
     bool annexb = false;
     uint8_t length_size = 4;
-    if (video_stream.extradata.size() >= 23 && video_stream.extradata[0] == 1) {
-        HvccInfo hvcc;
-        std::string hvcc_error;
-        if (parseHvcc(video_stream.extradata.data(), video_stream.extradata.size(), hvcc,
-                      &hvcc_error)) {
-            video_.hvcc = video_stream.extradata;
-            length_size = hvcc.length_size;
+    if (video_stream_index >= 0) {
+        const AviStream& video_stream = streams[static_cast<size_t>(video_stream_index)];
+        video_ = VideoTrackInfo{};
+        video_.codec = video_codec;
+        video_.timescale = 1000;
+        video_.codec_name = video_codec == Codec::Hevc   ? "HEVC"
+                            : video_codec == Codec::Mpeg2 ? "MPEG-2"
+                                                          : "MPEG-1";
+        video_.width = video_stream.width;
+        video_.height = video_stream.height;
+
+        if (video_stream.extradata.size() >= 23 && video_stream.extradata[0] == 1) {
+            HvccInfo hvcc;
+            std::string hvcc_error;
+            if (parseHvcc(video_stream.extradata.data(), video_stream.extradata.size(), hvcc,
+                          &hvcc_error)) {
+                video_.hvcc = video_stream.extradata;
+                length_size = hvcc.length_size;
+            }
         }
-    }
-    if (video_.hvcc.empty() && !video_stream.extradata.empty()) {
-        static const uint8_t kStartCode[3] = {0, 0, 1};
-        const bool has_start_code =
-            std::search(video_stream.extradata.begin(), video_stream.extradata.end(),
-                        kStartCode, kStartCode + 3) != video_stream.extradata.end();
-        if (has_start_code) {
-            annexb = true;
-            annexb_prefix_ = video_stream.extradata;
+        if (video_.hvcc.empty() && !video_stream.extradata.empty()) {
+            static const uint8_t kStartCode[3] = {0, 0, 1};
+            const bool has_start_code =
+                std::search(video_stream.extradata.begin(), video_stream.extradata.end(),
+                            kStartCode, kStartCode + 3) != video_stream.extradata.end();
+            if (has_start_code) {
+                annexb = true;
+                annexb_prefix_ = video_stream.extradata;
+            }
+        }
+    } else {
+        video_ = VideoTrackInfo{};
+        video_.timescale = 1000;
+        if (unsupported_video_index >= 0) {
+            const AviStream& stream = streams[static_cast<size_t>(unsupported_video_index)];
+            video_.codec_name = aviVideoCodecName(stream);
+            video_.width = stream.width;
+            video_.height = stream.height;
         }
     }
 
@@ -544,45 +607,48 @@ bool AviDemuxer::open(const std::filesystem::path& path, std::string& error) {
         return found;
     };
 
-    const std::vector<ChunkRef> chunks =
-        collect_chunks(static_cast<uint32_t>(video_stream_index), false);
+    if (video_stream_index >= 0) {
+        const AviStream& video_stream = streams[static_cast<size_t>(video_stream_index)];
+        const std::vector<ChunkRef> chunks =
+            collect_chunks(static_cast<uint32_t>(video_stream_index), false);
 
-    if (chunks.empty()) {
-        error = "no video chunks found in AVI movi list";
-        return false;
-    }
-
-    if (!annexb && video_.hvcc.empty()) {
-        annexb = looksAnnexB(file_, chunks.front().offset, chunks.front().size);
-    }
-    video_.format.annexb = annexb;
-    video_.format.nal_length_size = length_size;
-
-    if (video_stream.rate > 0 && video_stream.scale > 0) {
-        fps_ = static_cast<double>(video_stream.rate) / video_stream.scale;
-    }
-    video_.fps = fps_;
-
-    samples_.reserve(chunks.size());
-    for (size_t i = 0; i < chunks.size(); ++i) {
-        SampleInfo sample;
-        sample.offset = chunks[i].offset;
-        sample.size = chunks[i].size;
-        const int inspected = inspectKeyframe(file_, chunks[i].offset, chunks[i].size, annexb,
-                                              length_size);
-        sample.keyframe = inspected == 1 || (inspected < 0 && chunks[i].flagged_keyframe);
-        const double seconds = fps_ > 0.0 ? static_cast<double>(i) / fps_ : 0.0;
-        sample.pts = static_cast<int64_t>(std::llround(seconds * 1000.0));
-        samples_.push_back(sample);
-    }
-
-    for (size_t i = 0; i < samples_.size(); ++i) {
-        if (samples_[i].keyframe) {
-            keyframes_.emplace_back(samples_[i].pts, i);
+        if (chunks.empty()) {
+            error = "no video chunks found in AVI movi list";
+            return false;
         }
+
+        if (!annexb && video_.hvcc.empty()) {
+            annexb = looksAnnexB(file_, chunks.front().offset, chunks.front().size);
+        }
+        video_.format.annexb = annexb;
+        video_.format.nal_length_size = length_size;
+
+        if (video_stream.rate > 0 && video_stream.scale > 0) {
+            fps_ = static_cast<double>(video_stream.rate) / video_stream.scale;
+        }
+        video_.fps = fps_;
+
+        samples_.reserve(chunks.size());
+        for (size_t i = 0; i < chunks.size(); ++i) {
+            SampleInfo sample;
+            sample.offset = chunks[i].offset;
+            sample.size = chunks[i].size;
+            const int inspected = inspectKeyframe(file_, chunks[i].offset, chunks[i].size, annexb,
+                                                  length_size);
+            sample.keyframe = inspected == 1 || (inspected < 0 && chunks[i].flagged_keyframe);
+            const double seconds = fps_ > 0.0 ? static_cast<double>(i) / fps_ : 0.0;
+            sample.pts = static_cast<int64_t>(std::llround(seconds * 1000.0));
+            samples_.push_back(sample);
+        }
+
+        for (size_t i = 0; i < samples_.size(); ++i) {
+            if (samples_[i].keyframe) {
+                keyframes_.emplace_back(samples_[i].pts, i);
+            }
+        }
+        std::sort(keyframes_.begin(), keyframes_.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
     }
-    std::sort(keyframes_.begin(), keyframes_.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
 
     duration_ = fps_ > 0.0 ? static_cast<double>(samples_.size()) / fps_ : -1.0;
 
@@ -625,6 +691,17 @@ bool AviDemuxer::open(const std::filesystem::path& path, std::string& error) {
     }
     if (!audio_tracks_.empty()) {
         audio_ = audio_tracks_.front();
+    }
+    if (duration_ <= 0.0) {
+        for (const TrackSamples& track : audio_samples_) {
+            if (track.samples.empty()) {
+                continue;
+            }
+            const int64_t last = track.samples.back().pts;
+            const int64_t step =
+                track.samples.size() > 1 ? track.samples[1].pts - track.samples[0].pts : 0;
+            duration_ = std::max(duration_, static_cast<double>(last + step) / 1000.0);
+        }
     }
 
     next_sample_ = 0;
@@ -685,7 +762,7 @@ bool AviDemuxer::readSample(Sample& sample) {
 }
 
 bool AviDemuxer::seek(double seconds) {
-    if (samples_.empty()) {
+    if (samples_.empty() && audio_samples_.empty()) {
         return false;
     }
     if (seconds < 0.0) {
@@ -693,16 +770,20 @@ bool AviDemuxer::seek(double seconds) {
     }
     const int64_t target = static_cast<int64_t>(seconds * video_.timescale);
 
-    size_t index = 0;
-    const auto it = std::upper_bound(
-        keyframes_.begin(), keyframes_.end(), target,
-        [](int64_t value, const std::pair<int64_t, size_t>& entry) { return value < entry.first; });
-    if (it != keyframes_.begin()) {
-        index = std::prev(it)->second;
-    } else if (!keyframes_.empty()) {
-        index = keyframes_.front().second;
+    if (!samples_.empty()) {
+        size_t index = 0;
+        const auto it = std::upper_bound(
+            keyframes_.begin(), keyframes_.end(), target,
+            [](int64_t value, const std::pair<int64_t, size_t>& entry) {
+                return value < entry.first;
+            });
+        if (it != keyframes_.begin()) {
+            index = std::prev(it)->second;
+        } else if (!keyframes_.empty()) {
+            index = keyframes_.front().second;
+        }
+        next_sample_ = index;
     }
-    next_sample_ = index;
 
     // The audio cursors are independent of the video one, so they have to move
     // as well. Left ahead of the new playhead they hand the player packets from

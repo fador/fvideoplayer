@@ -49,6 +49,7 @@ private:
     VideoTrackInfo video_{};
     AudioTrackInfo audio_{};
     double fps_ = 25.0;
+    double audio_duration_ms_ = -1.0;
     size_t next_picture_ = 0;
     size_t next_audio_ = 0;
 };

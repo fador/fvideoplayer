@@ -555,9 +555,15 @@ bool parseStsd(const BoxView& box, SampleEntry& entry) {
         const bool is_hevc = format == fourcc('h', 'v', 'c', '1') ||
                              format == fourcc('h', 'e', 'v', '1');
         // `mp4v` carries MPEG-1, MPEG-2 or MPEG-4 video; the esds descriptor
-        // below tells them apart.
+        // below tells them apart. The remaining visual entries are listed so
+        // the track can be named even when it has no decoder.
         const bool is_mpeg_family = format == fourcc('m', 'p', '4', 'v');
-        const bool is_video = is_hevc || is_mpeg_family;
+        const bool is_other_video = format == fourcc('a', 'v', 'c', '1') ||
+                                    format == fourcc('a', 'v', 'c', '3') ||
+                                    format == fourcc('v', 'p', '0', '8') ||
+                                    format == fourcc('v', 'p', '0', '9') ||
+                                    format == fourcc('a', 'v', '0', '1');
+        const bool is_video = is_hevc || is_mpeg_family || is_other_video;
         const bool is_text = format == fourcc('t', 'x', '3', 'g') ||
                              format == fourcc('w', 'v', 't', 't') ||
                              format == fourcc('s', 'b', 't', 'l') ||
@@ -938,41 +944,59 @@ bool Mp4Demuxer::open(const std::filesystem::path& path, std::string& error) {
         }
     }
 
-    if (!have_video) {
-        error = "no HEVC or MPEG-1 video track found in MP4";
-        return false;
+    // Decide between HEVC, MPEG-2 and MPEG-1 before reporting the track. A
+    // video codec without a decoder is still named, but no samples are
+    // indexed, so the file plays as audio only.
+    Codec video_codec = Codec::Unknown;
+    std::string video_codec_name;
+    if (have_video) {
+        const uint32_t format = video_track.entry.format;
+        if (format == fourcc('m', 'p', '4', 'v')) {
+            EsdsInfo esds;
+            std::string esds_error;
+            if (!video_track.entry.esds.empty() &&
+                parseEsds(video_track.entry.esds.data(), video_track.entry.esds.size(), esds,
+                          &esds_error)) {
+                if (esds.object_type == kObjectTypeMpeg1Video) {
+                    video_codec = Codec::Mpeg1;
+                } else if (isMpeg2ObjectType(esds.object_type)) {
+                    video_codec = Codec::Mpeg2;
+                } else if (esds.object_type == kObjectTypeAvc) {
+                    video_codec_name = "H.264";
+                } else {
+                    video_codec_name = "MPEG-4 Visual";
+                }
+            } else {
+                video_codec_name = "MPEG-4 Visual";
+            }
+        } else if (format == fourcc('h', 'v', 'c', '1') || format == fourcc('h', 'e', 'v', '1')) {
+            video_codec = Codec::Hevc;
+        } else if (format == fourcc('a', 'v', 'c', '1') || format == fourcc('a', 'v', 'c', '3')) {
+            video_codec_name = "H.264";
+        } else if (format == fourcc('v', 'p', '0', '8')) {
+            video_codec_name = "VP8";
+        } else if (format == fourcc('v', 'p', '0', '9')) {
+            video_codec_name = "VP9";
+        } else if (format == fourcc('a', 'v', '0', '1')) {
+            video_codec_name = "AV1";
+        } else {
+            video_codec_name = fourccText(format);
+        }
+        if (video_codec_name.empty()) {
+            video_codec_name = video_codec == Codec::Hevc ? "HEVC"
+                               : video_codec == Codec::Mpeg2 ? "MPEG-2"
+                                                             : "MPEG-1";
+        }
     }
 
-    // Decide between HEVC, MPEG-2 and MPEG-1 before reporting the track.
-    Codec video_codec = Codec::Unknown;
-    if (video_track.entry.format == fourcc('m', 'p', '4', 'v')) {
-        EsdsInfo esds;
-        std::string esds_error;
-        if (!video_track.entry.esds.empty() &&
-            parseEsds(video_track.entry.esds.data(), video_track.entry.esds.size(), esds,
-                      &esds_error)) {
-            if (esds.object_type == kObjectTypeMpeg1Video) {
-                video_codec = Codec::Mpeg1;
-            } else if (isMpeg2ObjectType(esds.object_type)) {
-                video_codec = Codec::Mpeg2;
-            } else if (esds.object_type == kObjectTypeMpeg4Visual ||
-                       esds.object_type == kObjectTypeAvc) {
-                error = "MPEG-4 Visual / H.264 video in MP4 is not supported";
-                return false;
-            } else {
-                error = "unsupported video object type in esds";
-                return false;
-            }
-        } else {
-            error = esds_error.empty() ? "missing esds for mp4v track" : esds_error;
-            return false;
-        }
-    } else {
-        video_codec = Codec::Hevc;
+    if (video_codec == Codec::Unknown && video_codec_name.empty() && audio_tracks_.empty()) {
+        error = "no playable audio or video track found in MP4";
+        return false;
     }
 
     video_ = VideoTrackInfo{};
     video_.codec = video_codec;
+    video_.codec_name = video_codec_name;
     video_.timescale = video_track.timescale != 0 ? video_track.timescale : 1000;
     video_.format.annexb = false;
     video_.format.nal_length_size = 4;
@@ -990,27 +1014,43 @@ bool Mp4Demuxer::open(const std::filesystem::path& path, std::string& error) {
         }
     }
 
-    if (!buildSamples(video_track.tables, samples_, error)) {
-        return false;
-    }
-    keyframes_.clear();
-    for (size_t i = 0; i < samples_.size(); ++i) {
-        if (samples_[i].keyframe) {
-            keyframes_.emplace_back(samples_[i].pts, i);
+    if (video_codec != Codec::Unknown) {
+        if (!buildSamples(video_track.tables, samples_, error)) {
+            return false;
         }
+        keyframes_.clear();
+        for (size_t i = 0; i < samples_.size(); ++i) {
+            if (samples_[i].keyframe) {
+                keyframes_.emplace_back(samples_[i].pts, i);
+            }
+        }
+        std::sort(keyframes_.begin(), keyframes_.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
     }
-    std::sort(keyframes_.begin(), keyframes_.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
 
     if (video_track.duration != 0 && video_.timescale != 0) {
         duration_ = static_cast<double>(video_track.duration) / video_.timescale;
-        video_.fps = static_cast<double>(samples_.size()) * video_.timescale /
-                     static_cast<double>(video_track.duration);
-    } else {
+        video_.fps = samples_.empty() ? 0.0
+                                      : static_cast<double>(samples_.size()) * video_.timescale /
+                                            static_cast<double>(video_track.duration);
+    } else if (!samples_.empty()) {
         const int64_t last = samples_.back().dts;
         const int64_t first = samples_.front().dts;
         duration_ = static_cast<double>(last - first) / video_.timescale;
         video_.fps = duration_ > 0.0 ? samples_.size() / duration_ : 0.0;
+    }
+    // Without a video timeline (audio-only or unsupported video) the audio
+    // tracks carry the duration.
+    if (duration_ <= 0.0) {
+        for (const TrackSamples& track : audio_samples_) {
+            if (track.samples.empty() || track.timescale == 0) {
+                continue;
+            }
+            const SampleInfo& last = track.samples.back();
+            const double end =
+                static_cast<double>(last.pts + last.duration) / track.timescale;
+            duration_ = std::max(duration_, end);
+        }
     }
 
     // audio() stays the default track so single track callers keep working.
@@ -1111,7 +1151,7 @@ bool Mp4Demuxer::readSubtitleTrack(size_t index, std::vector<subtitle::SubtitleB
 }
 
 bool Mp4Demuxer::seek(double seconds) {
-    if (samples_.empty()) {
+    if (samples_.empty() && audio_samples_.empty()) {
         return false;
     }
     if (seconds < 0.0) {
@@ -1119,16 +1159,20 @@ bool Mp4Demuxer::seek(double seconds) {
     }
     const int64_t target = static_cast<int64_t>(seconds * video_.timescale);
 
-    size_t index = 0;
-    const auto it = std::upper_bound(
-        keyframes_.begin(), keyframes_.end(), target,
-        [](int64_t value, const std::pair<int64_t, size_t>& entry) { return value < entry.first; });
-    if (it != keyframes_.begin()) {
-        index = std::prev(it)->second;
-    } else if (!keyframes_.empty()) {
-        index = keyframes_.front().second;
+    if (!samples_.empty()) {
+        size_t index = 0;
+        const auto it = std::upper_bound(
+            keyframes_.begin(), keyframes_.end(), target,
+            [](int64_t value, const std::pair<int64_t, size_t>& entry) {
+                return value < entry.first;
+            });
+        if (it != keyframes_.begin()) {
+            index = std::prev(it)->second;
+        } else if (!keyframes_.empty()) {
+            index = keyframes_.front().second;
+        }
+        next_sample_ = index;
     }
-    next_sample_ = index;
 
     // The audio cursors are independent of the video one, so they have to move
     // as well. Left ahead of the new playhead they hand the player packets from

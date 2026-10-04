@@ -73,7 +73,12 @@ int printFileInfo(const std::string& input) {
     const player::demux::AudioTrackInfo& audio = demuxer->audio();
 
     std::printf("file: %s\n", input.c_str());
-    std::printf("video: %s %ux%u\n", videoCodecName(video.codec), video.width, video.height);
+    if (video.codec == player::demux::Codec::Unknown && !video.codec_name.empty()) {
+        std::printf("video: %s %ux%u (no decoder, audio only)\n", video.codec_name.c_str(),
+                    video.width, video.height);
+    } else {
+        std::printf("video: %s %ux%u\n", videoCodecName(video.codec), video.width, video.height);
+    }
     std::printf("fps: %.3f\n", video.fps);
     std::printf("timescale: %u\n", video.timescale);
     std::printf("duration: %.3f s\n", demuxer->duration());

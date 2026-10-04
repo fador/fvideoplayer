@@ -158,7 +158,7 @@ Bytes blockGroup(uint64_t track, int16_t relative, int64_t duration_ms, const By
     return element(0xA0, children);
 }
 
-Bytes videoTrackEntry() {
+Bytes videoTrackEntry(const std::string& codec = "V_MPEGH/ISO/HEVC") {
     Bytes video;
     append(video, uintElement(0xB0, 1280));  // PixelWidth
     append(video, uintElement(0xBA, 720));   // PixelHeight
@@ -166,8 +166,10 @@ Bytes videoTrackEntry() {
     Bytes children;
     append(children, uintElement(0xD7, 1));  // TrackNumber
     append(children, uintElement(0x83, 1));  // TrackType = video
-    append(children, stringElement(0x86, "V_MPEGH/ISO/HEVC"));
-    append(children, element(0x63A2, makeHvcc()));  // CodecPrivate
+    append(children, stringElement(0x86, codec));
+    if (codec == "V_MPEGH/ISO/HEVC") {
+        append(children, element(0x63A2, makeHvcc()));  // CodecPrivate
+    }
     append(children, uintElement(0x23E383, 33333333));  // DefaultDuration (30 fps)
     append(children, element(0xE0, video));
     return element(0xAE, children);
@@ -213,7 +215,8 @@ Bytes assEvent(const std::string& text) {
 }
 
 Bytes buildMkv(bool with_audio, bool with_subtitles = false, bool second_audio = false,
-               const std::string& audio_codec = "A_AAC", const Bytes& audio_private = {}) {
+               const std::string& audio_codec = "A_AAC", const Bytes& audio_private = {},
+               const std::string& video_codec = "V_MPEGH/ISO/HEVC") {
     Bytes ebml_header = element(0x1A45DFA3,
                                 concat({uintElement(0x4286, 1), uintElement(0x42F7, 1),
                                         uintElement(0x42F2, 4), uintElement(0x42F3, 8),
@@ -221,7 +224,7 @@ Bytes buildMkv(bool with_audio, bool with_subtitles = false, bool second_audio =
                                         uintElement(0x4287, 4), uintElement(0x4285, 2)}));
     Bytes info = element(0x1549A966,
                          concat({uintElement(0x2AD7B1, 1000000), floatElement(0x4489, 133.3333)}));
-    Bytes tracks_payload = videoTrackEntry();
+    Bytes tracks_payload = videoTrackEntry(video_codec);
     if (with_audio) {
         append(tracks_payload, audioTrackEntry(2, "jpn", "Japanese", audio_codec, audio_private));
     }
@@ -287,6 +290,31 @@ TEST(MkvDemuxer, ParsesVideoAndAudioTrack) {
         EXPECT_EQ(demuxer.audio().codec_fourcc, 0x6D703461u);  // 'mp4a'
         EXPECT_EQ(demuxer.audio().channels, 2u);
         EXPECT_EQ(demuxer.audio().sample_rate, 48000u);
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(MkvDemuxer, KeepsUnsupportedVideoAndPlaysAudio) {
+    const std::filesystem::path path =
+        writeMkv(buildMkv(true, false, false, "A_AAC", {}, "V_MPEG4/ISO/AVC"),
+                 "hevc_player_mkv_avc.mkv");
+    {
+        player::demux::MkvDemuxer demuxer;
+        std::string error;
+        ASSERT_TRUE(demuxer.open(path, error)) << error;
+
+        EXPECT_EQ(demuxer.video().codec, player::demux::Codec::Unknown);
+        EXPECT_EQ(demuxer.video().codec_name, "H.264");
+        EXPECT_EQ(demuxer.video().width, 1280u);
+        EXPECT_EQ(demuxer.video().height, 720u);
+        EXPECT_TRUE(demuxer.audio().present);
+
+        player::demux::Sample sample;
+        EXPECT_FALSE(demuxer.readSample(sample));
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
+        EXPECT_EQ(sample.track, player::demux::TrackType::Audio);
+        EXPECT_TRUE(demuxer.seek(0.05));
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
     }
     std::filesystem::remove(path);
 }

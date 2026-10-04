@@ -1,13 +1,16 @@
 #include "demux/Demuxer.hpp"
 #include "demux/FlvDemuxer.hpp"
+#include "playback/PlaybackEngine.hpp"
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -136,6 +139,19 @@ Bytes mp3AudioTag() {
     payload.push_back(0x90);
     payload.push_back(0x00);
     return flvTag(8, 0, payload);
+}
+
+// One full 128 kbps 44.1 kHz MP3 frame, silent. The frame size follows from
+// the bitrate: 144 * 128000 / 44100 = 417 bytes.
+Bytes mp3FrameTag(int64_t timestamp) {
+    Bytes payload;
+    payload.push_back(0x2F);  // MP3, 44.1 kHz, stereo
+    payload.push_back(0xFF);
+    payload.push_back(0xFB);
+    payload.push_back(0x90);
+    payload.push_back(0x00);
+    payload.resize(418, 0);
+    return flvTag(8, timestamp, payload);
 }
 
 Bytes aacConfigTag() {
@@ -303,17 +319,84 @@ TEST(FlvDemuxer, FactoryDetectsFlv) {
     std::filesystem::remove(path);
 }
 
-TEST(FlvDemuxer, RejectsUnsupportedVideoCodecs) {
+TEST(FlvDemuxer, RejectsUnsupportedVideoWithoutAudio) {
     Bytes payload;
     payload.push_back(0x17);  // keyframe, AVC
     payload.push_back(0x00);
-    const Bytes file = buildFlv({flvTag(9, 0, payload)});
+    const Bytes file = buildFlv({flvTag(9, 0, payload)}, true, false);
     const std::filesystem::path path = writeFlv(file, "hevc_player_flv_avc.flv");
     {
         player::demux::FlvDemuxer demuxer;
         std::string error;
         EXPECT_FALSE(demuxer.open(path, error));
         EXPECT_NE(error.find("H.264"), std::string::npos) << error;
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(FlvDemuxer, KeepsUnsupportedVideoAndPlaysAudio) {
+    Bytes keyframe;
+    keyframe.push_back(0x17);  // keyframe, AVC
+    keyframe.push_back(0x00);
+    Bytes inter;
+    inter.push_back(0x27);  // inter frame, AVC
+    inter.push_back(0x01);
+    const Bytes file = buildFlv({
+        flvTag(9, 0, keyframe),
+        mp3AudioTag(),
+        flvTag(9, 40, inter),
+    });
+    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_avc_audio.flv");
+    {
+        player::demux::FlvDemuxer demuxer;
+        std::string error;
+        ASSERT_TRUE(demuxer.open(path, error)) << error;
+        EXPECT_EQ(demuxer.video().codec, player::demux::Codec::Unknown);
+        EXPECT_EQ(demuxer.video().codec_name, "H.264");
+        EXPECT_EQ(demuxer.video().width, 320u);
+        EXPECT_EQ(demuxer.video().height, 240u);
+        ASSERT_TRUE(demuxer.audio().present);
+        EXPECT_EQ(demuxer.audio().codec, "mp3");
+
+        // The video track has no decoder, so it yields no samples; the audio
+        // cursor is independent and keeps working, seek included.
+        player::demux::Sample sample;
+        EXPECT_FALSE(demuxer.readSample(sample));
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
+        EXPECT_EQ(sample.track, player::demux::TrackType::Audio);
+        EXPECT_TRUE(demuxer.seek(0.0));
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(FlvDemuxer, EnginePlaysAudioOfUnsupportedVideo) {
+    Bytes keyframe;
+    keyframe.push_back(0x17);  // keyframe, AVC
+    keyframe.push_back(0x00);
+    std::vector<Bytes> tags;
+    tags.push_back(flvTag(9, 0, keyframe));
+    for (int i = 0; i < 8; ++i) {
+        tags.push_back(mp3FrameTag(i * 26));
+    }
+    const Bytes file = buildFlv(tags);
+    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_avc_engine.flv");
+    {
+        player::playback::PlaybackEngine engine;
+        std::string error;
+        ASSERT_TRUE(engine.open(path, error)) << error;
+        EXPECT_EQ(engine.videoInfo().codec, player::demux::Codec::Unknown);
+        EXPECT_EQ(engine.videoInfo().codec_name, "H.264");
+        EXPECT_EQ(std::string(engine.audioCodecName()), "MP3");
+        EXPECT_TRUE(engine.audioDecoding());
+        engine.play();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (engine.audioFrames() == 0 && std::chrono::steady_clock::now() < deadline) {
+            engine.update();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        EXPECT_GT(engine.audioFrames(), 0u);
+        engine.close();
     }
     std::filesystem::remove(path);
 }

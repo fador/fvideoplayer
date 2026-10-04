@@ -15,9 +15,9 @@ namespace player::demux {
 // relying on the onMetaData script tag, although that is read as well when it
 // is present.
 //
-// Video is Sorenson Spark (FLV1); audio is MP3 or AAC. Other FLV codecs are
-// rejected with a message naming them rather than demuxed into a decoder that
-// would produce garbage.
+// Video is Sorenson Spark (FLV1); audio is MP3 or AAC. Other FLV video codecs
+// are named but not indexed, so the audio still plays; without audio such a
+// file is rejected with a message naming the codec.
 class FlvDemuxer final : public IDemuxer {
 public:
     FlvDemuxer();
