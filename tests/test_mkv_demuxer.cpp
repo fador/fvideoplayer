@@ -224,9 +224,31 @@ Bytes assEvent(const std::string& text) {
     return Bytes(payload.begin(), payload.end());
 }
 
+Bytes fixedUintPayload(uint64_t value, int width) {
+    Bytes out;
+    for (int i = width - 1; i >= 0; --i) {
+        out.push_back(static_cast<uint8_t>((value >> (8 * i)) & 0xFF));
+    }
+    return out;
+}
+
+Bytes cuePoint(uint64_t time, uint64_t track, uint64_t cluster_position) {
+    Bytes positions = concat({uintElement(0xF7, track),
+                              element(0xF1, fixedUintPayload(cluster_position, 8))});
+    return element(0xBB, concat({uintElement(0xB3, time), element(0xB7, positions)}));
+}
+
+// The positions use a fixed width so the Cues element has the same size
+// whether the placeholder or the real offsets are encoded.
+Bytes cuesElement(uint64_t cluster0_position, uint64_t cluster1_position) {
+    return element(0x1C53BB6B,
+                   concat({cuePoint(0, 1, cluster0_position),
+                           cuePoint(67, 1, cluster1_position)}));
+}
+
 Bytes buildMkv(bool with_audio, bool with_subtitles = false, bool second_audio = false,
                const std::string& audio_codec = "A_AAC", const Bytes& audio_private = {},
-               const std::string& video_codec = "V_MPEGH/ISO/HEVC") {
+               const std::string& video_codec = "V_MPEGH/ISO/HEVC", bool with_cues = false) {
     Bytes ebml_header = element(0x1A45DFA3,
                                 concat({uintElement(0x4286, 1), uintElement(0x42F7, 1),
                                         uintElement(0x42F2, 4), uintElement(0x42F3, 8),
@@ -266,7 +288,14 @@ Bytes buildMkv(bool with_audio, bool with_subtitles = false, bool second_audio =
     }
     Bytes cluster0 = element(0x1F43B675, cluster0_children);
     Bytes cluster1 = element(0x1F43B675, cluster1_children);
-    Bytes segment = element(0x18538067, concat({info, tracks, cluster0, cluster1}));
+    Bytes prefix = concat({info, tracks});
+    Bytes cues;
+    if (with_cues) {
+        const uint64_t cluster0_position = prefix.size() + cuesElement(0, 0).size();
+        const uint64_t cluster1_position = cluster0_position + cluster0.size();
+        cues = cuesElement(cluster0_position, cluster1_position);
+    }
+    Bytes segment = element(0x18538067, concat({prefix, cues, cluster0, cluster1}));
     return concat({ebml_header, segment});
 }
 
@@ -381,6 +410,72 @@ TEST(MkvDemuxer, ReadsSamplesWithPtsAndKeyframes) {
         EXPECT_FALSE(sample.keyframe);
 
         EXPECT_FALSE(demuxer.readSample(sample));
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(MkvDemuxer, LazyIndexReadsSamplesWithCues) {
+    const std::filesystem::path path =
+        writeMkv(buildMkv(false, false, false, "A_AAC", {}, "V_MPEGH/ISO/HEVC", true),
+                 "hevc_player_mkv_cues.mkv");
+    {
+        player::demux::MkvDemuxer demuxer;
+        std::string error;
+        ASSERT_TRUE(demuxer.open(path, error)) << error;
+
+        player::demux::Sample sample;
+        ASSERT_TRUE(demuxer.readSample(sample));
+        EXPECT_EQ(sample.pts, 0);
+        EXPECT_TRUE(sample.keyframe);
+        EXPECT_EQ(sample.data.size(), 7u);
+
+        ASSERT_TRUE(demuxer.readSample(sample));
+        EXPECT_EQ(sample.pts, 33);
+        EXPECT_FALSE(sample.keyframe);
+
+        ASSERT_TRUE(demuxer.readSample(sample));
+        EXPECT_EQ(sample.pts, 67);
+        EXPECT_TRUE(sample.keyframe);
+
+        ASSERT_TRUE(demuxer.readSample(sample));
+        EXPECT_EQ(sample.pts, 100);
+        EXPECT_FALSE(sample.keyframe);
+
+        EXPECT_FALSE(demuxer.readSample(sample));
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(MkvDemuxer, LazyIndexSeeksByCue) {
+    const std::filesystem::path path =
+        writeMkv(buildMkv(true, false, false, "A_AAC", {}, "V_MPEGH/ISO/HEVC", true),
+                 "hevc_player_mkv_cues_seek.mkv");
+    {
+        player::demux::MkvDemuxer demuxer;
+        std::string error;
+        ASSERT_TRUE(demuxer.open(path, error)) << error;
+        ASSERT_TRUE(demuxer.selectAudioTrack(0));
+
+        // 80 ms -> the cue at 67 ms points at the second cluster.
+        ASSERT_TRUE(demuxer.seek(0.08));
+        player::demux::Sample sample;
+        ASSERT_TRUE(demuxer.readSample(sample));
+        EXPECT_EQ(sample.pts, 67);
+        EXPECT_TRUE(sample.keyframe);
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
+        EXPECT_EQ(sample.pts, 67);
+
+        // Drain both tracks, then seek back: the queues are refilled from the
+        // cue cluster instead of the stale position.
+        while (demuxer.readSample(sample)) {
+        }
+        while (demuxer.readAudioSample(sample)) {
+        }
+        ASSERT_TRUE(demuxer.seek(0.05));
+        ASSERT_TRUE(demuxer.readSample(sample));
+        EXPECT_EQ(sample.pts, 0);
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
+        EXPECT_EQ(sample.pts, 0);
     }
     std::filesystem::remove(path);
 }

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -50,6 +51,40 @@ private:
         size_t next = 0;
     };
 
+    // Track number -> (kind, index): 0 video, 1 audio, 2 subtitle.
+    struct TrackRef {
+        int kind = -1;
+        size_t index = 0;
+    };
+
+    // Cue index entry from the Matroska Cues element: a keyframe time and the
+    // cluster that holds it (offset relative to the Segment payload).
+    struct Cue {
+        int64_t time_ms = 0;
+        int64_t cluster_offset = 0;
+    };
+
+    // Parses top-level elements from index_pos_ until one cluster is consumed,
+    // appending its samples. Returns false at the end of the segment.
+    bool parseNextCluster();
+    // Parses the children of one cluster, appending blocks to the given sample
+    // lists (null pointers skip that kind). Returns the offset of the next
+    // top-level element (the cluster end, or where the next element starts for
+    // an unknown-size cluster).
+    int64_t parseCluster(FILE* file, int64_t payload, int64_t cluster_end, bool unknown,
+                         std::vector<SampleInfo>* video, std::vector<TrackSamples>* audio,
+                         std::vector<TrackSamples>* subtitle);
+    void appendBlockSamples(FILE* file, int64_t block_payload, uint64_t block_size,
+                            int64_t cluster_timestamp, int keyframe_override,
+                            int64_t block_duration, std::vector<SampleInfo>* video,
+                            std::vector<TrackSamples>* audio,
+                            std::vector<TrackSamples>* subtitle);
+    int64_t toMs(int64_t ticks) const {
+        return timestamp_scale_ == 1000000
+                   ? ticks
+                   : ticks * static_cast<int64_t>(timestamp_scale_) / 1000000;
+    }
+
     FILE* file_ = nullptr;
     std::filesystem::path path_;
     int64_t file_size_ = 0;
@@ -65,7 +100,18 @@ private:
     size_t selected_audio_ = 0;
 
     std::vector<SubtitleTrackInfo> subtitle_tracks_;
-    std::vector<TrackSamples> subtitle_samples_;
+
+    // Lazy sample indexing. The cluster scan runs while reading, and seeking
+    // jumps to the keyframe from the Cues index instead of building the whole
+    // sample table when the file is opened.
+    std::unordered_map<uint64_t, TrackRef> track_map_;
+    std::vector<Cue> cues_;
+    int64_t segment_start_ = 0;
+    int64_t segment_end_ = 0;
+    uint64_t timestamp_scale_ = 1000000;
+    int64_t index_pos_ = -1;
+    bool index_complete_ = true;
+    bool full_index_ = true;
 };
 
 }  // namespace player::demux

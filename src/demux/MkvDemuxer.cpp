@@ -42,6 +42,14 @@ constexpr uint32_t kBlock = 0xA1;
 constexpr uint32_t kBlockDuration = 0x9B;
 constexpr uint32_t kReferenceBlock = 0xFB;
 constexpr uint32_t kCues = 0x1C53BB6B;
+constexpr uint32_t kCuePoint = 0xBB;
+constexpr uint32_t kCueTime = 0xB3;
+constexpr uint32_t kCueTrackPositions = 0xB7;
+constexpr uint32_t kCueTrack = 0xF7;
+constexpr uint32_t kCueClusterPosition = 0xF1;
+constexpr uint32_t kSeek = 0x4DBB;
+constexpr uint32_t kSeekID = 0x53AB;
+constexpr uint32_t kSeekPosition = 0x53AC;
 constexpr uint32_t kVoid = 0xEC;
 constexpr uint32_t kCrc32 = 0xBF;
 constexpr uint32_t kAttachments = 0x1941A469;
@@ -361,13 +369,11 @@ uint32_t codecFourcc(const std::string& codec_id) {
     return value;
 }
 
-// Reads an EBML variable-length integer from memory (track number, lacing).
-bool readMemVint(const uint8_t* data, size_t size, size_t& pos, uint64_t& value, int* length_out) {
-    if (pos >= size) {
-        return false;
-    }
-    const uint8_t first = data[pos];
-    if (first == 0) {
+// Reads a signed EBML variable-length integer (EBML lacing deltas) from the
+// file.
+bool readSignedVint(FILE* file, int64_t& value) {
+    uint8_t first = 0;
+    if (std::fread(&first, 1, 1, file) != 1 || first == 0) {
         return false;
     }
     int length = 1;
@@ -376,25 +382,16 @@ bool readMemVint(const uint8_t* data, size_t size, size_t& pos, uint64_t& value,
         mask >>= 1;
         ++length;
     }
-    if (length > 8 || pos + static_cast<size_t>(length) > size) {
+    if (length > 8) {
         return false;
     }
-    value = first & (mask - 1);
+    uint64_t raw = first & (mask - 1);
     for (int i = 1; i < length; ++i) {
-        value = (value << 8) | data[pos + static_cast<size_t>(i)];
-    }
-    pos += static_cast<size_t>(length);
-    if (length_out) {
-        *length_out = length;
-    }
-    return true;
-}
-
-bool readMemSignedVint(const uint8_t* data, size_t size, size_t& pos, int64_t& value) {
-    uint64_t raw = 0;
-    int length = 0;
-    if (!readMemVint(data, size, pos, raw, &length)) {
-        return false;
+        uint8_t byte = 0;
+        if (std::fread(&byte, 1, 1, file) != 1) {
+            return false;
+        }
+        raw = (raw << 8) | byte;
     }
     const uint64_t bias = (1ULL << (7 * length - 1)) - 1;
     value = static_cast<int64_t>(raw) - static_cast<int64_t>(bias);
@@ -406,33 +403,62 @@ struct FrameRange {
     size_t size = 0;
 };
 
-bool splitLacedFrames(const uint8_t* data, size_t size, size_t pos, uint8_t lacing,
-                      std::vector<FrameRange>& frames) {
-    frames.clear();
-    const size_t remaining = size - pos;
-    if (lacing == 0) {
-        frames.push_back({pos, remaining});
-        return true;
-    }
-    if (pos >= size) {
+struct BlockInfo {
+    uint64_t track_number = 0;
+    int16_t relative = 0;
+    uint8_t flags = 0;
+    std::vector<FrameRange> frames;
+};
+
+// Reads a block header and its lacing from the file, which must be positioned
+// at the block payload. Only the header bytes are read; frame payloads are
+// left untouched so opening a file never reads the whole file.
+bool readBlockInfo(FILE* file, uint64_t block_size, BlockInfo& out) {
+    const int64_t payload_start = tellFile(file);
+    bool unknown = false;
+    if (!readVint(file, out.track_number, unknown)) {
         return false;
     }
-    const uint32_t frame_count = static_cast<uint32_t>(data[pos++]) + 1;
-    if (frame_count == 1) {
-        frames.push_back({pos, size - pos});
+    uint8_t fixed[3] = {};
+    if (std::fread(fixed, 1, 3, file) != 3) {
+        return false;
+    }
+    out.relative = static_cast<int16_t>((fixed[0] << 8) | fixed[1]);
+    out.flags = fixed[2];
+    const uint8_t lacing = static_cast<uint8_t>((out.flags >> 1) & 3);
+    out.frames.clear();
+    size_t pos = static_cast<size_t>(tellFile(file) - payload_start);
+    if (lacing == 0) {
+        if (block_size < pos) {
+            return false;
+        }
+        out.frames.push_back({pos, static_cast<size_t>(block_size) - pos});
         return true;
     }
-
+    uint8_t count_byte = 0;
+    if (std::fread(&count_byte, 1, 1, file) != 1) {
+        return false;
+    }
+    ++pos;
+    const uint32_t frame_count = static_cast<uint32_t>(count_byte) + 1;
+    if (frame_count == 1) {
+        if (block_size < pos) {
+            return false;
+        }
+        out.frames.push_back({pos, static_cast<size_t>(block_size) - pos});
+        return true;
+    }
+    std::vector<size_t> sizes;
+    size_t total = 0;
     if (lacing == 1) {  // Xiph
-        std::vector<size_t> sizes;
-        size_t total = 0;
         for (uint32_t i = 0; i + 1 < frame_count; ++i) {
             size_t frame_size = 0;
             for (;;) {
-                if (pos >= size) {
+                uint8_t byte = 0;
+                if (std::fread(&byte, 1, 1, file) != 1) {
                     return false;
                 }
-                const uint8_t byte = data[pos++];
+                ++pos;
                 frame_size += byte;
                 if (byte != 255) {
                     break;
@@ -441,62 +467,54 @@ bool splitLacedFrames(const uint8_t* data, size_t size, size_t pos, uint8_t laci
             sizes.push_back(frame_size);
             total += frame_size;
         }
-        if (size - pos < total) {
+    } else if (lacing == 2) {  // fixed-size
+        if (block_size < pos) {
             return false;
         }
-        for (size_t frame_size : sizes) {
-            frames.push_back({pos, frame_size});
-            pos += frame_size;
-        }
-        frames.push_back({pos, size - pos});
-        return true;
-    }
-    if (lacing == 2) {  // fixed-size
-        const size_t body = size - pos;
+        const size_t body = static_cast<size_t>(block_size) - pos;
         if (frame_count == 0 || body % frame_count != 0) {
             return false;
         }
         const size_t frame_size = body / frame_count;
         for (uint32_t i = 0; i < frame_count; ++i) {
-            frames.push_back({pos, frame_size});
+            out.frames.push_back({pos, frame_size});
             pos += frame_size;
         }
         return true;
-    }
-    // EBML lacing
-    std::vector<size_t> sizes;
-    size_t total = 0;
-    int64_t previous = 0;
-    for (uint32_t i = 0; i < frame_count; ++i) {
-        if (i == 0) {
-            uint64_t first_size = 0;
-            if (!readMemVint(data, size, pos, first_size, nullptr)) {
+    } else {  // EBML lacing
+        int64_t previous = 0;
+        for (uint32_t i = 0; i < frame_count; ++i) {
+            if (i == 0) {
+                uint64_t first_size = 0;
+                if (!readVint(file, first_size, unknown)) {
+                    return false;
+                }
+                previous = static_cast<int64_t>(first_size);
+            } else if (i + 1 < frame_count) {
+                int64_t delta = 0;
+                if (!readSignedVint(file, delta)) {
+                    return false;
+                }
+                previous += delta;
+            } else {
+                break;  // last frame takes the remainder
+            }
+            if (previous < 0) {
                 return false;
             }
-            previous = static_cast<int64_t>(first_size);
-        } else if (i + 1 < frame_count) {
-            int64_t delta = 0;
-            if (!readMemSignedVint(data, size, pos, delta)) {
-                return false;
-            }
-            previous += delta;
-        } else {
-            break;  // last frame takes the remainder
+            sizes.push_back(static_cast<size_t>(previous));
+            total += static_cast<size_t>(previous);
         }
-        if (previous < 0) {
-            return false;
-        }
-        sizes.push_back(static_cast<size_t>(previous));
-        total += static_cast<size_t>(previous);
+        pos = static_cast<size_t>(tellFile(file) - payload_start);
     }
-    if (size - pos < total) {
+    if (block_size < pos + total) {
         return false;
     }
     for (size_t frame_size : sizes) {
-        frames.push_back({pos, frame_size});
+        out.frames.push_back({pos, frame_size});
         pos += frame_size;
     }
-    frames.push_back({pos, size - pos});
+    out.frames.push_back({pos, static_cast<size_t>(block_size) - pos});
     return true;
 }
 
@@ -594,6 +612,10 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
         error = "failed to seek to Segment";
         return false;
     }
+    bool have_info = false;
+    bool have_tracks = false;
+    int64_t cues_position = -1;
+    std::unordered_map<uint32_t, int64_t> seek_positions;
     pos = segment_start;
     while (pos < segment_end) {
         if (!readElementHeader(file_, id, size, unknown)) {
@@ -601,6 +623,7 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
         }
         const int64_t payload = tellFile(file_);
         if (id == kInfo && !unknown) {
+            have_info = true;
             std::vector<uint8_t> data;
             if (readFileBytes(file_, size, data)) {
                 size_t cursor = 0;
@@ -614,6 +637,7 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
                 }
             }
         } else if (id == kTracks && !unknown) {
+            have_tracks = true;
             std::vector<uint8_t> data;
             if (readFileBytes(file_, size, data)) {
                 size_t cursor = 0;
@@ -626,8 +650,41 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
                     }
                 }
             }
+        } else if (id == kSeekHead && !unknown) {
+            std::vector<uint8_t> data;
+            if (readFileBytes(file_, size, data)) {
+                size_t cursor = 0;
+                Element element;
+                while (nextElement(data.data(), data.size(), cursor, element)) {
+                    if (element.id != kSeek) {
+                        continue;
+                    }
+                    size_t seek_cursor = 0;
+                    Element child;
+                    uint32_t target = 0;
+                    int64_t target_position = -1;
+                    while (nextElement(element.payload, element.size, seek_cursor, child)) {
+                        if (child.id == kSeekID) {
+                            target = static_cast<uint32_t>(readUint(child.payload, child.size));
+                        } else if (child.id == kSeekPosition) {
+                            target_position = static_cast<int64_t>(readUint(child.payload, child.size));
+                        }
+                    }
+                    if (target != 0 && target_position >= 0) {
+                        seek_positions[target] = target_position;
+                    }
+                }
+            }
+        } else if (id == kCues && !unknown) {
+            cues_position = payload;
         }
         if (unknown) {
+            break;
+        }
+        if (have_info && have_tracks) {
+            // Info and Tracks always come before the clusters. Everything
+            // else is either reached through the SeekHead or indexed lazily
+            // while reading, so the open does not scan the whole file.
             break;
         }
         pos = payload + static_cast<int64_t>(size);
@@ -641,17 +698,10 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
     bool have_video = false;
     Codec video_codec = Codec::Unknown;
 
-    // Track number -> (kind, index): 0 video, 1 audio, 2 subtitle.
-    struct TrackRef {
-        int kind = -1;
-        size_t index = 0;
-    };
-    std::unordered_map<uint64_t, TrackRef> track_map;
-
+    track_map_.clear();
     audio_tracks_.clear();
     audio_samples_.clear();
     subtitle_tracks_.clear();
-    subtitle_samples_.clear();
 
     for (MkvTrack& track : tracks) {
         if (track.type == 1 && !have_video) {
@@ -672,7 +722,7 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
             // no sample table, so its blocks are skipped and only the audio
             // plays. The same goes for a track the player cannot decode.
             if (video_codec != Codec::Unknown) {
-                track_map[video_track_number] = {0, 0};
+                track_map_[video_track_number] = {0, 0};
             }
         } else if (track.type == 2) {
             AudioTrackInfo info;
@@ -686,7 +736,7 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
             info.channels = track.channels;
             info.sample_rate = static_cast<uint32_t>(track.sample_rate);
             info.extradata = track.codec_private;
-            track_map[track.number] = {1, audio_tracks_.size()};
+            track_map_[track.number] = {1, audio_tracks_.size()};
             audio_tracks_.push_back(std::move(info));
             audio_samples_.emplace_back();
         } else if (track.type == 17) {
@@ -698,9 +748,8 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
             info.codec_private = track.codec_private;
             info.bitmap = track.codec == "S_HDMV/PGS" || track.codec == "S_VOBSUB" ||
                           track.codec == "S_DVBSUB";
-            track_map[track.number] = {2, subtitle_tracks_.size()};
+            track_map_[track.number] = {2, subtitle_tracks_.size()};
             subtitle_tracks_.push_back(std::move(info));
-            subtitle_samples_.emplace_back();
         }
     }
     if (!have_video && audio_tracks_.empty()) {
@@ -712,137 +761,93 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
         audio_ = audio_tracks_[0];
     }
 
-    // Pass 2: scan clusters and build the sample table.
-    if (!seekFile(file_, segment_start)) {
-        error = "failed to seek to Segment";
-        return false;
+    segment_start_ = segment_start;
+    segment_end_ = segment_end;
+    timestamp_scale_ = timestamp_scale;
+
+    // Resolve the Cues element: directly if it preceded the clusters, or
+    // through the SeekHead otherwise. Cues hold the keyframe positions used
+    // for seeking without indexing the whole file.
+    if (cues_position < 0) {
+        const auto cue_seek = seek_positions.find(kCues);
+        if (cue_seek != seek_positions.end()) {
+            cues_position = segment_start + cue_seek->second;
+        }
     }
-
-    auto addBlockSamples = [&](const uint8_t* block, size_t block_size, size_t block_offset,
-                               int64_t payload_offset, int64_t cluster_timestamp,
-                               int keyframe_override, int64_t block_duration) {
-        size_t cursor = 0;
-        uint64_t track_number = 0;
-        int track_length = 0;
-        if (!readMemVint(block, block_size, cursor, track_number, &track_length) ||
-            cursor + 3 > block_size) {
-            return;
-        }
-        const int16_t relative = static_cast<int16_t>((block[cursor] << 8) | block[cursor + 1]);
-        cursor += 2;
-        const uint8_t flags = block[cursor++];
-        const auto ref = track_map.find(track_number);
-        if (ref == track_map.end()) {
-            return;
-        }
-        const bool keyframe =
-            keyframe_override >= 0 ? (keyframe_override != 0) : ((flags & 0x80) != 0);
-        std::vector<FrameRange> frames;
-        if (!splitLacedFrames(block, block_size, cursor, static_cast<uint8_t>((flags >> 1) & 3),
-                              frames)) {
-            return;
-        }
-        for (const FrameRange& frame : frames) {
-            SampleInfo sample;
-            sample.offset = static_cast<uint64_t>(payload_offset +
-                                                  static_cast<int64_t>(block_offset + frame.offset));
-            sample.size = static_cast<uint32_t>(frame.size);
-            sample.pts = cluster_timestamp + relative;
-            sample.keyframe = keyframe;
-            sample.duration = block_duration;
-            if (ref->second.kind == 0) {
-                samples_.push_back(sample);
-            } else if (ref->second.kind == 1) {
-                audio_samples_[ref->second.index].samples.push_back(sample);
-            } else {
-                subtitle_samples_[ref->second.index].samples.push_back(sample);
-            }
-        }
-    };
-
-    pos = segment_start;
-    while (pos < segment_end) {
-        if (!readElementHeader(file_, id, size, unknown)) {
-            break;
-        }
-        const int64_t payload = tellFile(file_);
-        if (id == kCluster) {
-            const bool cluster_unknown = unknown;
-            const int64_t cluster_end =
-                cluster_unknown ? segment_end : payload + static_cast<int64_t>(size);
-            int64_t cluster_timestamp = 0;
-            while (tellFile(file_) < cluster_end) {
-                const int64_t element_start = tellFile(file_);
-                uint32_t child_id = 0;
-                uint64_t child_size = 0;
-                bool child_unknown = false;
-                if (!readElementHeader(file_, child_id, child_size, child_unknown)) {
-                    break;
-                }
-                if (cluster_unknown && isTopLevelId(child_id)) {
-                    seekFile(file_, element_start);
-                    break;
-                }
-                if (child_unknown) {
-                    break;
-                }
-                const int64_t child_payload = tellFile(file_);
-                if (child_id == kClusterTimestamp) {
-                    uint8_t buffer[8] = {};
-                    const size_t count = child_size < 8 ? static_cast<size_t>(child_size) : 8;
-                    if (std::fread(buffer, 1, count, file_) == count) {
-                        cluster_timestamp = static_cast<int64_t>(readUint(buffer, count));
+    if (cues_position >= 0 && seekFile(file_, cues_position)) {
+        uint32_t cue_id = 0;
+        uint64_t cue_size = 0;
+        bool cue_unknown = false;
+        if (readElementHeader(file_, cue_id, cue_size, cue_unknown) && cue_id == kCues &&
+            !cue_unknown) {
+            std::vector<uint8_t> data;
+            if (readFileBytes(file_, cue_size, data)) {
+                size_t cursor = 0;
+                Element cue_point;
+                while (nextElement(data.data(), data.size(), cursor, cue_point)) {
+                    if (cue_point.id != kCuePoint) {
+                        continue;
                     }
-                } else if (child_id == kSimpleBlock) {
-                    std::vector<uint8_t> data;
-                    if (readFileBytes(file_, child_size, data)) {
-                        addBlockSamples(data.data(), data.size(), 0, child_payload,
-                                        cluster_timestamp, -1, 0);
-                    }
-                } else if (child_id == kBlockGroup) {
-                    std::vector<uint8_t> data;
-                    if (readFileBytes(file_, child_size, data)) {
-                        size_t group_pos = 0;
-                        Element element;
-                        const uint8_t* block = nullptr;
-                        size_t block_size = 0;
-                        size_t block_offset = 0;
-                        bool has_reference = false;
-                        int64_t block_duration = 0;
-                        while (nextElement(data.data(), data.size(), group_pos, element)) {
-                            if (element.id == kBlock) {
-                                block = element.payload;
-                                block_size = element.size;
-                                block_offset = static_cast<size_t>(element.payload - data.data());
-                            } else if (element.id == kBlockDuration) {
-                                block_duration =
-                                    static_cast<int64_t>(readUint(element.payload, element.size));
-                            } else if (element.id == kReferenceBlock) {
-                                has_reference = true;
+                    size_t point_cursor = 0;
+                    Element child;
+                    int64_t time_ticks = -1;
+                    int64_t cluster_offset = -1;
+                    while (nextElement(cue_point.payload, cue_point.size, point_cursor, child)) {
+                        if (child.id == kCueTime) {
+                            time_ticks = static_cast<int64_t>(readUint(child.payload, child.size));
+                        } else if (child.id == kCueTrackPositions) {
+                            size_t positions_cursor = 0;
+                            Element position_child;
+                            uint64_t track_number = 0;
+                            int64_t position = -1;
+                            while (nextElement(child.payload, child.size, positions_cursor,
+                                               position_child)) {
+                                if (position_child.id == kCueTrack) {
+                                    track_number =
+                                        readUint(position_child.payload, position_child.size);
+                                } else if (position_child.id == kCueClusterPosition) {
+                                    position = static_cast<int64_t>(
+                                        readUint(position_child.payload, position_child.size));
+                                }
+                            }
+                            if (position >= 0 &&
+                                (video_track_number == 0 || track_number == video_track_number)) {
+                                cluster_offset = position;
                             }
                         }
-                        if (block) {
-                            addBlockSamples(block, block_size, block_offset, child_payload,
-                                            cluster_timestamp, has_reference ? 0 : 1,
-                                            block_duration);
-                        }
+                    }
+                    if (time_ticks >= 0 && cluster_offset >= 0) {
+                        Cue cue;
+                        cue.time_ms =
+                            time_ticks * static_cast<int64_t>(timestamp_scale) / 1000000;
+                        cue.cluster_offset = cluster_offset;
+                        cues_.push_back(cue);
                     }
                 }
-                pos = child_payload + static_cast<int64_t>(child_size);
-                if (!seekFile(file_, pos)) {
-                    break;
-                }
+                std::sort(cues_.begin(), cues_.end(),
+                          [](const Cue& a, const Cue& b) { return a.time_ms < b.time_ms; });
             }
-            pos = tellFile(file_);
-            continue;
         }
-        if (unknown) {
-            break;
+    }
+
+    // Without cues the sample table has to be built up front; with them the
+    // clusters are parsed while reading and seeking jumps by cue.
+    full_index_ = cues_.empty();
+    index_complete_ = false;
+    index_pos_ = segment_start;
+    if (full_index_) {
+        while (parseNextCluster()) {
         }
-        pos = payload + static_cast<int64_t>(size);
-        if (!seekFile(file_, pos)) {
-            break;
+        index_complete_ = true;
+        for (size_t i = 0; i < samples_.size(); ++i) {
+            if (samples_[i].keyframe) {
+                keyframes_.emplace_back(samples_[i].pts, i);
+            }
         }
+        std::sort(keyframes_.begin(), keyframes_.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
+    } else {
+        parseNextCluster();
     }
 
     if (samples_.empty() && audio_tracks_.empty()) {
@@ -879,58 +884,197 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
         }
     }
 
-    // Convert timestamps to milliseconds when the scale is not 1 ms.
-    if (timestamp_scale != 1000000) {
-        const auto convert = [timestamp_scale](std::vector<SampleInfo>& samples) {
-            for (SampleInfo& sample : samples) {
-                sample.pts = sample.pts * static_cast<int64_t>(timestamp_scale) / 1000000;
-                sample.duration =
-                    sample.duration * static_cast<int64_t>(timestamp_scale) / 1000000;
-            }
-        };
-        convert(samples_);
-        for (TrackSamples& track : audio_samples_) {
-            convert(track.samples);
-        }
-        for (TrackSamples& track : subtitle_samples_) {
-            convert(track.samples);
-        }
-    }
-
-    for (size_t i = 0; i < samples_.size(); ++i) {
-        if (samples_[i].keyframe) {
-            keyframes_.emplace_back(samples_[i].pts, i);
-        }
-    }
-    std::sort(keyframes_.begin(), keyframes_.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
-
     if (duration_ticks > 0.0) {
         duration_ = duration_ticks * static_cast<double>(timestamp_scale) / 1e9;
-    } else if (!samples_.empty()) {
+    } else if (full_index_ && !samples_.empty()) {
         duration_ = static_cast<double>(samples_.back().pts - samples_.front().pts) / 1000.0;
+    } else if (!cues_.empty()) {
+        duration_ = static_cast<double>(cues_.back().time_ms) / 1000.0;
     } else {
         duration_ = -1.0;
     }
     if (video_track.default_duration_ns > 0) {
         video_.fps = 1e9 / static_cast<double>(video_track.default_duration_ns);
-    } else if (duration_ > 0.0) {
+    } else if (full_index_ && duration_ > 0.0) {
         video_.fps = static_cast<double>(samples_.size()) / duration_;
+    } else if (samples_.size() >= 2) {
+        // No DefaultDuration: estimate from the first cluster's timestamps.
+        std::vector<int64_t> pts;
+        pts.reserve(samples_.size());
+        for (const SampleInfo& info : samples_) {
+            pts.push_back(info.pts);
+        }
+        std::sort(pts.begin(), pts.end());
+        int64_t best = 0;
+        for (size_t i = 1; i < pts.size(); ++i) {
+            const int64_t step = pts[i] - pts[i - 1];
+            if (step > 0 && (best == 0 || step < best)) {
+                best = step;
+            }
+        }
+        if (best > 0) {
+            video_.fps = 1000.0 / static_cast<double>(best);
+        }
     }
 
     next_sample_ = 0;
     for (TrackSamples& track : audio_samples_) {
         track.next = 0;
     }
-    for (TrackSamples& track : subtitle_samples_) {
-        track.next = 0;
-    }
     return true;
 }
 
+bool MkvDemuxer::parseNextCluster() {
+    while (!index_complete_) {
+        if (index_pos_ < segment_start_ || index_pos_ >= segment_end_) {
+            index_complete_ = true;
+            break;
+        }
+        if (!seekFile(file_, index_pos_)) {
+            index_complete_ = true;
+            break;
+        }
+        uint32_t id = 0;
+        uint64_t size = 0;
+        bool unknown = false;
+        if (!readElementHeader(file_, id, size, unknown)) {
+            index_complete_ = true;
+            break;
+        }
+        const int64_t payload = tellFile(file_);
+        if (id == kCluster) {
+            const int64_t cluster_end =
+                unknown ? segment_end_ : payload + static_cast<int64_t>(size);
+            index_pos_ = parseCluster(file_, payload, cluster_end, unknown, &samples_,
+                                      &audio_samples_, nullptr);
+            return true;
+        }
+        if (unknown) {
+            index_complete_ = true;
+            break;
+        }
+        index_pos_ = payload + static_cast<int64_t>(size);
+    }
+    return false;
+}
+
+int64_t MkvDemuxer::parseCluster(FILE* file, int64_t payload, int64_t cluster_end, bool unknown,
+                                 std::vector<SampleInfo>* video,
+                                 std::vector<TrackSamples>* audio,
+                                 std::vector<TrackSamples>* subtitle) {
+    int64_t cluster_timestamp = 0;
+    int64_t pos = payload;
+    while (pos < cluster_end) {
+        if (!seekFile(file, pos)) {
+            break;
+        }
+        const int64_t element_start = pos;
+        uint32_t child_id = 0;
+        uint64_t child_size = 0;
+        bool child_unknown = false;
+        if (!readElementHeader(file, child_id, child_size, child_unknown)) {
+            break;
+        }
+        if (unknown && isTopLevelId(child_id)) {
+            return element_start;
+        }
+        if (child_unknown) {
+            break;
+        }
+        const int64_t child_payload = tellFile(file);
+        if (child_id == kClusterTimestamp) {
+            uint8_t buffer[8] = {};
+            const size_t count = child_size < 8 ? static_cast<size_t>(child_size) : 8;
+            if (std::fread(buffer, 1, count, file) == count) {
+                cluster_timestamp = static_cast<int64_t>(readUint(buffer, count));
+            }
+        } else if (child_id == kSimpleBlock) {
+            appendBlockSamples(file, child_payload, child_size, cluster_timestamp, -1, 0, video,
+                               audio, subtitle);
+        } else if (child_id == kBlockGroup) {
+            const int64_t group_end = child_payload + static_cast<int64_t>(child_size);
+            int64_t block_payload = -1;
+            uint64_t block_size = 0;
+            bool has_reference = false;
+            int64_t block_duration = 0;
+            int64_t group_pos = child_payload;
+            while (group_pos < group_end) {
+                if (!seekFile(file, group_pos)) {
+                    break;
+                }
+                uint32_t group_id = 0;
+                uint64_t group_size = 0;
+                bool group_unknown = false;
+                if (!readElementHeader(file, group_id, group_size, group_unknown) ||
+                    group_unknown) {
+                    break;
+                }
+                const int64_t group_payload = tellFile(file);
+                if (group_id == kBlock) {
+                    block_payload = group_payload;
+                    block_size = group_size;
+                } else if (group_id == kBlockDuration) {
+                    uint8_t buffer[8] = {};
+                    const size_t count = group_size < 8 ? static_cast<size_t>(group_size) : 8;
+                    if (std::fread(buffer, 1, count, file) == count) {
+                        block_duration = static_cast<int64_t>(readUint(buffer, count));
+                    }
+                } else if (group_id == kReferenceBlock) {
+                    has_reference = true;
+                }
+                group_pos = group_payload + static_cast<int64_t>(group_size);
+            }
+            if (block_payload >= 0 && seekFile(file, block_payload)) {
+                appendBlockSamples(file, block_payload, block_size, cluster_timestamp,
+                                   has_reference ? 0 : 1, block_duration, video, audio, subtitle);
+            }
+        }
+        pos = child_payload + static_cast<int64_t>(child_size);
+    }
+    return cluster_end;
+}
+
+void MkvDemuxer::appendBlockSamples(FILE* file, int64_t block_payload, uint64_t block_size,
+                                    int64_t cluster_timestamp, int keyframe_override,
+                                    int64_t block_duration, std::vector<SampleInfo>* video,
+                                    std::vector<TrackSamples>* audio,
+                                    std::vector<TrackSamples>* subtitle) {
+    BlockInfo info;
+    if (!readBlockInfo(file, block_size, info)) {
+        return;
+    }
+    const auto ref = track_map_.find(info.track_number);
+    if (ref == track_map_.end()) {
+        return;
+    }
+    const bool keyframe =
+        keyframe_override >= 0 ? (keyframe_override != 0) : ((info.flags & 0x80) != 0);
+    for (const FrameRange& frame : info.frames) {
+        SampleInfo sample;
+        sample.offset = static_cast<uint64_t>(block_payload + static_cast<int64_t>(frame.offset));
+        sample.size = static_cast<uint32_t>(frame.size);
+        sample.pts = toMs(cluster_timestamp + info.relative);
+        sample.keyframe = keyframe;
+        sample.duration = toMs(block_duration);
+        if (ref->second.kind == 0) {
+            if (video != nullptr) {
+                video->push_back(sample);
+            }
+        } else if (ref->second.kind == 1) {
+            if (audio != nullptr && ref->second.index < audio->size()) {
+                (*audio)[ref->second.index].samples.push_back(sample);
+            }
+        } else if (subtitle != nullptr && ref->second.index < subtitle->size()) {
+            (*subtitle)[ref->second.index].samples.push_back(sample);
+        }
+    }
+}
+
 bool MkvDemuxer::readSample(Sample& sample) {
-    if (!file_ || next_sample_ >= samples_.size()) {
-        return false;
+    while (next_sample_ >= samples_.size()) {
+        if (index_complete_ || !parseNextCluster()) {
+            return false;
+        }
     }
     const SampleInfo& info = samples_[next_sample_];
     sample.data.resize(info.size);
@@ -965,8 +1109,10 @@ bool MkvDemuxer::readAudioSample(Sample& sample) {
         return false;
     }
     TrackSamples& track = audio_samples_[selected_audio_];
-    if (track.next >= track.samples.size()) {
-        return false;
+    while (track.next >= track.samples.size()) {
+        if (index_complete_ || !parseNextCluster()) {
+            return false;
+        }
     }
     const SampleInfo& info = track.samples[track.next];
     sample.data.resize(info.size);
@@ -989,21 +1135,48 @@ bool MkvDemuxer::readAudioSample(Sample& sample) {
 bool MkvDemuxer::readSubtitleTrack(size_t index, std::vector<subtitle::SubtitleBlock>& blocks,
                                    std::string& error) {
     blocks.clear();
-    if (index >= subtitle_samples_.size()) {
+    if (index >= subtitle_tracks_.size()) {
         error = "subtitle track index out of range";
-        return false;
-    }
-    const TrackSamples& track = subtitle_samples_[index];
-    if (track.samples.empty()) {
-        error = "subtitle track has no blocks";
         return false;
     }
 
     // Use a private file handle: this may be called from the UI thread while
-    // the pipeline reads video samples through file_.
+    // the pipeline reads video samples through file_. The subtitle samples are
+    // collected on demand so opening a file does not index them.
     FILE* file = std::fopen(path_.string().c_str(), "rb");
     if (!file) {
         error = "failed to reopen " + path_.string();
+        return false;
+    }
+    std::vector<TrackSamples> scan(subtitle_tracks_.size());
+    int64_t pos = segment_start_;
+    while (pos < segment_end_) {
+        if (!seekFile(file, pos)) {
+            break;
+        }
+        uint32_t id = 0;
+        uint64_t size = 0;
+        bool unknown = false;
+        if (!readElementHeader(file, id, size, unknown)) {
+            break;
+        }
+        const int64_t payload = tellFile(file);
+        if (id == kCluster) {
+            const int64_t cluster_end =
+                unknown ? segment_end_ : payload + static_cast<int64_t>(size);
+            pos = parseCluster(file, payload, cluster_end, unknown, nullptr, nullptr, &scan);
+            continue;
+        }
+        if (unknown) {
+            break;
+        }
+        pos = payload + static_cast<int64_t>(size);
+    }
+
+    const TrackSamples& track = scan[index];
+    if (track.samples.empty()) {
+        std::fclose(file);
+        error = "subtitle track has no blocks";
         return false;
     }
     bool ok = true;
@@ -1024,19 +1197,59 @@ bool MkvDemuxer::readSubtitleTrack(size_t index, std::vector<subtitle::SubtitleB
     std::fclose(file);
     if (!ok) {
         error = "failed to read subtitle block data";
+        blocks.clear();
         return false;
     }
     return true;
 }
 
 bool MkvDemuxer::seek(double seconds) {
-    if (samples_.empty() && audio_samples_.empty()) {
-        return false;
-    }
     if (seconds < 0.0) {
         seconds = 0.0;
     }
     const int64_t target = static_cast<int64_t>(seconds * video_.timescale);
+
+    if (!full_index_) {
+        // Jump to the keyframe cue at or before the target and refill the
+        // queues from its cluster; the following clusters are parsed on
+        // demand. This makes seeking cheap even on files that were opened
+        // without scanning them.
+        int64_t start = segment_start_;
+        if (!cues_.empty()) {
+            auto it = std::upper_bound(
+                cues_.begin(), cues_.end(), target,
+                [](int64_t value, const Cue& cue) { return value < cue.time_ms; });
+            if (it != cues_.begin()) {
+                --it;
+            }
+            start = segment_start_ + it->cluster_offset;
+        }
+        samples_.clear();
+        next_sample_ = 0;
+        for (TrackSamples& track : audio_samples_) {
+            track.samples.clear();
+            track.next = 0;
+        }
+        index_pos_ = start;
+        index_complete_ = false;
+        if (!parseNextCluster()) {
+            return false;
+        }
+        // Keep one audio packet before the target as a lead-in, like the
+        // fully indexed path does.
+        for (TrackSamples& track : audio_samples_) {
+            size_t next = 0;
+            while (next + 1 < track.samples.size() && track.samples[next + 1].pts <= target) {
+                ++next;
+            }
+            track.next = next;
+        }
+        return true;
+    }
+
+    if (samples_.empty() && audio_samples_.empty()) {
+        return false;
+    }
 
     if (!samples_.empty()) {
         size_t index = 0;
