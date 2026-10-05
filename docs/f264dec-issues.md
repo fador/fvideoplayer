@@ -1,151 +1,79 @@
 # f264dec integration notes
 
 The player includes [f264dec](https://github.com/fador/f264dec) as a submodule
-(`external/f264dec`, pinned at `7d9930d`) for H.264/AVC decoding. In its
-standalone, file-based mode the decoder is correct: `tests/streams/
-base_cavlc_slices.264` decodes bit-exactly against ffmpeg (17/17 frames,
-PSNR infinite), and a generated 50 frame 352x288 stream also matches
-bit-exactly.
+(`external/f264dec`, now pinned at `cd55c2a`) for H.264/AVC decoding.
 
-The public API, however, cannot be driven by a container demuxer that feeds
-one access unit at a time. The issues below were found while integrating it;
-they are ordered by how much they block the integration. A work-in-progress
-patch that addressed issues 1-5 was used for verification and is kept outside
-the repository; it is not part of the submodule.
+The decoder is correct in every mode that was checked:
 
-## Blockers
+- The upstream conformance suite passes 35/35 streams (`tests/run_tests.py`).
+- The upstream memory-API test (`tests/test_memory_api.cpp`) decodes
+  `base_cavlc_slices.264` in memory and matches the reference MD5 bit-exactly.
+- An incremental, player-style feed (one access unit pushed at a time with one
+  AU of lookahead, pictures consumed as they come out) decodes a generated
+  352x288 stream 50/50 frames with PSNR infinite against ffmpeg.
 
-### 1. No in-memory input path
+The API issues that originally blocked the integration were fixed upstream in
+`42f0587`, `2ba13be` and `cd55c2a`. What remains is listed at the end.
 
-`f264_decoder_open()` calls `OpenDecoder()`, which always calls
-`open_annex_b(cfg->infile, ...)` and reads NAL units with `read()` on the file
-descriptor (`src/f264dec.cpp:1157`, `src/annexb.cpp:295`). `f264_config` has
-only `infile` (`src/f264dec.h:90`). There is no way to push Annex B bytes or
-NAL units, so a player that demuxes samples from MP4/Matroska/AVI/FLV cannot
-use the library without round-tripping through temporary files.
+## Resolved by `cd55c2a`
 
-Suggested API, mirroring kvzdec's `decoder_push_nal`: a `memory_input` config
-flag plus `f264_decoder_push(dec, data, size)` that appends Annex B bytes to a
-growable buffer, and a reader that consumes it. Note that the read cursor must
-not be cached across pushes: any `realloc` of the buffer invalidates a pointer
-held from a previous call (this was hit during development).
+| # | Issue | Resolution |
+| --- | --- | --- |
+| 1 | No in-memory input | `f264_config.memory_input` plus `f264_decoder_push()`; the reader consumes the pushed Annex B buffer |
+| 2 | No pictures without an output file | `write_out_picture()` now always materializes the picture; only the `write()` calls are guarded by `p_out >= 0` |
+| 3 | No consume-once picture API | `f264_decoder_get_picture()` hands out the first valid node and clears `bValid` |
+| 4 | Flush returned only one picture | `f264_decoder_flush()` drains one picture per call and returns `F264_EOS` when empty; call it in a loop |
+| 5 | One AU of lookahead needed | Documented in `f264dec.h` |
+| 6 | `error()` called `exit()` | `error()` now calls an optional `f264_error_callback` or prints, then returns |
+| 7 | Frame-number gaps were fatal | The gap path conceals or calls `fill_frame_num_gap()` instead of exiting |
+| 8 | Single global decoder instance | Documented, and a second `decoder_open()` returns NULL while one is active |
+| 9 | Output pictures alias decoder memory | Documented in `f264dec.h`: pixels are valid until the next decode/get_picture/flush call |
+| 11 | `add_subdirectory` built the CLI and wired CTest | `F264DEC_BUILD_CLI` / `F264DEC_BUILD_TESTS` default to top-level only; `f264dec::f264dec` alias target |
+| 12 | `config_parse` missed fields | `memory_input`, `deblock_enable` and `file_format` are parsed |
+| 14 | CLI counted every `F264_OK` as a frame | It only counts when a picture is returned, and drains the flush loop |
 
-### 2. Decoded pictures are not produced without an output file
+## Open issues
 
-`write_out_picture()` returns immediately when no output file is open
-(`src/output.cpp:356`: `if (p_out == -1) return;`). With `cfg->outfile` empty,
-no picture is ever copied into `pDecOuputPic`, so `f264_decoder_decode()` fills
-`*pic_out` only with NULL. The CLI is unaffected because the decoder writes YUV
-internally, but an API consumer gets no pixels at all. The `write()` calls
-inside the function are already guarded by `p_out >= 0`, so the fix is to
-always materialize the picture in the output list and guard only the file
-writes. (The YUV400 branch has two unguarded `write()` calls that need the same
-guard.)
+### 1. `decoder_close` still writes files into the current working directory
 
-### 3. No way to consume each output picture exactly once
+`CloseDecoder()` calls `Report()` (`src/f264dec.cpp:1269`), which opens
+`log.dec` and appends to `dataDec.txt` in the process working directory
+(`src/f264dec.cpp:467-616`), even with `silent = 1`. Running the tests leaves
+both files next to the binary. A library should not create files as a side
+effect of closing; this should be behind an opt-in (or only in the CLI).
 
-`pDecPic->bValid` is cleared only when writing to a file
-(`src/output.cpp:492`: `if (p_out >= 0) pDecPic->bValid = 0;`). Without an
-output file the nodes stay valid forever, so `get_one_avail_dec_pic_from_list()`
-never reuses them (the list grows without bound) and `f264_decoder_decode()`
-keeps returning the same stale head picture - the first frame - on every call.
-There is no signal that a returned picture is new. A `f264_decoder_get_picture()`
-that returns the first valid node and marks it consumed would fix both the
-reuse and the "is this new" problem.
+### 2. `decoder_decode` can return the last picture together with `F264_EOS`
 
-### 4. Flush can only return one of the remaining pictures
+When the final frame is decoded at end of input, `f264_decoder_decode()`
+returns `F264_EOS` and still fills `*pic_out` with that picture. A caller that
+stops at EOS (as the upstream CLI and `test_memory_api.cpp` do) loses the last
+frame; a caller must process `pic_out` before checking the return code. This is
+easy to miss and should either be documented or the last picture should be
+returned with `F264_OK` and the following call with `F264_EOS`. Verified while
+testing the incremental feed: dropping the EOS picture produced 49/50 frames,
+processing it produced 50/50.
 
-`f264_decoder_flush()` calls `FinitDecoder()` -> `flush_dpb()`, which outputs
-every picture left in the DPB into the `pDecOuputPic` list, but the API fills
-`*pic_out` from the head only (`src/f264dec.cpp:1559`). A caller cannot drain
-the rest; the CLI gets away with it because it writes internally. The same
-consume API as issue 3 solves this.
+### 3. `get_one_avail_dec_pic_from_list` does not link a node into an empty list
 
-### 5. One access unit of lookahead is needed to finish a frame
+The NULL `pPrior` dereference is fixed (`if (pPrior) pPrior->pNext = pPic;`),
+but when the list is empty the freshly allocated node is not linked anywhere
+and the caller keeps using its own pointer. `pDecOuputPic` is pre-allocated so
+this is latent, but a consume API that empties the list can reach it.
 
-`decode_one_frame()` reads slices until it sees the first VCL NAL of the
-*next* picture (`is_new_picture()`, `src/image.cpp:817`); only then does it
-decode and emit the current frame. Access unit delimiters are ignored
-(`src/image.cpp:1850`). A demuxer-driven caller therefore has to push at least
-one access unit ahead of the frame it is pulling, or the decoder must grow a
-suspend/resume "need more data" state. The lookahead works (verified
-incrementally on a stream with AUDs) but must be documented, because pushing a
-single access unit and decoding it immediately runs the reader dry and the
-decoder treats that as end of stream.
+## Calling conventions for the player wrapper
 
-## Robustness
-
-### 6. `error()` calls `exit()`
-
-Many decode paths call `error()`, which prints and calls `exit(code)`
-(`src/f264dec.cpp:97`). Examples: a failed `get_annex_b_NALU` on a truncated
-stream (`src/nalu.cpp:55`), a frame-number gap (`src/image.cpp:181`), an
-invalid start code emulation (`src/nalu.cpp:71`). A library called from a
-player must not terminate the process; these should return error codes or call
-a configurable error callback.
-
-### 7. Frame-number gaps are fatal by default
-
-With `conceal_mode == 0` and `gaps_in_frame_num_value_allowed_flag == 0`, a
-`frame_num` that is not the previous one plus one calls
-`error("An unintentional loss of pictures occurs! Exit", 100)`
-(`src/image.cpp:150-182`). A player that seeks, drops packets, or opens a
-stream mid-GOP hits this and dies. Decoding should conceal or resync instead.
-
-### 8. Single global decoder instance
-
-`p_Dec` is a global (`src/f264dec.cpp:76`); `f264_decoder_open()` returns that
-global and `f264_decoder_close()` frees it. Two open decoders cannot coexist
-and a second open overwrites the first. The player uses one video decoder, so
-this is tolerable, but the per-instance handle type suggests otherwise.
-
-### 9. Output pictures alias decoder-owned memory
-
-`fill_f264_picture_from_dec_pic()` points the wrapper at the `DecodedPicList`
-node's planes. The pixels are only valid until the next `decoder_decode()` or
-`decoder_flush()`, and with a file output open the node is reusable
-immediately. This needs to be documented, or the API should copy into caller
-storage.
-
-### 10. `get_one_avail_dec_pic_from_list` assumes a non-empty list
-
-When the list is empty, `pPrior` stays NULL and `pPrior->pNext = pPic`
-dereferences it (`src/f264dec.cpp:1062-1088`). `pDecOuputPic` is pre-allocated
-so this is latent today, but a consume API that frees or empties nodes can
-reach it.
-
-## Integration warts
-
-### 11. `add_subdirectory` builds an executable and wires CTest/Python
-
-The submodule's `CMakeLists.txt` unconditionally defines the `f264dec`
-executable (`:29`) and, when `BUILD_TESTING` is on and `tests/streams` exists,
-requires a Python 3 interpreter for the regression test (`:42`). Embedding it
-should be possible with library-only and no-test options.
-
-### 12. `config_parse` misses fields that exist in `f264_config`
-
-`f264_config_parse()` handles `threads`, `cpuid`, `frames`, `silent`, `input`,
-`output` and `ref`, but not `deblock_enable` or `file_format`, which are
-config fields.
-
-### 13. `decoder_close` writes files into the current working directory
-
-`CloseDecoder()` always calls `Report()`, which opens `log.dec` and appends to
-`dataDec.txt` in the process working directory (`src/f264dec.cpp:500-616`),
-even with `silent = 1`. Running the tests left both files next to the player
-binary. A library should not create files as a side effect of closing.
-
-### 14. The CLI counts every `F264_OK` as a decoded frame
-
-`main.cpp:124-137` increments `frames_decoded` for every successful
-`decoder_decode()` even though the call can return `F264_OK` with no picture
-(early frames and reordering). Harmless for a benchmark, but it makes the
-reported frame count depend on the DPB output timing rather than on pictures.
-
-## Suggested minimum for the player
-
-Issues 1-4 are required before the player can use the library: a memory input,
-pictures materialized without an output file, a consume-once picture API, and
-draining at flush. Issue 5 is a calling convention that follows from the
-current design. Issues 6-7 matter for robustness on real streams and seeks.
+- Feed `f264_decoder_push()` Annex B bytes (length-prefixed samples must be
+  converted, and the SPS/PPS from an avcC record pushed before the first
+  sample). It returns the number of bytes pushed, not `F264_OK`.
+- Push at least one access unit ahead of the frame being pulled: the decoder
+  needs the next picture's first slice to detect the boundary.
+- `f264_decoder_decode(dec, &pic)` first hands out an unconsumed picture and
+  otherwise decodes one access unit; `pic` can be NULL while reordering.
+- `f264_decoder_get_picture(dec)` drains additional pictures without decoding.
+- `f264_decoder_flush(dec, &pic)` must be called repeatedly until it returns
+  `F264_EOS`.
+- Copy the pixels out of the returned `f264_picture` before the next call; the
+  planes alias decoder memory.
+- Set `f264_config.error_cb` so decode errors do not print to stderr, and
+  expect `decoder_close()` to create `log.dec` / `dataDec.txt` in the working
+  directory until open issue 1 is fixed.
