@@ -1,17 +1,21 @@
 # f264dec integration notes
 
 The player includes [f264dec](https://github.com/fador/f264dec) as a submodule
-(`external/f264dec`, pinned at `119e5b7`) for H.264/AVC decoding.
+(`external/f264dec`, pinned at `aa13a3b`) for H.264/AVC decoding.
 
 ## Verification
 
 - The upstream conformance suite passes 35/35 streams
   (`tests/run_tests.py`).
-- The upstream memory-API test (`tests/test_memory_api.cpp`) decodes
-  `base_cavlc_slices.264` in memory and matches the reference MD5 bit-exactly.
+- The upstream memory-API tests (`tests/test_memory_api.cpp`) decode
+  `base_cavlc_slices.264` and `high10.264` in memory and match the reference
+  MD5s bit-exactly, checking the reported bit depth (8 and 10) as well.
 - An incremental, player-style feed (one access unit pushed at a time with one
   AU of lookahead, pictures consumed as they come out) decodes a generated
   352x288 stream 50/50 frames at PSNR infinite against ffmpeg.
+- 10-bit (High 10, yuv420p10le) content decodes bit-exactly through
+  `--dump-yuv` and renders correctly: a screenshot of a 1280x720 10-bit MKV
+  matches ffmpeg's BT.709 RGB conversion at 41 dB PSNR.
 
 ## History
 
@@ -23,7 +27,15 @@ drainable flush), `2ba13be` (error concealment instead of a fatal frame-number
 gap), `cd55c2a` (no `exit()` in the library, instance guard, embed-friendly
 CMake, missing config keys) and `119e5b7` (no log files on close, the final
 picture returned with `F264_OK` instead of together with `F264_EOS`, empty
-picture-list linking). All of them are resolved.
+picture-list linking).
+
+Two more issues surfaced when playing real 10-bit content, both fixed in
+`71092c6` and `aa13a3b`: `f264_picture.bit_depth` reported the on-disk storage
+element size (16) instead of the coded depth (10), which made the renderer
+treat 10-bit samples as 16-bit and show a near-black, green-tinted image, and
+`silent = 1` still printed the profile banner and a per-frame progress line
+because one path had the condition inverted and another checked a
+never-initialized field. All of them are resolved.
 
 ## Calling conventions used by the player wrapper
 
@@ -42,6 +54,9 @@ picture-list linking). All of them are resolved.
   `F264_EOS`.
 - Copy the pixels out of the returned `f264_picture` before the next call; the
   planes alias decoder memory.
+- `f264_picture.bit_depth` is the coded bit depth (8, 10, ...) while the plane
+  samples always occupy `bit_depth > 8 ? 2 : 1` bytes; consumers scale the
+  samples with the coded depth.
 - `f264_config.error_cb` is set so decode errors do not print to stderr.
 
 ## Timestamps
