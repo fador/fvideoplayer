@@ -62,8 +62,11 @@ never-initialized field. All of them are resolved.
 ## Timestamps
 
 H.264 elementary streams carry no presentation timestamps and f264dec's
-`f264_picture` does not forward one, so the wrapper derives the output
-timeline: the first pushed sample's PTS is the base and each following
-display-order picture advances by the smallest positive PTS step seen on the
-input. Constant-frame-rate streams are exact; variable-frame-rate streams are
-approximated.
+`f264_picture` does not forward one, but the demuxer's samples do. The samples
+arrive in decode order while pictures come out in display order, so the
+wrapper keeps the pushed timestamps in a min-heap and gives each picture the
+smallest one not handed out yet (`decode/DisplayPts.hpp`). This is exact for
+constant and variable frame rate alike. An earlier version synthesized the
+timeline as `base + index * smallest_positive_step`, which halved the rate on
+streams with B-frames because the smallest positive decode-order difference is
+two frame intervals.

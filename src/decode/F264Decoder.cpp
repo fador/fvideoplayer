@@ -1,5 +1,6 @@
 #include "decode/F264Decoder.hpp"
 
+#include "decode/DisplayPts.hpp"
 #include "decode/NalUnits.hpp"
 #include "demux/Avcc.hpp"
 
@@ -77,17 +78,17 @@ struct F264Decoder::Impl {
     int pending = 0;
     bool eos = false;
 
-    // Output timeline: H.264 carries no timestamps, so the first sample's PTS
-    // is the base and the smallest positive input step is the frame interval.
-    int64_t base_pts = 0;
-    int64_t frame_step = 0;
-    int64_t last_input_pts = 0;
-    int64_t output_index = 0;
-    bool have_base = false;
+    DisplayPts display_pts;
 
     std::string last_error;
     std::vector<uint8_t> annexb;
 };
+
+// Assigns the next display timestamp to a picture drained from the decoder.
+void assignOutputPts(DisplayPts& display_pts, DecodedFrame& frame) {
+    frame.pts = display_pts.next();
+    frame.image.pts = frame.pts;
+}
 
 void F264Decoder::decoderErrorCallback(void* user_data, int code, const char* message) {
     Impl* impl = static_cast<Impl*>(user_data);
@@ -163,11 +164,7 @@ void F264Decoder::close() {
     impl_->api = nullptr;
     impl_->pending = 0;
     impl_->eos = false;
-    impl_->base_pts = 0;
-    impl_->frame_step = 0;
-    impl_->last_input_pts = 0;
-    impl_->output_index = 0;
-    impl_->have_base = false;
+    impl_->display_pts.reset();
     impl_->last_error.clear();
     impl_->annexb.clear();
 }
@@ -235,16 +232,7 @@ bool F264Decoder::pushSample(const uint8_t* data, size_t size, int64_t pts, bool
         return false;
     }
 
-    if (!impl_->have_base) {
-        impl_->base_pts = pts;
-        impl_->have_base = true;
-    } else {
-        const int64_t step = pts - impl_->last_input_pts;
-        if (step > 0 && (impl_->frame_step == 0 || step < impl_->frame_step)) {
-            impl_->frame_step = step;
-        }
-    }
-    impl_->last_input_pts = pts;
+    impl_->display_pts.push(pts);
     ++impl_->pending;
     return true;
 }
@@ -264,9 +252,7 @@ int F264Decoder::pullFrames(std::vector<DecodedFrame>& out) {
             if (!convertPicture(*picture, frame)) {
                 continue;
             }
-            frame.pts = impl_->base_pts + impl_->output_index * impl_->frame_step;
-            frame.image.pts = frame.pts;
-            ++impl_->output_index;
+            assignOutputPts(impl_->display_pts, frame);
             out.push_back(std::move(frame));
             ++count;
         }
@@ -305,9 +291,7 @@ int F264Decoder::flush(std::vector<DecodedFrame>& out) {
             if (!convertPicture(*picture, frame)) {
                 continue;
             }
-            frame.pts = impl_->base_pts + impl_->output_index * impl_->frame_step;
-            frame.image.pts = frame.pts;
-            ++impl_->output_index;
+            assignOutputPts(impl_->display_pts, frame);
             out.push_back(std::move(frame));
             ++count;
         }
@@ -331,9 +315,7 @@ int F264Decoder::flush(std::vector<DecodedFrame>& out) {
         if (picture != nullptr) {
             DecodedFrame frame;
             if (convertPicture(*picture, frame)) {
-                frame.pts = impl_->base_pts + impl_->output_index * impl_->frame_step;
-                frame.image.pts = frame.pts;
-                ++impl_->output_index;
+                assignOutputPts(impl_->display_pts, frame);
                 out.push_back(std::move(frame));
                 ++count;
             }
