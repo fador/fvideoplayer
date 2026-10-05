@@ -1,5 +1,6 @@
 #include "demux/AviDemuxer.hpp"
 
+#include "demux/Avcc.hpp"
 #include "demux/HvcC.hpp"
 
 #include <algorithm>
@@ -83,6 +84,14 @@ bool isMpeg1Fourcc(uint32_t value) {
            value == fourcc('P', 'I', 'M', '1') || value == fourcc('B', 'W', '1', '0') ||
            value == fourcc('X', 'M', 'P', 'G') ||
            value == 0x10000001u;  // the numeric tag 1,0,0,16
+}
+
+// Fourccs VFW uses for H.264/AVC video.
+bool isH264Fourcc(uint32_t value) {
+    return value == fourcc('H', '2', '6', '4') || value == fourcc('h', '2', '6', '4') ||
+           value == fourcc('a', 'v', 'c', '1') || value == fourcc('A', 'V', 'C', '1') ||
+           value == fourcc('X', '2', '6', '4') || value == fourcc('x', '2', '6', '4') ||
+           value == fourcc('V', 'S', 'S', 'H') || value == fourcc('v', 's', 's', 'h');
 }
 
 // Fourccs VFW uses for MPEG-2 video.
@@ -221,20 +230,27 @@ bool parseHdrl(FILE* file, int64_t start, int64_t size, std::vector<AviStream>& 
 
 // Returns 1 for a keyframe, 0 for a non-keyframe and -1 if the NAL header
 // could not be inspected.
-int inspectKeyframe(FILE* file, int64_t offset, uint32_t size, bool annexb, uint8_t length_size) {
+int inspectKeyframe(FILE* file, int64_t offset, uint32_t size, bool annexb, uint8_t length_size,
+                    bool h264) {
     uint8_t buffer[24] = {};
     const size_t want = std::min<size_t>(size, sizeof(buffer));
     if (want < 3 || !readAt(file, offset, buffer, want)) {
         return -1;
     }
+    const auto is_keyframe = [h264](uint8_t nal_header) {
+        if (h264) {
+            return (nal_header & 0x1F) == 5;  // IDR
+        }
+        const uint8_t type = static_cast<uint8_t>(nal_header >> 1);
+        return type >= 16 && type <= 23;
+    };
     if (annexb) {
         for (size_t i = 0; i + 2 < want; ++i) {
             if (buffer[i] == 0 && buffer[i + 1] == 0 && buffer[i + 2] == 1) {
                 if (i + 3 >= want) {
                     return -1;
                 }
-                const uint8_t type = static_cast<uint8_t>(buffer[i + 3] >> 1);
-                return (type >= 16 && type <= 23) ? 1 : 0;
+                return is_keyframe(buffer[i + 3]) ? 1 : 0;
             }
         }
         return -1;
@@ -249,8 +265,7 @@ int inspectKeyframe(FILE* file, int64_t offset, uint32_t size, bool annexb, uint
     if (nal_size < 2) {
         return -1;
     }
-    const uint8_t type = static_cast<uint8_t>(buffer[length_size] >> 1);
-    return (type >= 16 && type <= 23) ? 1 : 0;
+    return is_keyframe(buffer[length_size]) ? 1 : 0;
 }
 
 bool looksAnnexB(FILE* file, int64_t offset, uint32_t size) {
@@ -438,13 +453,33 @@ bool AviDemuxer::open(const std::filesystem::path& path, std::string& error) {
             continue;
         }
         const bool hevc_fourcc = isHevcFourcc(stream.fcc_handler) || isHevcFourcc(stream.compression);
+        const bool h264_fourcc = isH264Fourcc(stream.fcc_handler) || isH264Fourcc(stream.compression);
         const bool mpeg1_fourcc =
             isMpeg1Fourcc(stream.fcc_handler) || isMpeg1Fourcc(stream.compression);
         const bool mpeg2_fourcc =
             isMpeg2Fourcc(stream.fcc_handler) || isMpeg2Fourcc(stream.compression);
         const bool hvcc_extradata =
             stream.extradata.size() >= 23 && stream.extradata[0] == 1;
-        if (hevc_fourcc || hvcc_extradata || looksLikeAnnexBHevc(stream.extradata)) {
+        AvccInfo avcc_info;
+        const bool avcc_extradata =
+            stream.extradata.size() >= 7 && stream.extradata[0] == 1 &&
+            parseAvcc(stream.extradata.data(), stream.extradata.size(), avcc_info, nullptr);
+        if (hevc_fourcc || looksLikeAnnexBHevc(stream.extradata)) {
+            video_stream_index = static_cast<int>(i);
+            video_codec = Codec::Hevc;
+            break;
+        }
+        if (h264_fourcc) {
+            video_stream_index = static_cast<int>(i);
+            video_codec = Codec::H264;
+            break;
+        }
+        if (avcc_extradata) {
+            video_stream_index = static_cast<int>(i);
+            video_codec = Codec::H264;
+            break;
+        }
+        if (hvcc_extradata) {
             video_stream_index = static_cast<int>(i);
             video_codec = Codec::Hevc;
             break;
@@ -471,7 +506,7 @@ bool AviDemuxer::open(const std::filesystem::path& path, std::string& error) {
         }
     }
     if (video_stream_index < 0 && !have_audio_stream) {
-        error = "no HEVC, MPEG-2 or MPEG-1 video stream found in AVI";
+        error = "no HEVC, H.264, MPEG-2 or MPEG-1 video stream found in AVI";
         return false;
     }
 
@@ -483,12 +518,21 @@ bool AviDemuxer::open(const std::filesystem::path& path, std::string& error) {
         video_.codec = video_codec;
         video_.timescale = 1000;
         video_.codec_name = video_codec == Codec::Hevc   ? "HEVC"
+                            : video_codec == Codec::H264 ? "H.264"
                             : video_codec == Codec::Mpeg2 ? "MPEG-2"
                                                           : "MPEG-1";
         video_.width = video_stream.width;
         video_.height = video_stream.height;
 
-        if (video_stream.extradata.size() >= 23 && video_stream.extradata[0] == 1) {
+        if (video_codec == Codec::H264) {
+            AvccInfo avcc;
+            if (!video_stream.extradata.empty() &&
+                parseAvcc(video_stream.extradata.data(), video_stream.extradata.size(), avcc,
+                          nullptr)) {
+                video_.avcc = video_stream.extradata;
+                length_size = avcc.length_size;
+            }
+        } else if (video_stream.extradata.size() >= 23 && video_stream.extradata[0] == 1) {
             HvccInfo hvcc;
             std::string hvcc_error;
             if (parseHvcc(video_stream.extradata.data(), video_stream.extradata.size(), hvcc,
@@ -497,7 +541,7 @@ bool AviDemuxer::open(const std::filesystem::path& path, std::string& error) {
                 length_size = hvcc.length_size;
             }
         }
-        if (video_.hvcc.empty() && !video_stream.extradata.empty()) {
+        if (video_.hvcc.empty() && video_.avcc.empty() && !video_stream.extradata.empty()) {
             static const uint8_t kStartCode[3] = {0, 0, 1};
             const bool has_start_code =
                 std::search(video_stream.extradata.begin(), video_stream.extradata.end(),
@@ -617,7 +661,7 @@ bool AviDemuxer::open(const std::filesystem::path& path, std::string& error) {
             return false;
         }
 
-        if (!annexb && video_.hvcc.empty()) {
+        if (!annexb && video_.hvcc.empty() && video_.avcc.empty()) {
             annexb = looksAnnexB(file_, chunks.front().offset, chunks.front().size);
         }
         video_.format.annexb = annexb;
@@ -634,7 +678,7 @@ bool AviDemuxer::open(const std::filesystem::path& path, std::string& error) {
             sample.offset = chunks[i].offset;
             sample.size = chunks[i].size;
             const int inspected = inspectKeyframe(file_, chunks[i].offset, chunks[i].size, annexb,
-                                                  length_size);
+                                                  length_size, video_codec == Codec::H264);
             sample.keyframe = inspected == 1 || (inspected < 0 && chunks[i].flagged_keyframe);
             const double seconds = fps_ > 0.0 ? static_cast<double>(i) / fps_ : 0.0;
             sample.pts = static_cast<int64_t>(std::llround(seconds * 1000.0));

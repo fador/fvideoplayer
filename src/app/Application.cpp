@@ -208,12 +208,20 @@ bool Application::init(const std::string& title) {
     engine_.setAudioSink(&audio_sink_);
 
     log::addf(log::Level::Info, "UI font: %s", ui_font_file != nullptr ? ui_font_file : "?");
+    std::string backends;
 #if PLAYER_HAS_KVZDEC
-    log::addf(log::Level::Info, "HEVC Player started (kvzdec %s)",
-              decode::hevcBackendVersion());
-#else
-    log::add(log::Level::Info, "HEVC Player started (no HEVC decoder; kvzdec was not built)");
+    backends += std::string("kvzdec ") + decode::hevcBackendVersion();
 #endif
+#if PLAYER_HAS_F264DEC
+    if (!backends.empty()) {
+        backends += ", ";
+    }
+    backends += std::string("f264dec ") + decode::h264BackendVersion();
+#endif
+    if (backends.empty()) {
+        backends = "no external decoders";
+    }
+    log::addf(log::Level::Info, "HEVC Player started (%s)", backends.c_str());
     const char* gl_version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
     const char* gl_renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
     log::addf(log::Level::Info, "OpenGL: %s (%s)", gl_version ? gl_version : "?",

@@ -31,12 +31,13 @@ src/
                        KBD-window IMDCT
 ```
 
-HEVC is the only codec backed by an external library: `KvzdecDecoder` wraps
-the kvzdec C API, and the renderer, queue and stats only ever see
-`decode::Frame`. The backend is optional. When the kvzdec submodule is not
-checked out, CMake defines `PLAYER_HAS_KVZDEC=0`, the wrapper compiles to a
-stub that refuses to open, and the engine treats an HEVC track like any other
-codec without a decoder: it is named and the audio plays.
+HEVC and H.264 are backed by external libraries: `KvzdecDecoder` wraps the
+kvzdec C API and `F264Decoder` wraps the f264dec C API, and the renderer,
+queue and stats only ever see `decode::Frame`. Both backends are optional.
+When a submodule is not checked out, CMake defines `PLAYER_HAS_KVZDEC=0` or
+`PLAYER_HAS_F264DEC=0`, the wrapper compiles to a stub that refuses to open,
+and the engine treats that codec like any other codec without a decoder: it
+is named and the audio plays.
 
 `decode::Frame` is the single currency between a decoder and everything
 downstream: three planar sample arrays plus geometry, a conformance window and

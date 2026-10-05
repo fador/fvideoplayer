@@ -11,6 +11,7 @@
 #include "audio/mp2/Mp2Decoder.hpp"
 #include "audio/mp3/Mp3Decoder.hpp"
 #include "audio/opus/OpusDecoder.hpp"
+#include "decode/F264Decoder.hpp"
 #include "decode/KvzdecDecoder.hpp"
 #include "decode/flv1/Flv1Decoder.hpp"
 #include "decode/mpeg12/Mpeg12Decoder.hpp"
@@ -133,6 +134,7 @@ private:
     enum class VideoCodec {
         None,
         Hevc,
+        H264,
         Mpeg1,
         Mpeg2,
         Flv1,
@@ -195,6 +197,7 @@ private:
     std::unique_ptr<demux::IDemuxer> demuxer_;
     VideoCodec video_codec_ = VideoCodec::None;
     decode::KvzdecDecoder decoder_;
+    decode::F264Decoder f264_decoder_;
     decode::mpeg12::Decoder mpeg12_decoder_;
     decode::flv1::Decoder flv1_decoder_;
     audio::IAudioSink* audio_sink_ = nullptr;

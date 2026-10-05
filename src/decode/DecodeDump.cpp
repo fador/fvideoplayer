@@ -1,5 +1,6 @@
 #include "decode/DecodeDump.hpp"
 
+#include "decode/F264Decoder.hpp"
 #include "decode/KvzdecDecoder.hpp"
 #include "decode/flv1/Flv1Decoder.hpp"
 #include "decode/mpeg12/Mpeg12Decoder.hpp"
@@ -61,16 +62,34 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
     }
 
     KvzdecDecoder decoder;
+    F264Decoder h264_decoder;
     mpeg12::Decoder mpeg12_decoder;
     flv1::Decoder flv1_decoder;
     const demux::Codec codec = demuxer->video().codec;
     const bool is_mpeg = codec == demux::Codec::Mpeg1 || codec == demux::Codec::Mpeg2;
     const bool is_flv1 = codec == demux::Codec::Flv1;
+    const bool is_h264 = codec == demux::Codec::H264;
 
     if (is_mpeg) {
         mpeg12_decoder.reset();
     } else if (is_flv1) {
         flv1_decoder.reset();
+    } else if (is_h264) {
+        if (!h264_decoder.open(&local_error)) {
+            std::fclose(out);
+            if (error) {
+                *error = local_error;
+            }
+            return 1;
+        }
+        if (!demuxer->video().avcc.empty() &&
+            !h264_decoder.pushParameterSets(demuxer->video().avcc, &local_error)) {
+            std::fclose(out);
+            if (error) {
+                *error = local_error;
+            }
+            return 1;
+        }
     } else {
         const int threads = std::getenv("HEVC_PLAYER_THREADS")
                                 ? std::atoi(std::getenv("HEVC_PLAYER_THREADS"))
@@ -104,6 +123,14 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
             flv1_decoder.pushSample(sample.data.data(), sample.data.size(), sample.pts);
             return flv1_decoder.pullFrames(frames);
         }
+        if (is_h264) {
+            if (!h264_decoder.pushSample(sample.data.data(), sample.data.size(), sample.pts,
+                                         demuxer->video().format.annexb,
+                                         demuxer->video().format.nal_length_size)) {
+                return 0;
+            }
+            return h264_decoder.pullFrames(frames);
+        }
         if (!decoder.pushSample(sample.data.data(), sample.data.size(), sample.pts,
                                 demuxer->video().format.annexb,
                                 demuxer->video().format.nal_length_size)) {
@@ -117,6 +144,9 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
         }
         if (is_flv1) {
             return flv1_decoder.flush(frames);
+        }
+        if (is_h264) {
+            return h264_decoder.flush(frames);
         }
         return decoder.flush(frames);
     };
@@ -154,7 +184,8 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
     while (demuxer->readSample(sample)) {
         local_stats.bytes += static_cast<int64_t>(sample.data.size());
         frames.clear();
-        if (pushSample(sample, frames) == 0 && !sample.data.empty() && !is_mpeg && !is_flv1) {
+        if (pushSample(sample, frames) == 0 && !sample.data.empty() && !is_mpeg && !is_flv1 &&
+            !is_h264) {
             local_error = "decoder rejected a sample";
             ok = false;
             break;

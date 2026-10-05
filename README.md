@@ -1,10 +1,11 @@
 # HEVC Player
 
-A video player built around an optional external HEVC/H.265 decoder plus
-from-scratch decoders for MPEG-1/2, Sorenson Spark, AAC-LC, Opus, MP3, FLAC
-and AC-3. It demuxes MP4, Matroska, AVI, FLV, MPEG program streams and raw
-elementary streams without libavformat, renders through SDL3 + Dear ImGui with
-a custom OpenGL YUV -> RGB path, and shows live decode statistics.
+A video player built around optional external HEVC/H.265 (kvzdec) and
+H.264/AVC (f264dec) decoders plus from-scratch decoders for MPEG-1/2,
+Sorenson Spark, AAC-LC, Opus, MP3, FLAC and AC-3. It demuxes MP4, Matroska,
+AVI, FLV, MPEG program streams and raw elementary streams without libavformat,
+renders through SDL3 + Dear ImGui with a custom OpenGL YUV -> RGB path, and
+shows live decode statistics.
 
 ## Supported codecs
 
@@ -13,6 +14,7 @@ a custom OpenGL YUV -> RGB path, and shows live decode statistics.
 | Codec | Decoder | Notes |
 | --- | --- | --- |
 | HEVC / H.265 | kvzdec (external, optional git submodule) | 8/10-bit, 4:2:0/4:2:2/4:4:4, tiles/WPP; bit-exact against the HM reference. Without the submodule the build omits it and HEVC files play audio only |
+| H.264 / AVC | f264dec (external, optional git submodule) | baseline, main and high profiles, 8/10-bit; the upstream 35 stream conformance suite and ffmpeg comparisons are bit-exact. Without the submodule the build omits it and H.264 files play audio only |
 | MPEG-1 | from scratch | [details](docs/mpeg12.md) |
 | MPEG-2 | from scratch | Main Profile at Main Level, field pictures, [details](docs/mpeg12.md) |
 | Sorenson Spark (FLV1) | from scratch | H.263 baseline variant, [details](docs/flv1.md) |
@@ -62,10 +64,12 @@ cmake --build build
 On Windows with Visual Studio, run the commands from a developer command
 prompt (`vcvars64.bat`).
 
-The external HEVC backend (kvzdec) is optional. If its submodule is not checked
-out, CMake prints `kvzdec not found: building without HEVC playback`, the
-player and its tests build without it, and HEVC files play their audio only.
-Pass `-DPLAYER_ENABLE_KVZDEC=OFF` to leave it out explicitly.
+The external backends (kvzdec for HEVC, f264dec for H.264) are optional. If a
+submodule is not checked out, CMake prints `kvzdec not found: building without
+HEVC playback` or `f264dec not found: building without H.264 playback`, the
+player and its tests build without it, and files of that codec play their
+audio only. Pass `-DPLAYER_ENABLE_KVZDEC=OFF` or `-DPLAYER_ENABLE_F264DEC=OFF`
+to leave one out explicitly.
 
 ### Tests
 

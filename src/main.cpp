@@ -18,6 +18,8 @@ const char* videoCodecName(player::demux::Codec codec) {
     switch (codec) {
         case player::demux::Codec::Hevc:
             return "HEVC";
+        case player::demux::Codec::H264:
+            return "H.264";
         case player::demux::Codec::Mpeg1:
             return "MPEG-1";
         case player::demux::Codec::Mpeg2:

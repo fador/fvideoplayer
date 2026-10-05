@@ -5,6 +5,12 @@ bit-exact against the HM reference outputs of the kvzdec conformance suite for
 raw, MP4, MKV and AVI inputs (8/10-bit, 4:2:0/4:4:4, tiles/WPP). `--dump-yuv`
 performs a synchronous decode of the whole file for this purpose.
 
+When the optional f264dec backend is built, the H.264 path passes the upstream
+35 stream conformance suite and decodes ffmpeg-produced H.264 files in MP4,
+Matroska, AVI and FLV with infinite PSNR against ffmpeg, including in-memory
+and incremental (one access unit at a time) feeding; see
+[f264dec-issues.md](f264dec-issues.md) for the integration details.
+
 The MPEG-1/MPEG-2 decoder also has no reference bitstream in the repository, so
 it is covered by unit tests: the VLC tables, inverse quantisation, IDCT
 normalisation and motion compensation are checked against hand-computed values,

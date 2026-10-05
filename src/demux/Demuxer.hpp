@@ -13,6 +13,7 @@ namespace player::demux {
 enum class Codec {
     Unknown,
     Hevc,
+    H264,
     Mpeg1,
     Mpeg2,
     Flv1,
@@ -41,6 +42,7 @@ struct VideoTrackInfo {
     uint32_t timescale = 1000;  // ticks per second for Sample::pts
     SampleFormat format;
     std::vector<uint8_t> hvcc;  // HEVCDecoderConfigurationRecord, may be empty
+    std::vector<uint8_t> avcc;  // AVCDecoderConfigurationRecord, may be empty
 };
 struct AudioTrackInfo {
     size_t index = 0;

@@ -35,6 +35,21 @@ else()
     message(STATUS "kvzdec not found: building without HEVC playback")
 endif()
 
+# --- f264dec: optional external H.264 backend, static library only ---------
+# The backend is omitted when the submodule is not checked out, so the player
+# and its tests build and run without it (H.264 files then play audio only).
+option(PLAYER_ENABLE_F264DEC "Build the external f264dec H.264 backend when present" ON)
+set(PLAYER_HAS_F264DEC OFF)
+if(PLAYER_ENABLE_F264DEC AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/f264dec/CMakeLists.txt")
+    set(F264DEC_BUILD_CLI OFF CACHE BOOL "" FORCE)
+    set(F264DEC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    add_subdirectory(external/f264dec EXCLUDE_FROM_ALL)
+    set(PLAYER_HAS_F264DEC ON)
+    message(STATUS "f264dec found: H.264 playback enabled")
+else()
+    message(STATUS "f264dec not found: building without H.264 playback")
+endif()
+
 # --- SDL3: static, no tests/examples/install -------------------------------
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
@@ -79,6 +94,7 @@ target_compile_definitions(player_subtitle PRIVATE _CRT_SECURE_NO_WARNINGS)
 # --- player demux (no GUI dependencies) --------------------------------------
 add_library(player_demux STATIC
     src/demux/Ac3Demuxer.cpp
+    src/demux/Avcc.cpp
     src/demux/AviDemuxer.cpp
     src/demux/Demuxer.cpp
     src/demux/Esds.cpp
@@ -98,6 +114,7 @@ target_compile_definitions(player_demux PRIVATE _CRT_SECURE_NO_WARNINGS)
 # --- player decode (codec backends, no GUI dependencies) --------------------
 add_library(player_decode STATIC
     src/decode/DecodeDump.cpp
+    src/decode/F264Decoder.cpp
     src/decode/KvzdecDecoder.cpp
     src/decode/NalUnits.cpp
     src/decode/flv1/Flv1Decoder.cpp
@@ -115,6 +132,12 @@ if(PLAYER_HAS_KVZDEC)
     target_compile_definitions(player_decode PUBLIC PLAYER_HAS_KVZDEC=1)
 else()
     target_compile_definitions(player_decode PUBLIC PLAYER_HAS_KVZDEC=0)
+endif()
+if(PLAYER_HAS_F264DEC)
+    target_link_libraries(player_decode PUBLIC f264dec::f264dec)
+    target_compile_definitions(player_decode PUBLIC PLAYER_HAS_F264DEC=1)
+else()
+    target_compile_definitions(player_decode PUBLIC PLAYER_HAS_F264DEC=0)
 endif()
 
 # --- player audio (PCM helpers + from-scratch AAC decoder, no GUI deps) ------

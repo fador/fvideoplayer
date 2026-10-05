@@ -321,38 +321,38 @@ TEST(FlvDemuxer, FactoryDetectsFlv) {
 
 TEST(FlvDemuxer, RejectsUnsupportedVideoWithoutAudio) {
     Bytes payload;
-    payload.push_back(0x17);  // keyframe, AVC
+    payload.push_back(0x14);  // keyframe, On2 VP6
     payload.push_back(0x00);
     const Bytes file = buildFlv({flvTag(9, 0, payload)}, true, false);
-    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_avc.flv");
+    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_vp6.flv");
     {
         player::demux::FlvDemuxer demuxer;
         std::string error;
         EXPECT_FALSE(demuxer.open(path, error));
-        EXPECT_NE(error.find("H.264"), std::string::npos) << error;
+        EXPECT_NE(error.find("VP6"), std::string::npos) << error;
     }
     std::filesystem::remove(path);
 }
 
 TEST(FlvDemuxer, KeepsUnsupportedVideoAndPlaysAudio) {
     Bytes keyframe;
-    keyframe.push_back(0x17);  // keyframe, AVC
+    keyframe.push_back(0x14);  // keyframe, On2 VP6
     keyframe.push_back(0x00);
     Bytes inter;
-    inter.push_back(0x27);  // inter frame, AVC
+    inter.push_back(0x24);  // inter frame, On2 VP6
     inter.push_back(0x01);
     const Bytes file = buildFlv({
         flvTag(9, 0, keyframe),
         mp3AudioTag(),
         flvTag(9, 40, inter),
     });
-    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_avc_audio.flv");
+    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_vp6_audio.flv");
     {
         player::demux::FlvDemuxer demuxer;
         std::string error;
         ASSERT_TRUE(demuxer.open(path, error)) << error;
         EXPECT_EQ(demuxer.video().codec, player::demux::Codec::Unknown);
-        EXPECT_EQ(demuxer.video().codec_name, "H.264");
+        EXPECT_EQ(demuxer.video().codec_name, "On2 VP6");
         EXPECT_EQ(demuxer.video().width, 320u);
         EXPECT_EQ(demuxer.video().height, 240u);
         ASSERT_TRUE(demuxer.audio().present);
@@ -370,9 +370,59 @@ TEST(FlvDemuxer, KeepsUnsupportedVideoAndPlaysAudio) {
     std::filesystem::remove(path);
 }
 
+TEST(FlvDemuxer, ReadsH264Track) {
+    Bytes config;
+    config.push_back(0x17);  // keyframe, AVC
+    config.push_back(0x00);  // sequence header
+    config.push_back(0x00);
+    config.push_back(0x00);
+    config.push_back(0x00);  // composition time
+    const Bytes avcc = {1,    0x42, 0x00, 0x1E, 0xFF, 0xE1, 0x00, 0x02,
+                        0x67, 0x42, 0x01, 0x00, 0x02, 0x68, 0xCE};
+    append(config, avcc);
+
+    Bytes nalu;
+    nalu.push_back(0x27);  // inter frame, AVC
+    nalu.push_back(0x01);  // NALU packet
+    nalu.push_back(0x00);
+    nalu.push_back(0x00);
+    nalu.push_back(0x00);  // composition time
+    putU32(nalu, 2);       // one two byte NAL
+    nalu.push_back(0x41);
+    nalu.push_back(0x9A);
+
+    const Bytes file = buildFlv({
+        flvTag(9, 0, config),
+        flvTag(9, 0, nalu),
+        mp3AudioTag(),
+    });
+    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_h264.flv");
+    {
+        player::demux::FlvDemuxer demuxer;
+        std::string error;
+        ASSERT_TRUE(demuxer.open(path, error)) << error;
+        EXPECT_EQ(demuxer.video().codec, player::demux::Codec::H264);
+        EXPECT_EQ(demuxer.video().codec_name, "H.264");
+        EXPECT_EQ(demuxer.video().avcc.size(), avcc.size());
+        EXPECT_FALSE(demuxer.video().format.annexb);
+        EXPECT_EQ(demuxer.video().format.nal_length_size, 4);
+
+        // The AVC packet header is stripped; the NAL length prefixes stay,
+        // the decoder converts them to Annex B.
+        player::demux::Sample sample;
+        ASSERT_TRUE(demuxer.readSample(sample));
+        ASSERT_EQ(sample.data.size(), 6u);
+        EXPECT_EQ(sample.data[3], 0x02u);
+        EXPECT_EQ(sample.data[4], 0x41u);
+        EXPECT_EQ(sample.data[5], 0x9Au);
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
+    }
+    std::filesystem::remove(path);
+}
+
 TEST(FlvDemuxer, EnginePlaysAudioOfUnsupportedVideo) {
     Bytes keyframe;
-    keyframe.push_back(0x17);  // keyframe, AVC
+    keyframe.push_back(0x14);  // keyframe, On2 VP6
     keyframe.push_back(0x00);
     std::vector<Bytes> tags;
     tags.push_back(flvTag(9, 0, keyframe));
@@ -380,13 +430,13 @@ TEST(FlvDemuxer, EnginePlaysAudioOfUnsupportedVideo) {
         tags.push_back(mp3FrameTag(i * 26));
     }
     const Bytes file = buildFlv(tags);
-    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_avc_engine.flv");
+    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_vp6_engine.flv");
     {
         player::playback::PlaybackEngine engine;
         std::string error;
         ASSERT_TRUE(engine.open(path, error)) << error;
         EXPECT_EQ(engine.videoInfo().codec, player::demux::Codec::Unknown);
-        EXPECT_EQ(engine.videoInfo().codec_name, "H.264");
+        EXPECT_EQ(engine.videoInfo().codec_name, "On2 VP6");
         EXPECT_EQ(std::string(engine.audioCodecName()), "MP3");
         EXPECT_TRUE(engine.audioDecoding());
         engine.play();

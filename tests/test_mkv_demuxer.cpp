@@ -159,6 +159,13 @@ Bytes blockGroup(uint64_t track, int16_t relative, int64_t duration_ms, const By
     return element(0xA0, children);
 }
 
+Bytes makeAvcc() {
+    // configurationVersion, profile, compatibility, level, lengthSizeMinusOne
+    // (4 bytes), one SPS and one PPS.
+    return Bytes{1, 0x42, 0x00, 0x1E, 0xFF, 0xE1, 0x00, 0x02, 0x67, 0x42,
+                 0x01, 0x00, 0x02, 0x68, 0xCE};
+}
+
 Bytes videoTrackEntry(const std::string& codec = "V_MPEGH/ISO/HEVC") {
     Bytes video;
     append(video, uintElement(0xB0, 1280));  // PixelWidth
@@ -170,6 +177,8 @@ Bytes videoTrackEntry(const std::string& codec = "V_MPEGH/ISO/HEVC") {
     append(children, stringElement(0x86, codec));
     if (codec == "V_MPEGH/ISO/HEVC") {
         append(children, element(0x63A2, makeHvcc()));  // CodecPrivate
+    } else if (codec == "V_MPEG4/ISO/AVC") {
+        append(children, element(0x63A2, makeAvcc()));  // CodecPrivate
     }
     append(children, uintElement(0x23E383, 33333333));  // DefaultDuration (30 fps)
     append(children, element(0xE0, video));
@@ -297,15 +306,15 @@ TEST(MkvDemuxer, ParsesVideoAndAudioTrack) {
 
 TEST(MkvDemuxer, KeepsUnsupportedVideoAndPlaysAudio) {
     const std::filesystem::path path =
-        writeMkv(buildMkv(true, false, false, "A_AAC", {}, "V_MPEG4/ISO/AVC"),
-                 "hevc_player_mkv_avc.mkv");
+        writeMkv(buildMkv(true, false, false, "A_AAC", {}, "V_VP9"),
+                 "hevc_player_mkv_vp9.mkv");
     {
         player::demux::MkvDemuxer demuxer;
         std::string error;
         ASSERT_TRUE(demuxer.open(path, error)) << error;
 
         EXPECT_EQ(demuxer.video().codec, player::demux::Codec::Unknown);
-        EXPECT_EQ(demuxer.video().codec_name, "H.264");
+        EXPECT_EQ(demuxer.video().codec_name, "VP9");
         EXPECT_EQ(demuxer.video().width, 1280u);
         EXPECT_EQ(demuxer.video().height, 720u);
         EXPECT_TRUE(demuxer.audio().present);
@@ -316,6 +325,31 @@ TEST(MkvDemuxer, KeepsUnsupportedVideoAndPlaysAudio) {
         EXPECT_EQ(sample.track, player::demux::TrackType::Audio);
         EXPECT_TRUE(demuxer.seek(0.05));
         ASSERT_TRUE(demuxer.readAudioSample(sample));
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(MkvDemuxer, ReadsH264Track) {
+    const std::filesystem::path path =
+        writeMkv(buildMkv(true, false, false, "A_AAC", {}, "V_MPEG4/ISO/AVC"),
+                 "hevc_player_mkv_avc.mkv");
+    {
+        player::demux::MkvDemuxer demuxer;
+        std::string error;
+        ASSERT_TRUE(demuxer.open(path, error)) << error;
+
+        EXPECT_EQ(demuxer.video().codec, player::demux::Codec::H264);
+        EXPECT_EQ(demuxer.video().codec_name, "H.264");
+        EXPECT_FALSE(demuxer.video().avcc.empty());
+        EXPECT_FALSE(demuxer.video().format.annexb);
+        EXPECT_EQ(demuxer.video().format.nal_length_size, 4);
+        EXPECT_TRUE(demuxer.audio().present);
+
+        player::demux::Sample sample;
+        ASSERT_TRUE(demuxer.readSample(sample));
+        EXPECT_EQ(sample.track, player::demux::TrackType::Video);
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
+        EXPECT_EQ(sample.track, player::demux::TrackType::Audio);
     }
     std::filesystem::remove(path);
 }

@@ -1,5 +1,6 @@
 #include "demux/MkvDemuxer.hpp"
 
+#include "demux/Avcc.hpp"
 #include "demux/HvcC.hpp"
 
 #include <algorithm>
@@ -657,6 +658,8 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
             // Matroska codec ids for the video formats the player can decode.
             if (track.codec == "V_MPEGH/ISO/HEVC") {
                 video_codec = Codec::Hevc;
+            } else if (track.codec == "V_MPEG4/ISO/AVC") {
+                video_codec = Codec::H264;
             } else if (track.codec == "V_MPEG2") {
                 video_codec = Codec::Mpeg2;
             } else if (track.codec == "V_MPEG1") {
@@ -856,13 +859,23 @@ bool MkvDemuxer::open(const std::filesystem::path& path, std::string& error) {
         video_.codec_name = videoCodecName(video_track.codec);
         video_.width = video_track.width;
         video_.height = video_track.height;
-        video_.hvcc = video_track.codec_private;
+        if (video_codec == Codec::H264) {
+            video_.avcc = video_track.codec_private;
+        } else {
+            video_.hvcc = video_track.codec_private;
+        }
     }
     if (!video_.hvcc.empty()) {
         HvccInfo hvcc;
         std::string hvcc_error;
         if (parseHvcc(video_.hvcc.data(), video_.hvcc.size(), hvcc, &hvcc_error)) {
             video_.format.nal_length_size = hvcc.length_size;
+        }
+    }
+    if (video_codec == Codec::H264 && !video_.avcc.empty()) {
+        AvccInfo avcc;
+        if (parseAvcc(video_.avcc.data(), video_.avcc.size(), avcc, nullptr)) {
+            video_.format.nal_length_size = avcc.length_size;
         }
     }
 

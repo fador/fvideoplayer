@@ -1,5 +1,6 @@
 #include "demux/Mp4Demuxer.hpp"
 
+#include "demux/Avcc.hpp"
 #include "demux/Esds.hpp"
 #include "demux/HvcC.hpp"
 
@@ -444,6 +445,7 @@ struct SampleEntry {
     uint32_t channels = 0;
     uint32_t sample_rate = 0;
     std::vector<uint8_t> hvcc;
+    std::vector<uint8_t> avcc;
     std::vector<uint8_t> esds;
     std::vector<uint8_t> codec_private;
 };
@@ -590,6 +592,8 @@ bool parseStsd(const BoxView& box, SampleEntry& entry) {
             while (iterateBoxes(payload, payload_size, child_pos, child)) {
                 if (child.type == fourcc('h', 'v', 'c', 'C')) {
                     entry.hvcc.assign(child.payload, child.payload + child.size);
+                } else if (child.type == fourcc('a', 'v', 'c', 'C')) {
+                    entry.avcc.assign(child.payload, child.payload + child.size);
                 } else if (child.type == fourcc('e', 's', 'd', 's')) {
                     entry.esds.assign(child.payload, child.payload + child.size);
                 }
@@ -972,7 +976,7 @@ bool Mp4Demuxer::open(const std::filesystem::path& path, std::string& error) {
         } else if (format == fourcc('h', 'v', 'c', '1') || format == fourcc('h', 'e', 'v', '1')) {
             video_codec = Codec::Hevc;
         } else if (format == fourcc('a', 'v', 'c', '1') || format == fourcc('a', 'v', 'c', '3')) {
-            video_codec_name = "H.264";
+            video_codec = Codec::H264;
         } else if (format == fourcc('v', 'p', '0', '8')) {
             video_codec_name = "VP8";
         } else if (format == fourcc('v', 'p', '0', '9')) {
@@ -983,7 +987,8 @@ bool Mp4Demuxer::open(const std::filesystem::path& path, std::string& error) {
             video_codec_name = fourccText(format);
         }
         if (video_codec_name.empty()) {
-            video_codec_name = video_codec == Codec::Hevc ? "HEVC"
+            video_codec_name = video_codec == Codec::Hevc   ? "HEVC"
+                               : video_codec == Codec::H264 ? "H.264"
                                : video_codec == Codec::Mpeg2 ? "MPEG-2"
                                                              : "MPEG-1";
         }
@@ -1005,12 +1010,19 @@ bool Mp4Demuxer::open(const std::filesystem::path& path, std::string& error) {
     video_.height = video_track.entry.height != 0 ? video_track.entry.height
                                                  : video_track.tkhd_height;
     video_.hvcc = video_track.entry.hvcc;
+    video_.avcc = video_track.entry.avcc;
 
     if (!video_.hvcc.empty()) {
         HvccInfo hvcc;
         std::string hvcc_error;
         if (parseHvcc(video_.hvcc.data(), video_.hvcc.size(), hvcc, &hvcc_error)) {
             video_.format.nal_length_size = hvcc.length_size;
+        }
+    }
+    if (video_codec == Codec::H264 && !video_.avcc.empty()) {
+        AvccInfo avcc;
+        if (parseAvcc(video_.avcc.data(), video_.avcc.size(), avcc, nullptr)) {
+            video_.format.nal_length_size = avcc.length_size;
         }
     }
 

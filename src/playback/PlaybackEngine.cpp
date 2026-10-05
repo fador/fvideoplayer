@@ -42,6 +42,8 @@ const char* PlaybackEngine::videoCodecName(demux::Codec codec) {
     switch (codec) {
         case demux::Codec::Hevc:
             return "HEVC";
+        case demux::Codec::H264:
+            return "H.264";
         case demux::Codec::Mpeg1:
             return "MPEG-1";
         case demux::Codec::Mpeg2:
@@ -73,6 +75,27 @@ bool PlaybackEngine::configureVideoDecoder(std::string& error) {
             // the audio plays.
             video_codec_ = VideoCodec::None;
             log::add(log::Level::Warning, "HEVC support was not built; playing audio only");
+#endif
+            break;
+        case demux::Codec::H264:
+#if PLAYER_HAS_F264DEC
+            video_codec_ = VideoCodec::H264;
+            if (!f264_decoder_.open(&error)) {
+                video_codec_ = VideoCodec::None;
+                return false;
+            }
+            if (!video_info_.avcc.empty() &&
+                !f264_decoder_.pushParameterSets(video_info_.avcc, &error)) {
+                f264_decoder_.close();
+                video_codec_ = VideoCodec::None;
+                return false;
+            }
+#else
+            // The H.264 backend is external. Without it an H.264 track is
+            // treated like any other codec without a decoder: it is named and
+            // the audio plays.
+            video_codec_ = VideoCodec::None;
+            log::add(log::Level::Warning, "H.264 support was not built; playing audio only");
 #endif
             break;
         case demux::Codec::Mpeg1:
@@ -117,6 +140,16 @@ void PlaybackEngine::resetVideoDecoder() {
                 decoder_.pushParameterSets(video_info_.hvcc, nullptr);
             }
             break;
+        case VideoCodec::H264:
+            f264_decoder_.close();
+            if (!f264_decoder_.open(nullptr)) {
+                video_codec_ = VideoCodec::None;
+                return;
+            }
+            if (!video_info_.avcc.empty()) {
+                f264_decoder_.pushParameterSets(video_info_.avcc, nullptr);
+            }
+            break;
         case VideoCodec::Mpeg1:
             // The reference pictures have to go, so the decoder is rebuilt.
             mpeg12_decoder_.reset();
@@ -135,6 +168,10 @@ bool PlaybackEngine::pushVideoSample(const demux::Sample& sample) {
             return decoder_.pushSample(sample.data.data(), sample.data.size(), sample.pts,
                                        video_info_.format.annexb,
                                        video_info_.format.nal_length_size);
+        case VideoCodec::H264:
+            return f264_decoder_.pushSample(sample.data.data(), sample.data.size(), sample.pts,
+                                            video_info_.format.annexb,
+                                            video_info_.format.nal_length_size);
         case VideoCodec::Mpeg1:
             mpeg12_decoder_.pushSample(sample.data.data(), sample.data.size(), sample.pts);
             return true;
@@ -151,6 +188,8 @@ int PlaybackEngine::pullVideoFrames(std::vector<decode::DecodedFrame>& out) {
     switch (video_codec_) {
         case VideoCodec::Hevc:
             return decoder_.pullFrames(out);
+        case VideoCodec::H264:
+            return f264_decoder_.pullFrames(out);
         case VideoCodec::Mpeg1:
             return mpeg12_decoder_.pullFrames(out);
         case VideoCodec::Flv1:
@@ -165,6 +204,8 @@ int PlaybackEngine::flushVideoDecoder(std::vector<decode::DecodedFrame>& out) {
     switch (video_codec_) {
         case VideoCodec::Hevc:
             return decoder_.flush(out);
+        case VideoCodec::H264:
+            return f264_decoder_.flush(out);
         case VideoCodec::Mpeg1:
             return mpeg12_decoder_.flush(out);
         case VideoCodec::Flv1:

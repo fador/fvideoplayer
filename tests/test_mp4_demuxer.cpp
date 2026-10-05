@@ -111,6 +111,12 @@ Bytes visualSampleEntry(uint32_t format = kFourcc("hvc1")) {
     putU16(payload, 0xFFFF);
     if (format == kFourcc("hvc1") || format == kFourcc("hev1")) {
         append(payload, box(kFourcc("hvcC"), makeHvcc()));
+    } else if (format == kFourcc("avc1") || format == kFourcc("avc3")) {
+        // configurationVersion, profile, compatibility, level,
+        // lengthSizeMinusOne (4 bytes), one SPS and one PPS.
+        append(payload, box(kFourcc("avcC"),
+                            Bytes{1, 0x42, 0x00, 0x1E, 0xFF, 0xE1, 0x00, 0x02, 0x67, 0x42, 0x01,
+                                  0x00, 0x02, 0x68, 0xCE}));
     }
     return box(format, payload);
 }
@@ -587,16 +593,16 @@ TEST(Mp4Demuxer, ParsesVideoAndAudioTrack) {
 
 TEST(Mp4Demuxer, KeepsUnsupportedVideoAndPlaysAudio) {
     Mp4Spec spec = simpleSpec();
-    spec.video_format = kFourcc("avc1");
+    spec.video_format = kFourcc("vp09");
     const std::filesystem::path path =
-        writeMp4(buildMp4(spec), "hevc_player_mp4_avc.mp4");
+        writeMp4(buildMp4(spec), "hevc_player_mp4_vp9.mp4");
     {
         player::demux::Mp4Demuxer demuxer;
         std::string error;
         ASSERT_TRUE(demuxer.open(path, error)) << error;
 
         EXPECT_EQ(demuxer.video().codec, player::demux::Codec::Unknown);
-        EXPECT_EQ(demuxer.video().codec_name, "H.264");
+        EXPECT_EQ(demuxer.video().codec_name, "VP9");
         EXPECT_EQ(demuxer.video().width, 1280u);
         EXPECT_EQ(demuxer.video().height, 720u);
         EXPECT_TRUE(demuxer.audio().present);
@@ -606,6 +612,29 @@ TEST(Mp4Demuxer, KeepsUnsupportedVideoAndPlaysAudio) {
         ASSERT_TRUE(demuxer.readAudioSample(sample));
         EXPECT_EQ(sample.track, player::demux::TrackType::Audio);
         EXPECT_TRUE(demuxer.seek(0.05));
+        ASSERT_TRUE(demuxer.readAudioSample(sample));
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(Mp4Demuxer, ReadsH264Track) {
+    Mp4Spec spec = simpleSpec();
+    spec.video_format = kFourcc("avc1");
+    const std::filesystem::path path = writeMp4(buildMp4(spec), "hevc_player_mp4_avc.mp4");
+    {
+        player::demux::Mp4Demuxer demuxer;
+        std::string error;
+        ASSERT_TRUE(demuxer.open(path, error)) << error;
+
+        EXPECT_EQ(demuxer.video().codec, player::demux::Codec::H264);
+        EXPECT_EQ(demuxer.video().codec_name, "H.264");
+        EXPECT_FALSE(demuxer.video().avcc.empty());
+        EXPECT_EQ(demuxer.video().format.nal_length_size, 4);
+        EXPECT_TRUE(demuxer.audio().present);
+
+        player::demux::Sample sample;
+        ASSERT_TRUE(demuxer.readSample(sample));
+        EXPECT_EQ(sample.track, player::demux::TrackType::Video);
         ASSERT_TRUE(demuxer.readAudioSample(sample));
     }
     std::filesystem::remove(path);

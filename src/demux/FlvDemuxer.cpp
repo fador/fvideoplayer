@@ -1,5 +1,7 @@
 #include "demux/FlvDemuxer.hpp"
 
+#include "demux/Avcc.hpp"
+
 #include <algorithm>
 #include <cstring>
 #include <string>
@@ -448,7 +450,10 @@ bool FlvDemuxer::scanTags(std::string& error) {
                     video_.codec = Codec::Flv1;
                     video_.codec_name = "FLV1";
                 } else if (codec_id == 7) {
+                    video_.codec = Codec::H264;
                     video_.codec_name = "H.264";
+                    video_.format.annexb = false;
+                    video_.format.nal_length_size = 4;
                 } else if (codec_id == 4 || codec_id == 5) {
                     video_.codec_name = "On2 VP6";
                 } else if (codec_id == 3 || codec_id == 6) {
@@ -458,8 +463,33 @@ bool FlvDemuxer::scanTags(std::string& error) {
                 }
             }
             // A video codec without a decoder is not indexed: the file still
-            // plays its audio.
-            if (video_.codec == Codec::Flv1) {
+            // plays its audio. H.264 tags are indexed except for the sequence
+            // header, which carries the avcC record.
+            if (video_.codec == Codec::H264 && size >= 5) {
+                uint8_t packet_type = 0;
+                if (readAt(data_offset_tag + 1, &packet_type, 1)) {
+                    if (packet_type == 0) {
+                        // The FLV video header, AVCPacketType and composition
+                        // time precede the avcC record.
+                        std::vector<uint8_t> config;
+                        config.resize(size - 5);
+                        if (readAt(data_offset_tag + 5, config.data(), config.size())) {
+                            video_.avcc = std::move(config);
+                            AvccInfo avcc;
+                            if (parseAvcc(video_.avcc.data(), video_.avcc.size(), avcc, nullptr)) {
+                                video_.format.nal_length_size = avcc.length_size;
+                            }
+                        }
+                    } else if (packet_type == 1) {
+                        TagInfo info;
+                        info.offset = pos;
+                        info.size = size;
+                        info.pts_ms = timestamp;
+                        info.keyframe = keyframe;
+                        video_tags_.push_back(info);
+                    }
+                }
+            } else if (video_.codec == Codec::Flv1) {
                 TagInfo info;
                 info.offset = pos;
                 info.size = size;
@@ -625,6 +655,14 @@ bool FlvDemuxer::readSample(Sample& sample) {
             continue;
         }
         sample.data.erase(sample.data.begin());  // the FLV frame-type/codec byte
+        if (video_.codec == Codec::H264) {
+            // The AVCPacketType byte and the three composition time bytes
+            // follow the FLV video header; the decoder wants the NAL units.
+            if (sample.data.size() <= 4) {
+                continue;
+            }
+            sample.data.erase(sample.data.begin(), sample.data.begin() + 4);
+        }
         if (sample.data.empty()) {
             continue;
         }
