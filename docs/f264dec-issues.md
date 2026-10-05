@@ -1,7 +1,7 @@
 # f264dec integration notes
 
 The player includes [f264dec](https://github.com/fador/f264dec) as a submodule
-(`external/f264dec`, pinned at `aa13a3b`) for H.264/AVC decoding.
+(`external/f264dec`, pinned at `6291599`) for H.264/AVC decoding.
 
 ## Verification
 
@@ -35,7 +35,15 @@ element size (16) instead of the coded depth (10), which made the renderer
 treat 10-bit samples as 16-bit and show a near-black, green-tinted image, and
 `silent = 1` still printed the profile banner and a per-frame progress line
 because one path had the condition inverted and another checked a
-never-initialized field. All of them are resolved.
+never-initialized field.
+
+`6291599` fixed a crash when seeking on streams that use the threaded frame
+pipeline (CABAC, one slice per frame): closing the decoder freed the slices and
+buffers of jobs that were still running, and each slot's shallow copy of the
+`VideoParameters` kept a pointer to the master's macroblock-to-slice-group map,
+which the master frees and regenerates for every picture. `CloseDecoder` now
+waits for the pipeline, and each slot owns a copy of the map. All of them are
+resolved.
 
 ## Calling conventions used by the player wrapper
 
