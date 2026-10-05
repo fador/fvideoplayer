@@ -114,29 +114,37 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
     }
 
     // Feeds one sample to the selected backend and drains its pictures.
-    const auto pushSample = [&](const demux::Sample& sample, std::vector<DecodedFrame>& frames) {
+    // Returns false only when the decoder refuses the sample: an empty frame
+    // list is normal while the decoder holds an access unit back for
+    // reordering or picture-boundary detection.
+    const auto pushSample = [&](const demux::Sample& sample,
+                                std::vector<DecodedFrame>& frames) -> bool {
         if (is_mpeg) {
             mpeg12_decoder.pushSample(sample.data.data(), sample.data.size(), sample.pts);
-            return mpeg12_decoder.pullFrames(frames);
+            mpeg12_decoder.pullFrames(frames);
+            return true;
         }
         if (is_flv1) {
             flv1_decoder.pushSample(sample.data.data(), sample.data.size(), sample.pts);
-            return flv1_decoder.pullFrames(frames);
+            flv1_decoder.pullFrames(frames);
+            return true;
         }
         if (is_h264) {
             if (!h264_decoder.pushSample(sample.data.data(), sample.data.size(), sample.pts,
                                          demuxer->video().format.annexb,
                                          demuxer->video().format.nal_length_size)) {
-                return 0;
+                return false;
             }
-            return h264_decoder.pullFrames(frames);
+            h264_decoder.pullFrames(frames);
+            return true;
         }
         if (!decoder.pushSample(sample.data.data(), sample.data.size(), sample.pts,
                                 demuxer->video().format.annexb,
                                 demuxer->video().format.nal_length_size)) {
-            return 0;
+            return false;
         }
-        return decoder.pullFrames(frames);
+        decoder.pullFrames(frames);
+        return true;
     };
     const auto flushDecoder = [&](std::vector<DecodedFrame>& frames) {
         if (is_mpeg) {
@@ -184,8 +192,7 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
     while (demuxer->readSample(sample)) {
         local_stats.bytes += static_cast<int64_t>(sample.data.size());
         frames.clear();
-        if (pushSample(sample, frames) == 0 && !sample.data.empty() && !is_mpeg && !is_flv1 &&
-            !is_h264) {
+        if (!pushSample(sample, frames)) {
             local_error = "decoder rejected a sample";
             ok = false;
             break;
