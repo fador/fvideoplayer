@@ -335,7 +335,7 @@ std::filesystem::path writeAvi(const Bytes& data, const std::string& name) {
 }  // namespace
 
 TEST(AviDemuxer, ParsesVideoTrackAndSamples) {
-    const std::filesystem::path path = writeAvi(buildAvi({}), "hevc_player_avi_basic.avi");
+    const std::filesystem::path path = writeAvi(buildAvi({}), "fvideoplayer_avi_basic.avi");
     {
         player::demux::AviDemuxer demuxer;
         std::string error;
@@ -378,7 +378,7 @@ TEST(AviDemuxer, ParsesVideoTrackAndSamples) {
 TEST(AviDemuxer, KeepsUnsupportedVideoAndPlaysAudio) {
     AviSpec spec = audioSpec();
     spec.video_fourcc = kFourcc("VP80");
-    const std::filesystem::path path = writeAvi(buildAvi(spec), "hevc_player_avi_vp8.avi");
+    const std::filesystem::path path = writeAvi(buildAvi(spec), "fvideoplayer_avi_vp8.avi");
     {
         player::demux::AviDemuxer demuxer;
         std::string error;
@@ -406,7 +406,7 @@ TEST(AviDemuxer, KeepsUnsupportedVideoAndPlaysAudio) {
 TEST(AviDemuxer, ReadsH264Track) {
     AviSpec spec = audioSpec();
     spec.video_fourcc = kFourcc("H264");
-    const std::filesystem::path path = writeAvi(buildAvi(spec), "hevc_player_avi_h264.avi");
+    const std::filesystem::path path = writeAvi(buildAvi(spec), "fvideoplayer_avi_h264.avi");
     {
         player::demux::AviDemuxer demuxer;
         std::string error;
@@ -428,7 +428,7 @@ TEST(AviDemuxer, ReadsH264Track) {
 }
 
 TEST(AviDemuxer, ScansMoviWithoutIdx1) {
-    const std::filesystem::path path = writeAvi(buildAvi(noIdx1()), "hevc_player_avi_scan.avi");
+    const std::filesystem::path path = writeAvi(buildAvi(noIdx1()), "fvideoplayer_avi_scan.avi");
     {
         player::demux::AviDemuxer demuxer;
         std::string error;
@@ -449,7 +449,7 @@ TEST(AviDemuxer, ScansMoviWithoutIdx1) {
 }
 
 TEST(AviDemuxer, DetectsAnnexBStream) {
-    const std::filesystem::path path = writeAvi(buildAvi(annexbSpec()), "hevc_player_avi_annexb.avi");
+    const std::filesystem::path path = writeAvi(buildAvi(annexbSpec()), "fvideoplayer_avi_annexb.avi");
     {
         player::demux::AviDemuxer demuxer;
         std::string error;
@@ -474,7 +474,7 @@ TEST(AviDemuxer, DetectsAnnexBStream) {
 }
 
 TEST(AviDemuxer, SeeksToPreviousKeyframe) {
-    const std::filesystem::path path = writeAvi(buildAvi({}), "hevc_player_avi_seek.avi");
+    const std::filesystem::path path = writeAvi(buildAvi({}), "fvideoplayer_avi_seek.avi");
     {
         player::demux::AviDemuxer demuxer;
         std::string error;
@@ -490,7 +490,7 @@ TEST(AviDemuxer, SeeksToPreviousKeyframe) {
 }
 
 TEST(AviDemuxer, FactoryDetectsAvi) {
-    const std::filesystem::path path = writeAvi(buildAvi({}), "hevc_player_avi_factory.avi");
+    const std::filesystem::path path = writeAvi(buildAvi({}), "fvideoplayer_avi_factory.avi");
     {
         std::string error;
         std::unique_ptr<player::demux::IDemuxer> demuxer = player::demux::createDemuxer(path, error);
@@ -502,7 +502,7 @@ TEST(AviDemuxer, FactoryDetectsAvi) {
 
 TEST(AviDemuxer, ReadsAudioTrackAndPackets) {
     const std::filesystem::path path = writeAvi(buildAvi(audioSpec()),
-                                                "hevc_player_avi_audio.avi");
+                                                "fvideoplayer_avi_audio.avi");
     {
         player::demux::AviDemuxer demuxer;
         std::string error;
@@ -539,7 +539,7 @@ TEST(AviDemuxer, ReadsAudioTrackAndPackets) {
 
 TEST(AviDemuxer, ReadsAacExtradataFromStrf) {
     const std::filesystem::path path = writeAvi(buildAvi(aacSpec()),
-                                                "hevc_player_avi_aac.avi");
+                                                "fvideoplayer_avi_aac.avi");
     {
         player::demux::AviDemuxer demuxer;
         std::string error;
@@ -559,7 +559,7 @@ TEST(AviDemuxer, ReadsAacExtradataFromStrf) {
 
 TEST(AviDemuxer, ScansAudioChunksWithoutIdx1) {
     const std::filesystem::path path =
-        writeAvi(buildAvi(audioScanSpec()), "hevc_player_avi_audio_scan.avi");
+        writeAvi(buildAvi(audioScanSpec()), "fvideoplayer_avi_audio_scan.avi");
     {
         player::demux::AviDemuxer demuxer;
         std::string error;
@@ -580,7 +580,7 @@ TEST(AviDemuxer, ScansAudioChunksWithoutIdx1) {
 
 TEST(AviDemuxer, SeekRepositionsAudioCursor) {
     const std::filesystem::path path = writeAvi(buildAvi(audioSpec()),
-                                                "hevc_player_avi_seek_audio.avi");
+                                                "fvideoplayer_avi_seek_audio.avi");
     {
         player::demux::AviDemuxer demuxer;
         std::string error;

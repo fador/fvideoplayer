@@ -91,11 +91,12 @@ int dumpToYuv(const std::filesystem::path& input, const std::filesystem::path& o
             return 1;
         }
     } else {
-        const int threads = std::getenv("HEVC_PLAYER_THREADS")
-                                ? std::atoi(std::getenv("HEVC_PLAYER_THREADS"))
+        const int threads = std::getenv("FVIDEOPLAYER_THREADS")
+                                ? std::atoi(std::getenv("FVIDEOPLAYER_THREADS"))
                                 : -1;
-        const int owf = std::getenv("HEVC_PLAYER_OWF") ? std::atoi(std::getenv("HEVC_PLAYER_OWF"))
-                                                         : -1;
+        const int owf = std::getenv("FVIDEOPLAYER_OWF")
+                            ? std::atoi(std::getenv("FVIDEOPLAYER_OWF"))
+                            : -1;
         if (!decoder.open(&local_error, threads, owf)) {
             std::fclose(out);
             if (error) {

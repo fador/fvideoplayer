@@ -200,7 +200,7 @@ TEST(FlvDemuxer, ParsesTracksAndMetadata) {
         mp3AudioTag(),
         flvTag(9, 40, flv1VideoPayload(2, 40)),
     });
-    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_basic.flv");
+    const std::filesystem::path path = writeFlv(file, "fvideoplayer_flv_basic.flv");
     {
         player::demux::FlvDemuxer demuxer;
         std::string error;
@@ -246,7 +246,7 @@ TEST(FlvDemuxer, ParsesTracksAndMetadata) {
 
 TEST(FlvDemuxer, DetectsDimensionsWithoutMetadata) {
     const Bytes file = buildFlv({flvTag(9, 0, flv1VideoPayload(1, 0))}, false, false);
-    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_nometa.flv");
+    const std::filesystem::path path = writeFlv(file, "fvideoplayer_flv_nometa.flv");
     {
         player::demux::FlvDemuxer demuxer;
         std::string error;
@@ -264,7 +264,7 @@ TEST(FlvDemuxer, SeeksToPreviousKeyframe) {
         flvTag(9, 80, flv1VideoPayload(1, 80)),
         flvTag(9, 120, flv1VideoPayload(2, 120)),
     });
-    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_seek.flv");
+    const std::filesystem::path path = writeFlv(file, "fvideoplayer_flv_seek.flv");
     {
         player::demux::FlvDemuxer demuxer;
         std::string error;
@@ -284,7 +284,7 @@ TEST(FlvDemuxer, ReadsAacSequenceHeaderAsExtradata) {
         aacConfigTag(),
         aacAudioTag(),
     });
-    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_aac.flv");
+    const std::filesystem::path path = writeFlv(file, "fvideoplayer_flv_aac.flv");
     {
         player::demux::FlvDemuxer demuxer;
         std::string error;
@@ -308,7 +308,7 @@ TEST(FlvDemuxer, ReadsAacSequenceHeaderAsExtradata) {
 
 TEST(FlvDemuxer, FactoryDetectsFlv) {
     const Bytes file = buildFlv({flvTag(9, 0, flv1VideoPayload(1, 0))});
-    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_factory.flv");
+    const std::filesystem::path path = writeFlv(file, "fvideoplayer_flv_factory.flv");
     {
         std::string error;
         std::unique_ptr<player::demux::IDemuxer> demuxer =
@@ -324,7 +324,7 @@ TEST(FlvDemuxer, RejectsUnsupportedVideoWithoutAudio) {
     payload.push_back(0x14);  // keyframe, On2 VP6
     payload.push_back(0x00);
     const Bytes file = buildFlv({flvTag(9, 0, payload)}, true, false);
-    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_vp6.flv");
+    const std::filesystem::path path = writeFlv(file, "fvideoplayer_flv_vp6.flv");
     {
         player::demux::FlvDemuxer demuxer;
         std::string error;
@@ -346,7 +346,7 @@ TEST(FlvDemuxer, KeepsUnsupportedVideoAndPlaysAudio) {
         mp3AudioTag(),
         flvTag(9, 40, inter),
     });
-    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_vp6_audio.flv");
+    const std::filesystem::path path = writeFlv(file, "fvideoplayer_flv_vp6_audio.flv");
     {
         player::demux::FlvDemuxer demuxer;
         std::string error;
@@ -396,7 +396,7 @@ TEST(FlvDemuxer, ReadsH264Track) {
         flvTag(9, 0, nalu),
         mp3AudioTag(),
     });
-    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_h264.flv");
+    const std::filesystem::path path = writeFlv(file, "fvideoplayer_flv_h264.flv");
     {
         player::demux::FlvDemuxer demuxer;
         std::string error;
@@ -430,7 +430,7 @@ TEST(FlvDemuxer, EnginePlaysAudioOfUnsupportedVideo) {
         tags.push_back(mp3FrameTag(i * 26));
     }
     const Bytes file = buildFlv(tags);
-    const std::filesystem::path path = writeFlv(file, "hevc_player_flv_vp6_engine.flv");
+    const std::filesystem::path path = writeFlv(file, "fvideoplayer_flv_vp6_engine.flv");
     {
         player::playback::PlaybackEngine engine;
         std::string error;

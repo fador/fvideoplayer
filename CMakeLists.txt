@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(hevc_player
+project(fVideoPlayer
     VERSION 0.1.0
-    DESCRIPTION "Video player with from-scratch decoders and an optional kvzdec HEVC backend"
+    DESCRIPTION "Video player with from-scratch decoders and optional kvzdec/f264dec backends"
     LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -257,16 +257,16 @@ if(MSVC)
     target_compile_options(player_core PRIVATE /W4 /permissive- /Zc:__cplusplus)
 endif()
 
-add_executable(hevc_player src/main.cpp)
-target_link_libraries(hevc_player PRIVATE player_core)
+add_executable(fVideoPlayer src/main.cpp)
+target_link_libraries(fVideoPlayer PRIVATE player_core)
 
 # Build the GUI as a windows-subsystem executable so no console window flashes
 # at launch. CLI modes reattach to the launching console for their output; the
 # MSVC entry point has to be named explicitly because the app uses main().
 if(WIN32)
-    set_target_properties(hevc_player PROPERTIES WIN32_EXECUTABLE TRUE)
+    set_target_properties(fVideoPlayer PROPERTIES WIN32_EXECUTABLE TRUE)
     if(MSVC)
-        target_link_options(hevc_player PRIVATE "/ENTRY:mainCRTStartup")
+        target_link_options(fVideoPlayer PRIVATE "/ENTRY:mainCRTStartup")
     endif()
 endif()
 

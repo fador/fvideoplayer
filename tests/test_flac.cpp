@@ -69,7 +69,7 @@ std::filesystem::path writeFlac(const std::vector<uint8_t>& data, const char* na
 TEST(Flac, MatchesReference) {
     for (size_t f = 0; f < kFiles.size(); ++f) {
         const FileCase& file = kFiles[f];
-        const std::filesystem::path path = writeFlac(file.data, "hevc_player_flac.flac");
+        const std::filesystem::path path = writeFlac(file.data, "fvideoplayer_flac.flac");
         {
             player::demux::FlacDemuxer demuxer;
             std::string error;
@@ -109,7 +109,7 @@ TEST(Flac, MatchesReference) {
 
 TEST(Flac, DemuxerSeeksToFrame) {
     const FileCase& file = kFiles[0];
-    const std::filesystem::path path = writeFlac(file.data, "hevc_player_flac_seek.flac");
+    const std::filesystem::path path = writeFlac(file.data, "fvideoplayer_flac_seek.flac");
     {
         player::demux::FlacDemuxer demuxer;
         std::string error;
@@ -130,8 +130,8 @@ TEST(Flac, DemuxerSeeksToFrame) {
 TEST(Flac, EnginePlaysAudioOnly) {
     const FileCase& file = kFiles[0];
     const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "hevc_player_flac_engine.flac";
-    writeFlac(file.data, "hevc_player_flac_engine.flac");
+        std::filesystem::temp_directory_path() / "fvideoplayer_flac_engine.flac";
+    writeFlac(file.data, "fvideoplayer_flac_engine.flac");
     {
         player::playback::PlaybackEngine engine;
         std::string error;

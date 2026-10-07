@@ -75,7 +75,7 @@ TEST(Ac3Demuxer, FrameSizeParsing) {
 
 TEST(Ac3Demuxer, ParsesFramesAndSeeks) {
     const Bytes file = buildRawAc3(3);
-    const std::filesystem::path path = writeFile(file, "hevc_player_ac3_basic.ac3");
+    const std::filesystem::path path = writeFile(file, "fvideoplayer_ac3_basic.ac3");
     {
         player::demux::Ac3Demuxer demuxer;
         std::string error;
@@ -108,7 +108,7 @@ TEST(Ac3Demuxer, ParsesFramesAndSeeks) {
 
 TEST(Ac3Demuxer, ReadsSixChannelTrack) {
     const Bytes file = buildRawAc3(1, 7, true);
-    const std::filesystem::path path = writeFile(file, "hevc_player_ac3_51.ac3");
+    const std::filesystem::path path = writeFile(file, "fvideoplayer_ac3_51.ac3");
     {
         player::demux::Ac3Demuxer demuxer;
         std::string error;
@@ -120,7 +120,7 @@ TEST(Ac3Demuxer, ReadsSixChannelTrack) {
 
 TEST(Ac3Demuxer, DetectsRawAc3Files) {
     const Bytes file = buildRawAc3(2);
-    const std::filesystem::path path = writeFile(file, "hevc_player_ac3_detect.ac3");
+    const std::filesystem::path path = writeFile(file, "fvideoplayer_ac3_detect.ac3");
     {
         std::string error;
         const std::unique_ptr<player::demux::IDemuxer> demuxer =
@@ -135,7 +135,7 @@ TEST(Ac3Demuxer, DetectsRawAc3Files) {
 
 TEST(Ac3Demuxer, ReadsMonoTrack) {
     const Bytes plain = buildRawAc3(1, 1, false);
-    const std::filesystem::path plain_path = writeFile(plain, "hevc_player_ac3_mono.ac3");
+    const std::filesystem::path plain_path = writeFile(plain, "fvideoplayer_ac3_mono.ac3");
     {
         player::demux::Ac3Demuxer demuxer;
         std::string error;
@@ -145,7 +145,7 @@ TEST(Ac3Demuxer, ReadsMonoTrack) {
     std::filesystem::remove(plain_path);
 
     const Bytes with_lfe = buildRawAc3(1, 1, true);
-    const std::filesystem::path lfe_path = writeFile(with_lfe, "hevc_player_ac3_mono_lfe.ac3");
+    const std::filesystem::path lfe_path = writeFile(with_lfe, "fvideoplayer_ac3_mono_lfe.ac3");
     {
         player::demux::Ac3Demuxer demuxer;
         std::string error;

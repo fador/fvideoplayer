@@ -15,6 +15,8 @@
 - Build: `cmake --build build-x64 --target player_tests --config RelWithDebInfo`
 - Tests: `build-x64\tests\RelWithDebInfo\player_tests.exe` (add
   `--gtest_filter=...` to narrow).
+- Player: `cmake --build build-x64 --target fVideoPlayer --config RelWithDebInfo`,
+  output `build-x64\RelWithDebInfo\fVideoPlayer.exe`.
 - The external backends are optional: kvzdec (HEVC) and f264dec (H.264).
   Check the no-backend paths with a scratch build dir:
   `-DPLAYER_ENABLE_KVZDEC=OFF` and/or `-DPLAYER_ENABLE_F264DEC=OFF` (the test

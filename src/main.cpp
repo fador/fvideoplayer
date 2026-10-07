@@ -245,7 +245,7 @@ int main(int argc, char** argv) {
     }
 
     player::Application app;
-    if (!app.init("HEVC Player")) {
+    if (!app.init("fVideoPlayer")) {
         return EXIT_FAILURE;
     }
     if (!screenshot.empty()) {

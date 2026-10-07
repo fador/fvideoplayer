@@ -3491,7 +3491,7 @@ const uint8_t kFile[] = {
 
 TEST(Mp3, DemuxerPlaysFile) {
     const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "hevc_player_mp3_test.mp3";
+        std::filesystem::temp_directory_path() / "fvideoplayer_mp3_test.mp3";
     {
         std::ofstream file(path, std::ios::binary | std::ios::trunc);
         file.write(reinterpret_cast<const char*>(kFile), sizeof(kFile));
@@ -3537,7 +3537,7 @@ TEST(Mp3, DemuxerPlaysFile) {
 
 TEST(Mp3, EnginePlaysAudioOnly) {
     const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "hevc_player_mp3_engine.mp3";
+        std::filesystem::temp_directory_path() / "fvideoplayer_mp3_engine.mp3";
     {
         std::ofstream file(path, std::ios::binary | std::ios::trunc);
         file.write(reinterpret_cast<const char*>(kFile), sizeof(kFile));

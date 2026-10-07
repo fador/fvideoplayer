@@ -49,7 +49,7 @@ std::vector<uint8_t> basicStream() {
 }  // namespace
 
 TEST(RawHevcDemuxer, ParsesAccessUnitsAndKeyframes) {
-    const std::filesystem::path path = writeStream(basicStream(), "hevc_player_raw_basic.hevc");
+    const std::filesystem::path path = writeStream(basicStream(), "fvideoplayer_raw_basic.hevc");
     {
         RawHevcDemuxer demuxer(30.0);
         std::string error;
@@ -89,7 +89,7 @@ TEST(RawHevcDemuxer, MultiSliceStaysInOneAccessUnit) {
     append(stream, nal(19, {0xAA}, true));   // first slice
     append(stream, nal(19, {0xBB}, false));  // second slice of same picture
 
-    const std::filesystem::path path = writeStream(stream, "hevc_player_raw_slices.hevc");
+    const std::filesystem::path path = writeStream(stream, "fvideoplayer_raw_slices.hevc");
     {
         RawHevcDemuxer demuxer(25.0);
         std::string error;
@@ -114,7 +114,7 @@ TEST(RawHevcDemuxer, SeekFindsPreviousKeyframe) {
         append(stream, nal(1, {static_cast<uint8_t>(i)}));
     }
 
-    const std::filesystem::path path = writeStream(stream, "hevc_player_raw_seek.hevc");
+    const std::filesystem::path path = writeStream(stream, "fvideoplayer_raw_seek.hevc");
     {
         RawHevcDemuxer demuxer(10.0);
         std::string error;
@@ -130,7 +130,7 @@ TEST(RawHevcDemuxer, SeekFindsPreviousKeyframe) {
 }
 
 TEST(RawHevcDemuxer, FactoryDetectsAnnexB) {
-    const std::filesystem::path path = writeStream(basicStream(), "hevc_player_raw_factory.hevc");
+    const std::filesystem::path path = writeStream(basicStream(), "fvideoplayer_raw_factory.hevc");
     {
         std::string error;
         std::unique_ptr<player::demux::IDemuxer> demuxer = player::demux::createDemuxer(path, error);

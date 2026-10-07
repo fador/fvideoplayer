@@ -309,7 +309,7 @@ std::filesystem::path writeMkv(const Bytes& data, const std::string& name) {
 }  // namespace
 
 TEST(MkvDemuxer, ParsesVideoAndAudioTrack) {
-    const std::filesystem::path path = writeMkv(buildMkv(true), "hevc_player_mkv_basic.mkv");
+    const std::filesystem::path path = writeMkv(buildMkv(true), "fvideoplayer_mkv_basic.mkv");
     {
         player::demux::MkvDemuxer demuxer;
         std::string error;
@@ -336,7 +336,7 @@ TEST(MkvDemuxer, ParsesVideoAndAudioTrack) {
 TEST(MkvDemuxer, KeepsUnsupportedVideoAndPlaysAudio) {
     const std::filesystem::path path =
         writeMkv(buildMkv(true, false, false, "A_AAC", {}, "V_VP9"),
-                 "hevc_player_mkv_vp9.mkv");
+                 "fvideoplayer_mkv_vp9.mkv");
     {
         player::demux::MkvDemuxer demuxer;
         std::string error;
@@ -361,7 +361,7 @@ TEST(MkvDemuxer, KeepsUnsupportedVideoAndPlaysAudio) {
 TEST(MkvDemuxer, ReadsH264Track) {
     const std::filesystem::path path =
         writeMkv(buildMkv(true, false, false, "A_AAC", {}, "V_MPEG4/ISO/AVC"),
-                 "hevc_player_mkv_avc.mkv");
+                 "fvideoplayer_mkv_avc.mkv");
     {
         player::demux::MkvDemuxer demuxer;
         std::string error;
@@ -384,7 +384,7 @@ TEST(MkvDemuxer, ReadsH264Track) {
 }
 
 TEST(MkvDemuxer, ReadsSamplesWithPtsAndKeyframes) {
-    const std::filesystem::path path = writeMkv(buildMkv(false), "hevc_player_mkv_samples.mkv");
+    const std::filesystem::path path = writeMkv(buildMkv(false), "fvideoplayer_mkv_samples.mkv");
     {
         player::demux::MkvDemuxer demuxer;
         std::string error;
@@ -417,7 +417,7 @@ TEST(MkvDemuxer, ReadsSamplesWithPtsAndKeyframes) {
 TEST(MkvDemuxer, LazyIndexReadsSamplesWithCues) {
     const std::filesystem::path path =
         writeMkv(buildMkv(false, false, false, "A_AAC", {}, "V_MPEGH/ISO/HEVC", true),
-                 "hevc_player_mkv_cues.mkv");
+                 "fvideoplayer_mkv_cues.mkv");
     {
         player::demux::MkvDemuxer demuxer;
         std::string error;
@@ -449,7 +449,7 @@ TEST(MkvDemuxer, LazyIndexReadsSamplesWithCues) {
 TEST(MkvDemuxer, LazyIndexSeeksByCue) {
     const std::filesystem::path path =
         writeMkv(buildMkv(true, false, false, "A_AAC", {}, "V_MPEGH/ISO/HEVC", true),
-                 "hevc_player_mkv_cues_seek.mkv");
+                 "fvideoplayer_mkv_cues_seek.mkv");
     {
         player::demux::MkvDemuxer demuxer;
         std::string error;
@@ -481,7 +481,7 @@ TEST(MkvDemuxer, LazyIndexSeeksByCue) {
 }
 
 TEST(MkvDemuxer, SeeksToPreviousKeyframe) {
-    const std::filesystem::path path = writeMkv(buildMkv(false), "hevc_player_mkv_seek.mkv");
+    const std::filesystem::path path = writeMkv(buildMkv(false), "fvideoplayer_mkv_seek.mkv");
     {
         player::demux::MkvDemuxer demuxer;
         std::string error;
@@ -502,7 +502,7 @@ TEST(MkvDemuxer, SeeksToPreviousKeyframe) {
 
 TEST(MkvDemuxer, SeekRepositionsAudioCursor) {
     const std::filesystem::path path =
-        writeMkv(buildMkv(true), "hevc_player_mkv_seek_audio.mkv");
+        writeMkv(buildMkv(true), "fvideoplayer_mkv_seek_audio.mkv");
     {
         player::demux::MkvDemuxer demuxer;
         std::string error;
@@ -537,7 +537,7 @@ TEST(MkvDemuxer, SeekRepositionsAudioCursor) {
 
 TEST(MkvDemuxer, ListsAudioAndSubtitleTracks) {
     const std::filesystem::path path =
-        writeMkv(buildMkv(true, true, true), "hevc_player_mkv_tracks.mkv");
+        writeMkv(buildMkv(true, true, true), "fvideoplayer_mkv_tracks.mkv");
     {
         player::demux::MkvDemuxer demuxer;
         std::string error;
@@ -582,7 +582,7 @@ TEST(MkvDemuxer, ListsAudioAndSubtitleTracks) {
 
 TEST(MkvDemuxer, SelectsAudioTrack) {
     const std::filesystem::path path =
-        writeMkv(buildMkv(true, false, true), "hevc_player_mkv_audio_select.mkv");
+        writeMkv(buildMkv(true, false, true), "fvideoplayer_mkv_audio_select.mkv");
     {
         player::demux::MkvDemuxer demuxer;
         std::string error;
@@ -608,7 +608,7 @@ TEST(MkvDemuxer, MapsExperimentalOpusCodecId) {
                         0x38, 0x01, 0x80, 0xBB, 0, 0, 0, 0, 0};
     const std::filesystem::path path = writeMkv(
         buildMkv(true, false, false, "A_OPUS/EXPERIMENTAL", head),
-        "hevc_player_mkv_opus_experimental.mkv");
+        "fvideoplayer_mkv_opus_experimental.mkv");
     {
         player::demux::MkvDemuxer demuxer;
         std::string error;
@@ -628,7 +628,7 @@ TEST(MkvDemuxer, MapsExperimentalOpusCodecId) {
 }
 
 TEST(MkvDemuxer, FactoryDetectsMkv) {
-    const std::filesystem::path path = writeMkv(buildMkv(false), "hevc_player_mkv_factory.mkv");
+    const std::filesystem::path path = writeMkv(buildMkv(false), "fvideoplayer_mkv_factory.mkv");
     {
         std::string error;
         std::unique_ptr<player::demux::IDemuxer> demuxer = player::demux::createDemuxer(path, error);
@@ -644,7 +644,7 @@ TEST(MkvDemuxer, EnginePlaysTheAudioWhenTheHevcBackendIsMissing) {
     const Bytes aac_config = {0x11, 0x88};
     const std::filesystem::path path =
         writeMkv(buildMkv(true, false, false, "A_AAC", aac_config),
-                 "hevc_player_mkv_engine_hevc.mkv");
+                 "fvideoplayer_mkv_engine_hevc.mkv");
     {
         player::playback::PlaybackEngine engine;
         std::string error;
@@ -659,7 +659,7 @@ TEST(MkvDemuxer, EnginePlaysTheAudioWhenTheHevcBackendIsMissing) {
 
 TEST(MkvDemuxer, EngineRejectsAnHevcOnlyFileWithoutTheBackend) {
     const std::filesystem::path path =
-        writeMkv(buildMkv(false), "hevc_player_mkv_engine_hevc_only.mkv");
+        writeMkv(buildMkv(false), "fvideoplayer_mkv_engine_hevc_only.mkv");
     {
         player::playback::PlaybackEngine engine;
         std::string error;

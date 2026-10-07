@@ -25,7 +25,7 @@ public:
     Application(const Application&) = delete;
     Application& operator=(const Application&) = delete;
 
-    bool init(const std::string& title = "HEVC Player");
+    bool init(const std::string& title = "fVideoPlayer");
     int run(int max_frames = -1);
     void shutdown();
 

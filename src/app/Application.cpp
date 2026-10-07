@@ -221,7 +221,7 @@ bool Application::init(const std::string& title) {
     if (backends.empty()) {
         backends = "no external decoders";
     }
-    log::addf(log::Level::Info, "HEVC Player started (%s)", backends.c_str());
+    log::addf(log::Level::Info, "fVideoPlayer started (%s)", backends.c_str());
     const char* gl_version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
     const char* gl_renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
     log::addf(log::Level::Info, "OpenGL: %s (%s)", gl_version ? gl_version : "?",

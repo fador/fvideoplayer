@@ -1,4 +1,4 @@
-# HEVC Player
+# fVideoPlayer
 
 A video player built around optional external HEVC/H.265 (kvzdec) and
 H.264/AVC (f264dec) decoders plus from-scratch decoders for MPEG-1/2,
@@ -55,8 +55,8 @@ Prerequisites: CMake 3.25+, a C++17 toolchain, Ninja or Visual Studio, and
 Git submodules initialized.
 
 ```sh
-git clone --recursive <repo-url> hevc_player
-cd hevc_player
+git clone --recursive <repo-url> fvideoplayer
+cd fvideoplayer
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
@@ -84,7 +84,7 @@ verified against ffmpeg as described in [verification](docs/verification.md).
 ## Usage
 
 ```
-hevc_player [options] [file]
+fVideoPlayer [options] [file]
 
   --frames N         quit after N rendered frames (smoke test)
   --seek SECONDS     seek to the given position after opening

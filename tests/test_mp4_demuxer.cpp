@@ -566,7 +566,7 @@ Mp4Spec simpleSpec() {
 }  // namespace
 
 TEST(Mp4Demuxer, ParsesVideoAndAudioTrack) {
-    const std::filesystem::path path = writeMp4(buildMp4(simpleSpec()), "hevc_player_mp4_basic.mp4");
+    const std::filesystem::path path = writeMp4(buildMp4(simpleSpec()), "fvideoplayer_mp4_basic.mp4");
     {
         player::demux::Mp4Demuxer demuxer;
         std::string error;
@@ -595,7 +595,7 @@ TEST(Mp4Demuxer, KeepsUnsupportedVideoAndPlaysAudio) {
     Mp4Spec spec = simpleSpec();
     spec.video_format = kFourcc("vp09");
     const std::filesystem::path path =
-        writeMp4(buildMp4(spec), "hevc_player_mp4_vp9.mp4");
+        writeMp4(buildMp4(spec), "fvideoplayer_mp4_vp9.mp4");
     {
         player::demux::Mp4Demuxer demuxer;
         std::string error;
@@ -620,7 +620,7 @@ TEST(Mp4Demuxer, KeepsUnsupportedVideoAndPlaysAudio) {
 TEST(Mp4Demuxer, ReadsH264Track) {
     Mp4Spec spec = simpleSpec();
     spec.video_format = kFourcc("avc1");
-    const std::filesystem::path path = writeMp4(buildMp4(spec), "hevc_player_mp4_avc.mp4");
+    const std::filesystem::path path = writeMp4(buildMp4(spec), "fvideoplayer_mp4_avc.mp4");
     {
         player::demux::Mp4Demuxer demuxer;
         std::string error;
@@ -641,7 +641,7 @@ TEST(Mp4Demuxer, ReadsH264Track) {
 }
 
 TEST(Mp4Demuxer, ReadsSamplesWithPtsAndKeyframes) {
-    const std::filesystem::path path = writeMp4(buildMp4(simpleSpec()), "hevc_player_mp4_samples.mp4");
+    const std::filesystem::path path = writeMp4(buildMp4(simpleSpec()), "fvideoplayer_mp4_samples.mp4");
     {
         player::demux::Mp4Demuxer demuxer;
         std::string error;
@@ -667,7 +667,7 @@ TEST(Mp4Demuxer, ReadsSamplesWithPtsAndKeyframes) {
 }
 
 TEST(Mp4Demuxer, SeeksToPreviousKeyframe) {
-    const std::filesystem::path path = writeMp4(buildMp4(simpleSpec()), "hevc_player_mp4_seek.mp4");
+    const std::filesystem::path path = writeMp4(buildMp4(simpleSpec()), "fvideoplayer_mp4_seek.mp4");
     {
         player::demux::Mp4Demuxer demuxer;
         std::string error;
@@ -692,7 +692,7 @@ TEST(Mp4Demuxer, AppliesCompositionOffsets) {
     spec.keyframes = {0};
     spec.ctts = {2000, 0, 1000};
 
-    const std::filesystem::path path = writeMp4(buildMp4(spec), "hevc_player_mp4_ctts.mp4");
+    const std::filesystem::path path = writeMp4(buildMp4(spec), "fvideoplayer_mp4_ctts.mp4");
     {
         player::demux::Mp4Demuxer demuxer;
         std::string error;
@@ -712,7 +712,7 @@ TEST(Mp4Demuxer, AppliesCompositionOffsets) {
 
 TEST(Mp4Demuxer, ReadsAudioSamplesWithEsdsConfig) {
     const std::filesystem::path path =
-        writeMp4(buildMp4(simpleSpec()), "hevc_player_mp4_audio.mp4");
+        writeMp4(buildMp4(simpleSpec()), "fvideoplayer_mp4_audio.mp4");
     {
         player::demux::Mp4Demuxer demuxer;
         std::string error;
@@ -751,7 +751,7 @@ TEST(Mp4Demuxer, BuildsOpusHeadFromDops) {
     spec.keyframes = {0};
     spec.with_audio = true;
     spec.with_opus = true;
-    const std::filesystem::path path = writeMp4(buildMp4(spec), "hevc_player_mp4_opus.mp4");
+    const std::filesystem::path path = writeMp4(buildMp4(spec), "fvideoplayer_mp4_opus.mp4");
     {
         player::demux::Mp4Demuxer demuxer;
         std::string error;
@@ -796,7 +796,7 @@ TEST(Mp4Demuxer, ReadsTimedTextSubtitleTrack) {
     spec.sample_sizes = {6, 6};
     spec.keyframes = {0};
     spec.with_subtitles = true;
-    const std::filesystem::path path = writeMp4(buildMp4(spec), "hevc_player_mp4_subs.mp4");
+    const std::filesystem::path path = writeMp4(buildMp4(spec), "fvideoplayer_mp4_subs.mp4");
     {
         player::demux::Mp4Demuxer demuxer;
         std::string error;
@@ -834,7 +834,7 @@ TEST(Mp4Demuxer, ReadsTimedTextSubtitleTrack) {
 
 TEST(Mp4Demuxer, SeekRepositionsAudioCursor) {
     const std::filesystem::path path =
-        writeMp4(buildMp4(simpleSpec()), "hevc_player_mp4_seek_audio.mp4");
+        writeMp4(buildMp4(simpleSpec()), "fvideoplayer_mp4_seek_audio.mp4");
     {
         player::demux::Mp4Demuxer demuxer;
         std::string error;
@@ -862,7 +862,7 @@ TEST(Mp4Demuxer, SeekRepositionsAudioCursor) {
 }
 
 TEST(Mp4Demuxer, FactoryDetectsMp4) {
-    const std::filesystem::path path = writeMp4(buildMp4(simpleSpec()), "hevc_player_mp4_factory.mp4");
+    const std::filesystem::path path = writeMp4(buildMp4(simpleSpec()), "fvideoplayer_mp4_factory.mp4");
     {
         std::string error;
         std::unique_ptr<player::demux::IDemuxer> demuxer = player::demux::createDemuxer(path, error);
