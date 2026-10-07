@@ -107,10 +107,15 @@ fVideoPlayer [options] [file]
 
 ### Controls
 
+The transport bar below the video has previous-file, play, pause, stop and
+next-file buttons; the previous/next buttons walk the media files in the
+directory of the open file in filename order.
+
 | Input | Action |
 | --- | --- |
 | Space | play / pause |
 | Left / Right | seek 5 seconds |
+| PageUp / PageDown | previous / next file in the directory |
 | Up / Down | volume +/- 5% |
 | M | mute / unmute |
 | S | toggle statistics window |

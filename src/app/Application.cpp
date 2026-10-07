@@ -37,6 +37,25 @@ std::string formatTime(double seconds) {
     return buffer;
 }
 
+// Extensions the previous/next file buttons accept, matching the containers
+// and raw streams the demuxer factory understands.
+bool isMediaFile(const std::filesystem::path& path) {
+    static const char* kExtensions[] = {
+        ".mkv",  ".webm", ".mka",  ".mp4",  ".m4a",  ".m4v",  ".mov", ".avi",
+        ".flv",  ".mpg",  ".mpeg", ".vob",  ".evo",  ".hevc", ".h265", ".265",
+        ".m1v",  ".m2v",  ".mp3",  ".flac", ".ac3",
+    };
+    std::string extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (const char* candidate : kExtensions) {
+        if (extension == candidate) {
+            return true;
+        }
+    }
+    return false;
+}
+
 const char* stateName(playback::State state) {
     switch (state) {
         case playback::State::Empty:
@@ -241,9 +260,56 @@ bool Application::openFile(const std::string& path) {
     renderer_.setStreamBitDepth(engine_.streamBitDepth());
     status_ = "Opened " + path;
     log::addf(log::Level::Info, "Opened %s", path.c_str());
+    current_path_ = path;
+    updateAdjacentFiles();
     discoverSubtitles(path);
     engine_.play();
     return true;
+}
+
+void Application::updateAdjacentFiles() {
+    previous_path_.clear();
+    next_path_.clear();
+    if (current_path_.empty()) {
+        return;
+    }
+
+    std::error_code error;
+    std::vector<std::filesystem::path> files;
+    for (const std::filesystem::directory_entry& entry :
+         std::filesystem::directory_iterator(current_path_.parent_path(), error)) {
+        std::error_code type_error;
+        if (entry.is_regular_file(type_error) && isMediaFile(entry.path())) {
+            files.push_back(entry.path());
+        }
+    }
+    std::sort(files.begin(), files.end(), [](const std::filesystem::path& a,
+                                             const std::filesystem::path& b) {
+        return a.filename().string() < b.filename().string();
+    });
+
+    const auto current = std::find(files.begin(), files.end(), current_path_);
+    if (current == files.end()) {
+        return;
+    }
+    if (current != files.begin()) {
+        previous_path_ = *std::prev(current);
+    }
+    if (std::next(current) != files.end()) {
+        next_path_ = *std::next(current);
+    }
+}
+
+void Application::openAdjacentFile(int direction) {
+    const std::filesystem::path& target = direction < 0 ? previous_path_ : next_path_;
+    if (target.empty()) {
+        return;
+    }
+    // Defer to the top of the next frame: opening a file tears down the engine
+    // state that the UI is currently drawing from.
+    std::lock_guard<std::mutex> lock(pending_mutex_);
+    pending_path_ = target.string();
+    pending_is_subtitle_ = false;
 }
 
 void Application::seek(double seconds) {
@@ -384,6 +450,14 @@ void Application::drawMenuBar() {
             }
             if (win98::menuItem("Stop", nullptr, false, has_file)) {
                 engine_.stop();
+            }
+            win98::separator();
+            if (win98::menuItem("Previous File", "PgUp", false,
+                                has_file && !previous_path_.empty())) {
+                openAdjacentFile(-1);
+            }
+            if (win98::menuItem("Next File", "PgDn", false, has_file && !next_path_.empty())) {
+                openAdjacentFile(1);
             }
             win98::endMenu();
         }
@@ -569,17 +643,61 @@ void Application::drawVideoArea() {
 
 void Application::drawTransport() {
     const bool has_file = engine_.hasFile();
+    const bool playing = engine_.state() == playback::State::Playing;
     const double duration = engine_.duration();
+    const ImVec2 icon_size(26.0f, 0.0f);
+    const ImGuiHoveredFlags tooltip_flags = ImGuiHoveredFlags_AllowWhenDisabled;
 
-    if (win98::button(engine_.state() == playback::State::Playing ? "Pause" : "Play")) {
-        engine_.togglePlayPause();
+    ImGui::BeginDisabled(!has_file || previous_path_.empty());
+    if (win98::iconButton("##previous", win98::TransportIcon::Previous, icon_size)) {
+        openAdjacentFile(-1);
     }
+    if (ImGui::IsItemHovered(tooltip_flags)) {
+        ImGui::SetTooltip("Previous file (PgUp)");
+    }
+    ImGui::EndDisabled();
     ImGui::SameLine();
+
     ImGui::BeginDisabled(!has_file);
-    if (win98::button("Stop")) {
+    if (win98::iconButton("##play", win98::TransportIcon::Play, icon_size)) {
+        engine_.play();
+    }
+    if (ImGui::IsItemHovered(tooltip_flags)) {
+        ImGui::SetTooltip("Play (Space)");
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+
+    ImGui::BeginDisabled(!playing);
+    if (win98::iconButton("##pause", win98::TransportIcon::Pause, icon_size)) {
+        engine_.pause();
+    }
+    if (ImGui::IsItemHovered(tooltip_flags)) {
+        ImGui::SetTooltip("Pause (Space)");
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+
+    ImGui::BeginDisabled(!has_file);
+    if (win98::iconButton("##stop", win98::TransportIcon::Stop, icon_size)) {
         engine_.stop();
     }
+    if (ImGui::IsItemHovered(tooltip_flags)) {
+        ImGui::SetTooltip("Stop");
+    }
+    ImGui::EndDisabled();
     ImGui::SameLine();
+
+    ImGui::BeginDisabled(!has_file || next_path_.empty());
+    if (win98::iconButton("##next", win98::TransportIcon::Next, icon_size)) {
+        openAdjacentFile(1);
+    }
+    if (ImGui::IsItemHovered(tooltip_flags)) {
+        ImGui::SetTooltip("Next file (PgDn)");
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+
     drawAudioControls();
     ImGui::SameLine();
 
@@ -587,6 +705,7 @@ void Application::drawTransport() {
     if (!dragging_seek_) {
         drag_position_ = static_cast<float>(current);
     }
+    ImGui::BeginDisabled(!has_file);
     ImGui::SetNextItemWidth(std::max(120.0f, ImGui::GetContentRegionAvail().x - 260.0f));
     win98::sliderFloat("##seek", &drag_position_, 0.0f,
                        static_cast<float>(duration > 0.0 ? duration : 1.0));
@@ -926,6 +1045,12 @@ void Application::handleShortcuts() {
     }
     if (ImGui::IsKeyPressed(ImGuiKey_RightArrow) && engine_.hasFile()) {
         engine_.seek(engine_.position() + 5.0);
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_PageUp, false) && !previous_path_.empty()) {
+        openAdjacentFile(-1);
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_PageDown, false) && !next_path_.empty()) {
+        openAdjacentFile(1);
     }
     if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) {
         engine_.setVolume(engine_.volume() + 0.05f);

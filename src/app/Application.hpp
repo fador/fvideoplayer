@@ -70,6 +70,11 @@ private:
     void discoverSubtitles(const std::string& video_path);
     bool activateSubtitle(int option);
     void addExternalSubtitle(const std::string& path);
+
+    // Walks the directory of the current file and records its neighbours, so
+    // the previous/next buttons know where to go without rescanning per frame.
+    void updateAdjacentFiles();
+    void openAdjacentFile(int direction);
     void drawSubtitles(const ImVec2& video_pos, const ImVec2& video_size);
 
     // A subtitle face, with the flags that could not be loaded and have to be
@@ -110,6 +115,9 @@ private:
     uint64_t uploaded_serial_ = 0;
     unsigned int video_texture_ = 0;
     std::string status_;
+    std::filesystem::path current_path_;
+    std::filesystem::path previous_path_;
+    std::filesystem::path next_path_;
     std::string screenshot_path_;
     int screenshot_every_ = 0;
     bool screenshot_window_ = false;

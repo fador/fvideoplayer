@@ -530,6 +530,69 @@ bool button(const char* label, const ImVec2& size) {
     return pressed;
 }
 
+namespace {
+
+// Draws a transport symbol centred in a button, from solid primitives so no
+// icon font or image is needed. All coordinates land on the pixel grid.
+void drawTransportIcon(ImDrawList* draw_list, const ImRect& box, TransportIcon icon, ImU32 color,
+                       float offset) {
+    const float cx = snapf(box.GetCenter().x) + offset;
+    const float cy = snapf(box.GetCenter().y) + offset;
+    const float h = snapf(std::min(box.GetWidth(), box.GetHeight()) * 0.3f);
+    switch (icon) {
+        case TransportIcon::Play:
+            draw_list->AddTriangleFilled(ImVec2(snapf(cx - h * 0.45f), snapf(cy - h)),
+                                         ImVec2(snapf(cx - h * 0.45f), snapf(cy + h)),
+                                         ImVec2(snapf(cx + h * 0.75f), cy), color);
+            break;
+        case TransportIcon::Pause: {
+            const float bar = std::max(2.0f, snapf(h * 0.4f));
+            const float gap = std::max(1.0f, snapf(h * 0.35f));
+            fillRect(draw_list, cx - gap - bar, cy - h, cx - gap, cy + h, color);
+            fillRect(draw_list, cx + gap, cy - h, cx + gap + bar, cy + h, color);
+            break;
+        }
+        case TransportIcon::Stop: {
+            const float side = std::max(5.0f, snapf(h * 1.5f));
+            fillRect(draw_list, cx - side * 0.5f, cy - side * 0.5f, cx + side * 0.5f,
+                     cy + side * 0.5f, color);
+            break;
+        }
+        case TransportIcon::Previous:
+        case TransportIcon::Next: {
+            // |< and >|: a bar on the outer edge and a triangle whose point
+            // sits next to it.
+            const float dir = icon == TransportIcon::Next ? 1.0f : -1.0f;
+            const float bar_inner = cx + dir * h * 0.5f;
+            const float bar_outer = cx + dir * h * 0.8f;
+            fillRect(draw_list, std::min(bar_inner, bar_outer), cy - h,
+                     std::max(bar_inner, bar_outer), cy + h, color);
+            draw_list->AddTriangleFilled(ImVec2(snapf(cx - dir * h * 0.65f), snapf(cy - h)),
+                                         ImVec2(snapf(cx - dir * h * 0.65f), snapf(cy + h)),
+                                         ImVec2(snapf(cx + dir * h * 0.35f), cy), color);
+            break;
+        }
+    }
+}
+
+}  // namespace
+
+bool iconButton(const char* id, TransportIcon icon, const ImVec2& size) {
+    const bool pressed = ImGui::Button(id, size);
+    if (!ImGui::IsItemVisible()) {
+        return pressed;
+    }
+
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    const ImRect bb(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+    const bool disabled = itemDisabled();
+    const bool held = !disabled && ImGui::IsItemActive();
+
+    bevel(draw_list, bb.Min, bb.Max, !held, true, kBevel);
+    drawTransportIcon(draw_list, bb, icon, disabled ? kGrayText : kWindowText, held ? 1.0f : 0.0f);
+    return pressed;
+}
+
 bool checkbox(const char* label, bool* value) {
     // Without any vertical padding the box is exactly one font line tall, and
     // the label lands right next to it the way Win98 draws it.

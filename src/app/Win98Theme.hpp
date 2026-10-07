@@ -63,8 +63,21 @@ void plusMinus(ImDrawList* draw_list, const ImVec2& min, const ImVec2& max, bool
 // fields and lists. Draw on the parent window, right after ImGui::EndChild().
 void sunkenBorder(const ImVec2& min, const ImVec2& max);
 
+// Transport symbols drawn inside iconButton; no icon font is needed.
+enum class TransportIcon {
+    Play,
+    Pause,
+    Stop,
+    Previous,
+    Next,
+};
+
 // Widgets. Each one submits the matching ImGui item and repaints it.
 bool button(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f));
+
+// A button with a transport symbol instead of a label. `id` is the item id
+// (use "##name"); it is never drawn.
+bool iconButton(const char* id, TransportIcon icon, const ImVec2& size = ImVec2(0.0f, 0.0f));
 bool checkbox(const char* label, bool* value);
 bool inputText(const char* label, char* buffer, size_t buffer_size,
                ImGuiInputTextFlags flags = 0);
