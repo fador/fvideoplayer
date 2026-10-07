@@ -1,7 +1,7 @@
 # f264dec integration notes
 
 The player includes [f264dec](https://github.com/fador/f264dec) as a submodule
-(`external/f264dec`, pinned at `6291599`) for H.264/AVC decoding.
+(`external/f264dec`, pinned at `6449a73`) for H.264/AVC decoding.
 
 ## Verification
 
