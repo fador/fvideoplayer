@@ -1,5 +1,6 @@
 #include "playback/PlaybackEngine.hpp"
 
+#include "demux/Avcc.hpp"
 #include "demux/HvcC.hpp"
 #include "filters/FilterSpec.hpp"
 #include "utils/Log.hpp"
@@ -453,6 +454,15 @@ bool PlaybackEngine::open(const std::filesystem::path& path, std::string& error)
             info.level = demux::hvccLevelName(hvcc);
             info.bitdepth = 8 + hvcc.bit_depth_luma_minus8;
             info.chroma_format = hvcc.chroma_format_idc;
+            stream_bitdepth_ = info.bitdepth;
+        }
+    } else if (!video_info_.avcc.empty()) {
+        demux::AvccInfo avcc;
+        if (demux::parseAvcc(video_info_.avcc.data(), video_info_.avcc.size(), avcc, nullptr)) {
+            info.profile = demux::avcProfileName(avcc.profile_idc);
+            info.level = demux::avcLevelName(avcc.level_idc);
+            info.bitdepth = avcc.bit_depth_luma;
+            info.chroma_format = avcc.chroma_format_idc;
             stream_bitdepth_ = info.bitdepth;
         }
     }

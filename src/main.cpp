@@ -1,5 +1,6 @@
 #include "app/Application.hpp"
 #include "decode/DecodeDump.hpp"
+#include "demux/Avcc.hpp"
 #include "demux/Demuxer.hpp"
 #include "demux/HvcC.hpp"
 
@@ -95,6 +96,16 @@ int printFileInfo(const std::string& input) {
                         player::demux::hvccLevelName(hvcc).c_str(),
                         8 + hvcc.bit_depth_luma_minus8, hvcc.chroma_format_idc,
                         static_cast<unsigned>(hvcc.nals.size()));
+        }
+    }
+    if (!video.avcc.empty()) {
+        player::demux::AvccInfo avcc;
+        if (player::demux::parseAvcc(video.avcc.data(), video.avcc.size(), avcc, nullptr)) {
+            std::printf("avcC: %s @ %s, %d-bit, chroma idc %d, %zu parameter sets\n",
+                        player::demux::avcProfileName(avcc.profile_idc).c_str(),
+                        player::demux::avcLevelName(avcc.level_idc).c_str(),
+                        avcc.bit_depth_luma, avcc.chroma_format_idc,
+                        avcc.sps.size() + avcc.pps.size());
         }
     }
     const std::vector<player::demux::AudioTrackInfo> audio_tracks = demuxer->audioTracks();

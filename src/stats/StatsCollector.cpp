@@ -54,11 +54,38 @@ void StatsCollector::setStreamInfo(const StreamInfo& info) {
     stream_ = info;
 }
 
+namespace {
+
+// Chroma subsampling as coded in the bitstream, matching the H.264/hvcC
+// chroma_format_idc values used by the statistics display.
+int chromaFormatId(decode::ChromaFormat format) {
+    switch (format) {
+        case decode::ChromaFormat::Mono:
+            return 0;
+        case decode::ChromaFormat::C422:
+            return 2;
+        case decode::ChromaFormat::C444:
+            return 3;
+        case decode::ChromaFormat::C420:
+        default:
+            return 1;
+    }
+}
+
+}  // namespace
+
 void StatsCollector::onFrameDecoded(const decode::DecodedFrame& frame, double decode_ms) {
     std::lock_guard<std::mutex> lock(mutex_);
     ++frames_decoded_;
     decode_times_.push_back(nowSeconds());
     trimTimes(decode_times_, kRateWindowSeconds);
+
+    // Fill in the format for codecs whose container record has no bit depth
+    // (raw streams), or when the record could not be parsed.
+    if (stream_.bitdepth <= 0 && frame.image.bitdepth_ > 0) {
+        stream_.bitdepth = frame.image.bitdepth_;
+        stream_.chroma_format = chromaFormatId(frame.image.format_);
+    }
 
     decode_ms_history_.push_back(static_cast<float>(decode_ms));
     while (decode_ms_history_.size() > kDecodeHistory) {

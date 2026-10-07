@@ -21,6 +21,7 @@ add_executable(player_tests
     test_silk_parameters.cpp
     test_silk_stereo_resampler.cpp
     test_avi_demuxer.cpp
+    test_avcc.cpp
     test_display_pts.cpp
     test_filters.cpp
     test_flv1.cpp
