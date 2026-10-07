@@ -1,7 +1,7 @@
 # f264dec integration notes
 
 The player includes [f264dec](https://github.com/fador/f264dec) as a submodule
-(`external/f264dec`, pinned at `6449a73`) for H.264/AVC decoding.
+(`external/f264dec`, pinned at `843c29c`) for H.264/AVC decoding.
 
 ## Verification
 
@@ -42,8 +42,15 @@ pipeline (CABAC, one slice per frame): closing the decoder freed the slices and
 buffers of jobs that were still running, and each slot's shallow copy of the
 `VideoParameters` kept a pointer to the master's macroblock-to-slice-group map,
 which the master frees and regenerates for every picture. `CloseDecoder` now
-waits for the pipeline, and each slot owns a copy of the map. All of them are
-resolved.
+waits for the pipeline, and each slot owns a copy of the map.
+
+`843c29c` fixed another frame-pipeline use-after-free, seen with 60 fps MOV
+captures that repeat the SPS/PPS before every IDR: re-activating the SPS
+flushes the DPB on the master thread while worker jobs are still decoding, and
+`unmark_for_reference` freed the pictures' `mb_field` scratch buffers without
+checking the reference count, so a CABAC worker wrote through freed memory.
+The buffers are now only freed when the frame store is the sole owner. All of
+them are resolved.
 
 ## Calling conventions used by the player wrapper
 
