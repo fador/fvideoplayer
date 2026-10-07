@@ -260,6 +260,16 @@ endif()
 add_executable(hevc_player src/main.cpp)
 target_link_libraries(hevc_player PRIVATE player_core)
 
+# Build the GUI as a windows-subsystem executable so no console window flashes
+# at launch. CLI modes reattach to the launching console for their output; the
+# MSVC entry point has to be named explicitly because the app uses main().
+if(WIN32)
+    set_target_properties(hevc_player PROPERTIES WIN32_EXECUTABLE TRUE)
+    if(MSVC)
+        target_link_options(hevc_player PRIVATE "/ENTRY:mainCRTStartup")
+    endif()
+endif()
+
 # --- tests -------------------------------------------------------------------
 if(PLAYER_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)

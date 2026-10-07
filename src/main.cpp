@@ -32,14 +32,23 @@ const char* videoCodecName(player::demux::Codec codec) {
     }
 }
 
-// The GUI does not need a console. CLI modes keep it so that output can be
-// redirected and shells wait for the process to finish.
-void detachConsoleForGui() {
+// The GUI is built as a windows-subsystem executable, so no console window is
+// created at launch. CLI modes need one: redirection is left alone, otherwise
+// the process attaches to the console it was started from (or allocates one
+// when started without a console).
+void attachConsoleForCli() {
 #ifdef _WIN32
-    if (const HWND console = GetConsoleWindow()) {
-        ShowWindow(console, SW_HIDE);
+    const HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out != nullptr && out != INVALID_HANDLE_VALUE) {
+        return;  // redirected; the inherited handle works as is
     }
-    FreeConsole();
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
+        AllocConsole();
+    }
+    FILE* stream = nullptr;
+    freopen_s(&stream, "CONOUT$", "w", stdout);
+    freopen_s(&stream, "CONOUT$", "w", stderr);
+    freopen_s(&stream, "CONIN$", "r", stdin);
 #endif
 }
 
@@ -194,8 +203,8 @@ int main(int argc, char** argv) {
     }
 
     const bool cli_mode = help_requested || info_mode || !dump_yuv.empty();
-    if (!cli_mode) {
-        detachConsoleForGui();
+    if (cli_mode) {
+        attachConsoleForCli();
     }
 
     if (help_requested) {
