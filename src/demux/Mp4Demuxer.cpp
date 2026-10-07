@@ -999,10 +999,18 @@ bool Mp4Demuxer::open(const std::filesystem::path& path, std::string& error) {
         return false;
     }
 
+    // Sample times are converted to the player's millisecond timeline below;
+    // MP4 stores them in the track's own media timescale.
+    const uint32_t tick_timescale = video_track.timescale != 0 ? video_track.timescale : 1000;
+    const auto toMs = [tick_timescale](int64_t ticks) {
+        return tick_timescale == 1000 ? ticks
+                                      : ticks * 1000 / static_cast<int64_t>(tick_timescale);
+    };
+
     video_ = VideoTrackInfo{};
     video_.codec = video_codec;
     video_.codec_name = video_codec_name;
-    video_.timescale = video_track.timescale != 0 ? video_track.timescale : 1000;
+    video_.timescale = 1000;
     video_.format.annexb = false;
     video_.format.nal_length_size = 4;
     video_.width = video_track.entry.width != 0 ? video_track.entry.width
@@ -1030,6 +1038,11 @@ bool Mp4Demuxer::open(const std::filesystem::path& path, std::string& error) {
         if (!buildSamples(video_track.tables, samples_, error)) {
             return false;
         }
+        for (SampleInfo& info : samples_) {
+            info.pts = toMs(info.pts);
+            info.dts = toMs(info.dts);
+            info.duration = toMs(info.duration);
+        }
         keyframes_.clear();
         for (size_t i = 0; i < samples_.size(); ++i) {
             if (samples_[i].keyframe) {
@@ -1040,15 +1053,17 @@ bool Mp4Demuxer::open(const std::filesystem::path& path, std::string& error) {
                   [](const auto& a, const auto& b) { return a.first < b.first; });
     }
 
-    if (video_track.duration != 0 && video_.timescale != 0) {
-        duration_ = static_cast<double>(video_track.duration) / video_.timescale;
-        video_.fps = samples_.empty() ? 0.0
-                                      : static_cast<double>(samples_.size()) * video_.timescale /
-                                            static_cast<double>(video_track.duration);
+    if (video_track.duration != 0 && tick_timescale != 0) {
+        duration_ = static_cast<double>(video_track.duration) / tick_timescale;
+        video_.fps = samples_.empty()
+                         ? 0.0
+                         : static_cast<double>(samples_.size()) *
+                               static_cast<double>(tick_timescale) /
+                               static_cast<double>(video_track.duration);
     } else if (!samples_.empty()) {
         const int64_t last = samples_.back().dts;
         const int64_t first = samples_.front().dts;
-        duration_ = static_cast<double>(last - first) / video_.timescale;
+        duration_ = static_cast<double>(last - first) / 1000.0;
         video_.fps = duration_ > 0.0 ? samples_.size() / duration_ : 0.0;
     }
     // Without a video timeline (audio-only or unsupported video) the audio

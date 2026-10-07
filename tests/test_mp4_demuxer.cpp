@@ -575,7 +575,7 @@ TEST(Mp4Demuxer, ParsesVideoAndAudioTrack) {
         EXPECT_EQ(demuxer.video().codec, player::demux::Codec::Hevc);
         EXPECT_EQ(demuxer.video().width, 1280u);
         EXPECT_EQ(demuxer.video().height, 720u);
-        EXPECT_EQ(demuxer.video().timescale, 30000u);
+        EXPECT_EQ(demuxer.video().timescale, 1000u);
         EXPECT_FALSE(demuxer.video().format.annexb);
         EXPECT_EQ(demuxer.video().format.nal_length_size, 4);
         EXPECT_FALSE(demuxer.video().hvcc.empty());
@@ -655,8 +655,9 @@ TEST(Mp4Demuxer, ReadsSamplesWithPtsAndKeyframes) {
         EXPECT_EQ(sample.data[3], 3u);
         EXPECT_EQ(sample.data[4], 0x02u);
 
+        // 1000 ticks of a 30000 timescale is 33 ms.
         ASSERT_TRUE(demuxer.readSample(sample));
-        EXPECT_EQ(sample.pts, 1000);
+        EXPECT_EQ(sample.pts, 33);
         EXPECT_FALSE(sample.keyframe);
 
         while (demuxer.readSample(sample)) {
@@ -676,7 +677,7 @@ TEST(Mp4Demuxer, SeeksToPreviousKeyframe) {
         ASSERT_TRUE(demuxer.seek(0.08));  // 80 ms -> previous keyframe at 66 ms
         player::demux::Sample sample;
         ASSERT_TRUE(demuxer.readSample(sample));
-        EXPECT_EQ(sample.pts, 2000);
+        EXPECT_EQ(sample.pts, 66);
         EXPECT_TRUE(sample.keyframe);
 
         ASSERT_TRUE(demuxer.seek(0.0));
@@ -698,14 +699,15 @@ TEST(Mp4Demuxer, AppliesCompositionOffsets) {
         std::string error;
         ASSERT_TRUE(demuxer.open(path, error)) << error;
 
+        // Composition offsets are 30000 Hz ticks: 2000, 0 and 1000 ticks.
         player::demux::Sample sample;
         ASSERT_TRUE(demuxer.readSample(sample));
         EXPECT_EQ(sample.dts, 0);
-        EXPECT_EQ(sample.pts, 2000);
+        EXPECT_EQ(sample.pts, 66);
         ASSERT_TRUE(demuxer.readSample(sample));
-        EXPECT_EQ(sample.pts, 1000);
+        EXPECT_EQ(sample.pts, 33);
         ASSERT_TRUE(demuxer.readSample(sample));
-        EXPECT_EQ(sample.pts, 3000);
+        EXPECT_EQ(sample.pts, 100);
     }
     std::filesystem::remove(path);
 }
